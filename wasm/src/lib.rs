@@ -34,6 +34,11 @@ struct EvalResult {
 struct PlotData {
     /// LaTeX of the plotted expression, for the plot legend.
     latex: String,
+    /// Re-parseable plain text of the plotted expression. Workspace bindings
+    /// are already substituted (only the plot variable is free), so the
+    /// frontend can resample any window with `resample` — no session state
+    /// needed.
+    text: String,
     var: String,
     a: f64,
     b: f64,
@@ -96,6 +101,7 @@ fn plot_data(e: &Expr) -> Option<Result<PlotData, String>> {
     }
     Some(Ok(PlotData {
         latex: latex::to_latex(&args[0]),
+        text: format!("{}", args[0]),
         var: var.clone(),
         a,
         b,
@@ -123,6 +129,30 @@ impl Session {
         }
     }
 
+    /// The global workspace as JSON: `[{name, text, latex, kind}]`, sorted by
+    /// name. Drives the variables panel in the UI.
+    pub fn workspace(&self) -> String {
+        #[derive(Serialize)]
+        struct Entry {
+            name: String,
+            text: String,
+            latex: String,
+            kind: &'static str,
+        }
+        let mut entries: Vec<Entry> = self
+            .interp
+            .workspace()
+            .map(|(name, value)| Entry {
+                name: name.clone(),
+                text: format!("{}", value),
+                latex: latex::to_latex(value),
+                kind: kind_of(value),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        serde_json::to_string(&entries).expect("workspace entries are serializable")
+    }
+
     /// Evaluate one complete statement block; returns JSON ([`EvalResult`]).
     pub fn eval(&mut self, src: &str) -> String {
         let result = match self.interp.eval_line(src) {
@@ -148,6 +178,25 @@ impl Session {
             },
         };
         serde_json::to_string(&result).expect("EvalResult is always serializable")
+    }
+}
+
+/// Resample a previously returned plot expression over a new window (zoom /
+/// pan). Stateless: `expr_text` is `PlotData::text`, which is closed except
+/// for the plot variable, so a scratch interpreter suffices.
+#[wasm_bindgen]
+pub fn resample(expr_text: &str, var: &str, a: f64, b: f64, n: usize) -> String {
+    if !(a.is_finite() && b.is_finite() && a < b) {
+        return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b"})
+            .to_string();
+    }
+    let mut interp = exact::Interpreter::new();
+    match interp.eval_line(expr_text) {
+        Err(e) => serde_json::json!({"ok": false, "error": e}).to_string(),
+        Ok(expr) => {
+            let points = f64eval::sample(&expr, var, a, b, n);
+            serde_json::json!({"ok": true, "points": points}).to_string()
+        }
     }
 }
 
@@ -188,6 +237,20 @@ mod tests {
         s.eval("x := 3");
         let v: serde_json::Value = serde_json::from_str(&s.eval("x^2 + 1")).unwrap();
         assert_eq!(v["text"], "10");
+    }
+
+    #[test]
+    fn workspace_lists_bindings() {
+        let mut s = Session::new();
+        s.eval("x := 3");
+        s.eval("f(n) := n + 1");
+        let v: serde_json::Value = serde_json::from_str(&s.workspace()).unwrap();
+        let entries = v.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["name"], "f");
+        assert_eq!(entries[0]["kind"], "function");
+        assert_eq!(entries[1]["name"], "x");
+        assert_eq!(entries[1]["text"], "3");
     }
 
     #[test]

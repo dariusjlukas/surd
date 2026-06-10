@@ -26,6 +26,13 @@ expect('error shape', ev('1/0').error, 'division by zero');
 expect('incomplete block', is_incomplete('if x then'), true);
 expect('blank', is_blank('# comment'), true);
 
+expect('implicit multiplication', ev('2w + w').text, '3*w');
+expect('implicit call mult', ev('2sin(0)').text, '0');
+
+s.eval('g := 7');
+const ws = JSON.parse(s.workspace());
+expect('workspace lists bindings', ws.some((e) => e.name === 'g' && e.text === '7'), true);
+
 const plot = ev('plot(sin(y)/y, y, -10, 10)');
 expect('plot kind', plot.kind, 'plot');
 expect('plot samples', plot.plot.points.length, 600);

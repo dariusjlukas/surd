@@ -161,8 +161,59 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
     if tokens.last() == Some(&Token::Newline) {
         tokens.pop();
     }
+    let mut tokens = insert_implicit_mul(tokens)?;
     tokens.push(Token::Eof);
     Ok(tokens)
+}
+
+/// Reserved words with grammatical meaning. Implicit multiplication never
+/// fires before one, so `while (x < 3) do … end` keeps parsing.
+const RESERVED: &[&str] = &[
+    "if", "then", "else", "end", "while", "do", "function", "and", "or", "not", "true", "false",
+];
+
+pub(crate) fn is_reserved(s: &str) -> bool {
+    RESERVED.contains(&s)
+}
+
+/// Implicit multiplication: `2x`, `2(x+1)`, `2sin(x)`, `(x+1)(x-1)`, `(x+1)y`
+/// mean multiplication, so insert the `*` the user left out. Deliberately
+/// narrow: the left side must be a number or `)`, the right side `(` or a
+/// non-reserved identifier. In particular `ident(` stays a function call,
+/// `1.5.5` stays an error (no Num·Num), and adjacent identifiers (`x y`) stay
+/// an error — `x then`/`x end` carry grammar.
+fn insert_implicit_mul(tokens: Vec<Token>) -> Result<Vec<Token>, String> {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        if let Some(prev) = out.last() {
+            let left_ok = matches!(prev, Token::Num(_) | Token::RParen);
+            if left_ok {
+                match &t {
+                    Token::LParen => out.push(Token::Star),
+                    Token::Ident(s) if !is_reserved(s) => {
+                        // Guard the scientific-notation trap: `3e5` lexes as
+                        // Num(3) · Ident("e5") and would silently become
+                        // 3*e5 (a free symbol). Refuse loudly instead.
+                        if matches!(prev, Token::Num(_))
+                            && s.starts_with(['e', 'E'])
+                            && s[1..].chars().all(|c| c.is_ascii_digit())
+                            && !s[1..].is_empty()
+                        {
+                            return Err(format!(
+                                "scientific notation '{}…' isn't supported; write a power of 10 \
+                                 explicitly (e.g. 3*10^5)",
+                                s
+                            ));
+                        }
+                        out.push(Token::Star);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push(t);
+    }
+    Ok(out)
 }
 
 fn push(tokens: &mut Vec<Token>, t: Token, i: &mut usize) {

@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+@import 'katex/dist/katex.min.css';
+
+/* KaTeX display math is centered by default; a notebook reads left-aligned. */
+.katex-display {
+  text-align: left;
+  margin: 0.25rem 0;
+}

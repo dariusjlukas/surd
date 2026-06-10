@@ -37,26 +37,48 @@ REPL meta-commands: `:vars` lists the workspace, `:q` quits.
 
 ### The web app
 
-The browser frontend lives in `web/` (plain JS, no bundler) on top of a
-`wasm-bindgen` crate in `wasm/`:
+The real frontend lives in `app/` — React + TypeScript + Vite + Tailwind +
+Zustand, with custom ThreeJS plots — on top of a `wasm-bindgen` crate in
+`wasm/`. (`web/` is the earlier no-build harness; its `smoke.mjs` is still the
+headless check of the wasm bundle.)
 
 ```sh
 rustup target add wasm32-unknown-unknown
-wasm-pack build wasm --target web --out-dir ../web/pkg   # → web/pkg/ (~500 KB)
-node web/smoke.mjs                  # headless check of the built bundle
-python3 -m http.server -d web 8000  # then open http://localhost:8000
+wasm-pack build wasm --target web --out-dir ../app/src/engine/pkg
+cd app && npm install && npm run dev      # → http://localhost:5173
+npm run build                             # production bundle in app/dist/
+
+# headless engine check (uses the web/pkg copy):
+wasm-pack build wasm --target web --out-dir ../web/pkg && node web/smoke.mjs
 ```
+
+App structure: `src/engine/` (typed worker protocol + `EngineClient`),
+`src/state/store.ts` (Zustand: cells, transcript, engine status),
+`src/plot/` (`LinePlot` — a framework-free ThreeJS painter — plus the React
+wrapper that owns pan/zoom and triggers engine resampling), `src/components/`
+(notebook, KaTeX output, REPL input bar with block continuation).
 
 How it holds together:
 
 - **The worker is the cancellation boundary.** The engine runs in a Web
   Worker; *cancel* terminates the worker. Because the engine is
   deterministic, the transcript of successful inputs **is** the serialized
-  workspace — a fresh worker replays it to restore state. The same transcript
-  persists in `localStorage`, so a page reload restores the session too.
+  workspace — a fresh worker replays it to restore state. The transcript and
+  the rendered cells both persist in `localStorage`: a reload paints the
+  notebook instantly from cached results while the engine replays in the
+  background.
 - **Results are structured.** `Session::eval` returns JSON (kind, plain text,
   LaTeX, plot samples, error); the UI renders math with KaTeX and draws
-  `plot(...)` values on a canvas with gaps at poles.
+  `plot(...)` values with ThreeJS — gaps at poles, never a lie bridged across
+  an asymptote.
+- **Plots resample on pan/zoom.** A plot result carries the re-parseable text
+  of its expression (workspace bindings already substituted), so the frontend
+  asks the worker to re-sample any window at full resolution — zooming reveals
+  detail instead of stretching 600 stale samples. Drag pans, wheel zooms x,
+  shift+wheel zooms y; touching the y-axis switches it from auto-fit
+  (quantile) to manual until reset.
+- **A workspace panel** lists every binding (name, value as typeset math),
+  refreshed from `Session::workspace()` after each successful evaluation.
 - **The stack is set at link time** (`.cargo/config.toml`, 32 MiB) so the
   engine's recursion guards hold on wasm just like they do under
   `run_with_stack` natively.
@@ -392,7 +414,13 @@ These were scoped out on purpose; they're where an exact CAS balloons.
   recognizing `exp(I*pi) → -1` exactly rather than numerically).
 - **Square-factor extraction** (`sqrt(8) -> 2 sqrt(2)`) and degree-aware
   polynomial display ordering.
-- **Implicit multiplication** (`2x`): for now multiplication must be explicit.
+- ~~**Implicit multiplication**~~ — done, in the unambiguous cases: a number
+  or `)` followed by `(` or an identifier multiplies (`2x`, `2pi`, `2sin(x)`,
+  `2(x+1)`, `(x+1)(x-1)`, `(x+1)y`). Deliberately *not* implicit: `ident(…)`
+  stays a function call, adjacent identifiers (`x y`) stay an error (they
+  carry block grammar — `x then`), `1.5.5` stays an error, and `3e5` is
+  rejected loudly rather than silently becoming `3*e5`. Exponents bind first:
+  `x^2y` is `(x^2)·y`.
 - **User-defined functions.**
 - ~~**Float contagion**~~ — done: a float operand makes the numeric part of
   `+`/`*`/`^` float (`N(pi) + 1` is one float; `N(2) + x` keeps `x` symbolic),

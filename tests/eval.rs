@@ -115,8 +115,8 @@ fn errors_do_not_panic() {
     // Division by zero is a clean error, never a crash.
     assert_eq!(ev("1/0"), "error: division by zero");
     assert_eq!(ev("1/(x - x)"), "error: division by zero");
-    // Implicit multiplication isn't supported yet; it must fail gracefully.
-    assert!(ev("2x").starts_with("error:"));
+    // Adjacent identifiers are not implicit multiplication (see regression.rs).
+    assert!(ev("x y").starts_with("error:"));
 }
 
 #[test]

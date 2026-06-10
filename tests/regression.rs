@@ -37,9 +37,23 @@ fn negative_rational_coefficients_display_with_minus() {
 }
 
 #[test]
-fn implicit_multiplication_is_a_clean_error() {
-    // `2x` isn't supported; it must error, not misparse or panic.
-    assert!(is_err(&ev("2x")));
+fn implicit_multiplication() {
+    // Was: `2x` was a parse error. Now adjacency means multiplication in the
+    // unambiguous cases (number/`)` followed by `(`/identifier).
+    assert_eq!(ev("2pi + pi"), "3*π");
+    assert_eq!(ev_all(&["x := 3", "2x + 1"]), "7");
+    assert_eq!(ev("2(3 + 4)"), "14");
+    assert_eq!(ev("2sin(0)"), "0");
+    assert_eq!(ev("(x + 1)(x - 1) - (x + 1)*(x - 1)"), "0");
+    assert_eq!(ev("(x + 1)y - y*(x + 1)"), "0");
+    // 1/2x reads as (1/2)*x, like 1/2*x.
+    assert_eq!(ev("1/2x - x/2"), "0");
+    // Exponents bind first: x^2y is (x^2)*y, not x^(2y).
+    assert_eq!(ev("x^2y - y*x^2"), "0");
+    // Still errors — these adjacencies stay meaningless or dangerous:
+    assert!(is_err(&ev("1.5.5"))); // Num·Num: a typo, not multiplication
+    assert!(is_err(&ev("x y"))); // Ident·Ident would break `x then …` grammar
+    assert!(is_err(&ev("3e5"))); // scientific notation must not become 3*e5
 }
 
 #[test]
