@@ -15,9 +15,16 @@ export interface ViewWindow {
 
 /** Theme token → THREE color, sampled at draw time so grid/axis/curve track
  * the active theme (index.css guarantees these vars hold plain hex). */
-function themeColor(token: string, fallback: number): THREE.Color {
+export function themeColor(token: string, fallback: number): THREE.Color {
   const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
   return v ? new THREE.Color(v) : new THREE.Color(fallback)
+}
+
+/** Series i's color token: the accent first, then the fixed palette,
+ * cycling. The legend chips use the same tokens via CSS var(). */
+export function seriesColorToken(i: number): string {
+  const slot = i % 6
+  return slot === 0 ? '--accent' : `--plot-s${slot + 1}`
 }
 
 export class LinePlot {
@@ -53,30 +60,33 @@ export class LinePlot {
     this.render()
   }
 
-  /** Replace the curve. Samples split into continuous runs at nulls so poles
-   * and domain gaps break the line instead of bridging it. */
-  setData(points: SamplePoint[]) {
+  /** Replace the curves — one entry per series, colored by the shared
+   * palette (see seriesColorToken). Samples split into continuous runs at
+   * nulls so poles and domain gaps break the line instead of bridging it. */
+  setData(series: SamplePoint[][]) {
     disposeChildren(this.curve)
-    const material = new THREE.LineBasicMaterial({
-      color: themeColor('--accent', 0x7dd3fc),
+    series.forEach((points, i) => {
+      const material = new THREE.LineBasicMaterial({
+        color: themeColor(seriesColorToken(i), 0x7dd3fc),
+      })
+      let run: number[] = []
+      const flush = () => {
+        if (run.length >= 6) {
+          const g = new THREE.BufferGeometry()
+          g.setAttribute('position', new THREE.Float32BufferAttribute(run, 3))
+          this.curve.add(new THREE.Line(g, material))
+        }
+        run = []
+      }
+      for (const [x, y] of points) {
+        if (y === null) {
+          flush()
+        } else {
+          run.push(x, y, 0)
+        }
+      }
+      flush()
     })
-    let run: number[] = []
-    const flush = () => {
-      if (run.length >= 6) {
-        const g = new THREE.BufferGeometry()
-        g.setAttribute('position', new THREE.Float32BufferAttribute(run, 3))
-        this.curve.add(new THREE.Line(g, material))
-      }
-      run = []
-    }
-    for (const [x, y] of points) {
-      if (y === null) {
-        flush()
-      } else {
-        run.push(x, y, 0)
-      }
-    }
-    flush()
     this.render()
   }
 

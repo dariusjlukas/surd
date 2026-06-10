@@ -115,7 +115,7 @@ impl Interpreter {
                 // collapses it (x := 3 must not turn diff(x^2, x) into
                 // diff(9, 3)). Skipped if the user defined their own function
                 // with that name.
-                if matches!(name.as_str(), "diff" | "D" | "subs" | "plot")
+                if matches!(name.as_str(), "diff" | "D" | "subs" | "plot" | "plot3d")
                     && !matches!(self.get_var(name), Some(Expr::Function { .. }))
                 {
                     return self.call_calculus(name, args);
@@ -281,11 +281,13 @@ impl Interpreter {
     /// mentioning `x` gets: `x := 3; diff(x^2, x)` is 2·x at x = 3, i.e. 6.
     /// `plot` stays a symbolic value; the frontend samples and draws it.
     fn call_calculus(&mut self, name: &str, args: &[Node]) -> Result<Expr, String> {
-        let expected = match name {
-            "subs" => 3,
-            "plot" => 4,
-            _ => 2,
-        };
+        if name == "plot" {
+            return self.call_plot(args);
+        }
+        if name == "plot3d" {
+            return self.call_plot3d(args);
+        }
+        let expected = if name == "subs" { 3 } else { 2 };
         if args.len() != expected {
             return Err(format!(
                 "{} expects {} argument(s), got {}",
@@ -294,43 +296,102 @@ impl Interpreter {
                 args.len()
             ));
         }
-        let var = match &args[1] {
-            Node::Ident(s) => s.clone(),
-            other => as_symbol(&self.eval_node(other)?)?,
-        };
-
-        // Evaluate the expression with `var` shadowed by its own symbol.
-        let frame = self.frames.last_mut().unwrap();
-        let saved = frame.insert(var.clone(), Expr::Symbol(var.clone()));
-        let target = self.eval_node(&args[0]);
-        let frame = self.frames.last_mut().unwrap();
-        match saved {
-            Some(v) => {
-                frame.insert(var.clone(), v);
-            }
-            None => {
-                frame.remove(&var);
-            }
-        }
-        let target = target?;
+        let var = self.var_name(&args[1])?;
+        let target = self.eval_shadowed(&[var.clone()], &args[0])?;
 
         if name == "subs" {
             let val = self.eval_node(&args[2])?;
             return Ok(substitute(&target, &var, &val));
-        }
-        if name == "plot" {
-            let a = self.eval_node(&args[2])?;
-            let b = self.eval_node(&args[3])?;
-            return Ok(Expr::Func(
-                "plot".to_string(),
-                vec![target, Expr::Symbol(var), a, b],
-            ));
         }
         let deriv = differentiate(&target, &var);
         match self.lookup(&var) {
             Expr::Symbol(s) if s == var => Ok(deriv),
             bound => Ok(substitute(&deriv, &var, &bound)),
         }
+    }
+
+    /// `plot(f1, ..., fk, x, a, b)` — one or more curves over a shared
+    /// window. Stays a symbolic value; the frontend samples and draws it.
+    fn call_plot(&mut self, args: &[Node]) -> Result<Expr, String> {
+        if args.len() < 4 {
+            return Err(format!(
+                "plot expects plot(f1, ..., fk, x, a, b), got {} argument(s)",
+                args.len()
+            ));
+        }
+        let var_idx = args.len() - 3;
+        let var = self.var_name(&args[var_idx])?;
+        let mut out = Vec::with_capacity(args.len());
+        for f in &args[..var_idx] {
+            out.push(self.eval_shadowed(std::slice::from_ref(&var), f)?);
+        }
+        out.push(Expr::Symbol(var));
+        out.push(self.eval_node(&args[var_idx + 1])?);
+        out.push(self.eval_node(&args[var_idx + 2])?);
+        Ok(Expr::Func("plot".to_string(), out))
+    }
+
+    /// `plot3d(f, x, a, b, y, c, d)` — a surface z = f(x, y) over
+    /// [a, b]×[c, d]. Stays symbolic, like `plot`.
+    fn call_plot3d(&mut self, args: &[Node]) -> Result<Expr, String> {
+        if args.len() != 7 {
+            return Err(format!(
+                "plot3d expects plot3d(f, x, a, b, y, c, d), got {} argument(s)",
+                args.len()
+            ));
+        }
+        let xvar = self.var_name(&args[1])?;
+        let yvar = self.var_name(&args[4])?;
+        if xvar == yvar {
+            return Err("plot3d: the two plot variables must differ".into());
+        }
+        let target = self.eval_shadowed(&[xvar.clone(), yvar.clone()], &args[0])?;
+        Ok(Expr::Func(
+            "plot3d".to_string(),
+            vec![
+                target,
+                Expr::Symbol(xvar),
+                self.eval_node(&args[2])?,
+                self.eval_node(&args[3])?,
+                Expr::Symbol(yvar),
+                self.eval_node(&args[5])?,
+                self.eval_node(&args[6])?,
+            ],
+        ))
+    }
+
+    /// A *name* argument (the variable of diff/subs/plot): a bare identifier,
+    /// or anything that evaluates to a symbol.
+    fn var_name(&mut self, node: &Node) -> Result<String, String> {
+        match node {
+            Node::Ident(s) => Ok(s.clone()),
+            other => as_symbol(&self.eval_node(other)?),
+        }
+    }
+
+    /// Evaluate `node` with each of `vars` shadowed by its own symbol, so the
+    /// expression is seen before the workspace collapses those names
+    /// (`x := 3` must not turn `plot(x^2, x, 0, 1)` into `plot(9, 3, 0, 1)`).
+    /// Callers must not pass duplicate names (restore order would be wrong).
+    fn eval_shadowed(&mut self, vars: &[String], node: &Node) -> Result<Expr, String> {
+        let frame = self.frames.last_mut().unwrap();
+        let saved: Vec<Option<Expr>> = vars
+            .iter()
+            .map(|v| frame.insert(v.clone(), Expr::Symbol(v.clone())))
+            .collect();
+        let result = self.eval_node(node);
+        let frame = self.frames.last_mut().unwrap();
+        for (v, s) in vars.iter().zip(saved) {
+            match s {
+                Some(val) => {
+                    frame.insert(v.clone(), val);
+                }
+                None => {
+                    frame.remove(v);
+                }
+            }
+        }
+        result
     }
 
     /// `precision()` queries the default digit count; `precision(d)` sets it.

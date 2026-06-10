@@ -1,23 +1,27 @@
 // React wrapper around LinePlot: owns the view window and samples, wires
 // pan/zoom to engine resampling (debounced), and renders DOM tick labels
-// positioned by the same scale math the painter uses.
+// positioned by the same scale math the painter uses. Handles any number of
+// curves over one shared window; the legend chips use the same palette
+// tokens as the painter.
 //
 // Y-axis modes: `auto` re-fits the y-window (quantiles) on every resample;
 // touching the y-axis (vertical pan, shift+wheel zoom) switches to `manual`,
 // which holds the window until reset. Plain wheel zooms x about the cursor.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PlotData, SamplePoint } from '../engine/types'
+import { normalizePlotData, type PlotData, type SamplePoint } from '../engine/types'
 import { useSettings } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
-import { LinePlot } from './LinePlot'
+import { LinePlot, seriesColorToken } from './LinePlot'
 import { formatTick, niceTicks, quantileDomain } from './scales'
 
 const RESAMPLE_DEBOUNCE_MS = 180
 
-export function PlotView({ plot }: { plot: PlotData }) {
+export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
+  // Pre-multi-curve persisted results normalize to a one-series shape.
+  const plot = useMemo(() => normalizePlotData(rawPlot), [rawPlot])
   const resample = useNotebook((s) => s.resample)
   // The painter samples theme CSS variables when it (re)builds materials;
   // keying the draw effects on the theme makes a mode/accent switch repaint.
@@ -30,11 +34,17 @@ export function PlotView({ plot }: { plot: PlotData }) {
   const dragRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null)
   const yManualRef = useRef(false)
 
-  const [points, setPoints] = useState<SamplePoint[]>(plot.points)
+  const initialPoints = useMemo(() => plot.series.map((s) => s.points), [plot])
+  const [points, setPoints] = useState<SamplePoint[][]>(initialPoints)
   const [win, setWin] = useState({ a: plot.a, b: plot.b })
-  const [yWin, setYWin] = useState<[number, number]>(() => quantileDomain(plot.points))
+  const [yWin, setYWin] = useState<[number, number]>(() =>
+    quantileDomain(initialPoints.flat()),
+  )
   const [yManual, setYManual] = useState(false)
   const [size, setSize] = useState({ w: 640, h: 320 })
+  /** Measurement cursor: the snapped sample under the pointer (data coords,
+   * so it stays glued to the curve through pan/zoom). */
+  const [probe, setProbe] = useState<{ x: number; y: number; si: number } | null>(null)
 
   const xTicks = useMemo(() => niceTicks(win.a, win.b), [win])
   const yTicks = useMemo(() => niceTicks(yWin[0], yWin[1]), [yWin])
@@ -80,10 +90,10 @@ export function PlotView({ plot }: { plot: PlotData }) {
     (a: number, b: number) => {
       window.clearTimeout(debounceRef.current)
       debounceRef.current = window.setTimeout(() => {
-        resample(plot.text, plot.var, a, b)
-          .then((pts) => {
-            setPoints(pts)
-            if (!yManualRef.current) setYWin(quantileDomain(pts))
+        Promise.all(plot.series.map((s) => resample(s.text, plot.var, a, b)))
+          .then((all) => {
+            setPoints(all)
+            if (!yManualRef.current) setYWin(quantileDomain(all.flat()))
           })
           .catch(() => {
             // engine busy or restarted — stale samples stay visible, the next
@@ -91,7 +101,7 @@ export function PlotView({ plot }: { plot: PlotData }) {
           })
       }, RESAMPLE_DEBOUNCE_MS)
     },
-    [plot.text, plot.var, resample],
+    [plot, resample],
   )
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -100,9 +110,37 @@ export function PlotView({ plot }: { plot: PlotData }) {
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
+  /** Snap the pointer to the nearest curve sample: index by x (samples are
+   * evenly spaced), then pick the series whose value is closest on screen. */
+  const PROBE_SNAP_PX = 48
+  const updateProbe = (e: React.PointerEvent) => {
+    const rect = frameRef.current!.getBoundingClientRect()
+    const px = e.clientX - rect.left
+    const py = e.clientY - rect.top
+    const xData = win.a + (px / size.w) * (win.b - win.a)
+    const candidates = points.flatMap((pts, si) => {
+      if (pts.length < 2) return []
+      const span = pts[pts.length - 1][0] - pts[0][0]
+      const idx = Math.round(((xData - pts[0][0]) / span) * (pts.length - 1))
+      const [xs, ys] = pts[Math.min(pts.length - 1, Math.max(0, idx))]
+      if (ys === null) return []
+      const dPx = Math.abs(size.h - ((ys - yWin[0]) / (yWin[1] - yWin[0])) * size.h - py)
+      return [{ x: xs, y: ys, si, dPx }]
+    })
+    const best = candidates.reduce(
+      (acc, c) => (acc === null || c.dPx < acc.dPx ? c : acc),
+      null as (typeof candidates)[number] | null,
+    )
+    setProbe(best !== null && best.dPx <= PROBE_SNAP_PX ? best : null)
+  }
+
   const onPointerMove = (e: React.PointerEvent) => {
     const drag = dragRef.current
-    if (!drag || drag.pointerId !== e.pointerId) return
+    if (!drag || drag.pointerId !== e.pointerId) {
+      updateProbe(e)
+      return
+    }
+    setProbe(null)
     const dxPx = e.clientX - drag.lastX
     const dyPx = e.clientY - drag.lastY
     drag.lastX = e.clientX
@@ -172,16 +210,18 @@ export function PlotView({ plot }: { plot: PlotData }) {
     yManualRef.current = false
     setYManual(false)
     setWin({ a: plot.a, b: plot.b })
-    setPoints(plot.points)
-    setYWin(quantileDomain(plot.points))
+    setPoints(initialPoints)
+    setYWin(quantileDomain(initialPoints.flat()))
   }
+
+  const exprText = plot.series.map((s) => s.text).join(', ')
 
   const savePng = () => {
     const painter = painterRef.current
     if (!painter) return
     const a = document.createElement('a')
     a.href = painter.snapshot()
-    a.download = `${plot.text.slice(0, 40)}.png`
+    a.download = `${exprText.slice(0, 40)}.png`
     a.click()
   }
 
@@ -191,8 +231,16 @@ export function PlotView({ plot }: { plot: PlotData }) {
 
   return (
     <div className="max-w-2xl">
-      <div className="mb-1 flex items-baseline gap-3 text-sm text-muted">
-        <MathInline latex={plot.latex} fallback={plot.text} />
+      <div className="mb-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted">
+        {plot.series.map((s, i) => (
+          <span key={i} className="inline-flex items-baseline gap-1.5">
+            <span
+              className="inline-block h-2 w-2 self-center rounded-full"
+              style={{ background: `var(${seriesColorToken(i)})` }}
+            />
+            <MathInline latex={s.latex} fallback={s.text} />
+          </span>
+        ))}
         <span className="text-xs">
           {plot.var} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
         </span>
@@ -223,13 +271,14 @@ export function PlotView({ plot }: { plot: PlotData }) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={() => setProbe(null)}
         onDoubleClick={reset}
         onContextMenu={(e) =>
           openContextMenu(e, [
             { label: 'Save as PNG', onSelect: savePng },
             { label: 'Reset view', onSelect: reset },
             'divider',
-            { label: 'Copy expression', onSelect: () => void navigator.clipboard.writeText(plot.text) },
+            { label: 'Copy expression', onSelect: () => void navigator.clipboard.writeText(exprText) },
           ])
         }
       >
@@ -252,6 +301,36 @@ export function PlotView({ plot }: { plot: PlotData }) {
             {formatTick(t)}
           </span>
         ))}
+        {probe && (
+          <>
+            <div
+              className="pointer-events-none absolute bottom-0 top-0 w-px bg-edge-strong/70"
+              style={{ left: xPos(probe.x) }}
+            />
+            <div
+              className="pointer-events-none absolute left-0 right-0 h-px bg-edge-strong/70"
+              style={{ top: yPos(probe.y) }}
+            />
+            <div
+              className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-app"
+              style={{
+                left: xPos(probe.x),
+                top: yPos(probe.y),
+                borderColor: `var(${seriesColorToken(probe.si)})`,
+              }}
+            />
+            <div
+              className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md border border-edge bg-raised px-1.5 py-0.5 font-mono text-[11px] text-ink"
+              style={{
+                left: xPos(probe.x) + (xPos(probe.x) > size.w - 130 ? -10 : 10),
+                top: yPos(probe.y) - 26,
+                transform: xPos(probe.x) > size.w - 130 ? 'translateX(-100%)' : undefined,
+              }}
+            >
+              ({formatTick(probe.x)}, {formatTick(probe.y)})
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

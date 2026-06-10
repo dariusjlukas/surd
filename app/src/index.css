@@ -29,6 +29,12 @@
   --danger: #fb7185;
   --plot-grid: #27303f;
   --plot-axis: #475569;
+  /* extra curve colors (series 1 uses --accent) */
+  --plot-s2: #fb923c;
+  --plot-s3: #4ade80;
+  --plot-s4: #e879f9;
+  --plot-s5: #facc15;
+  --plot-s6: #2dd4bf;
   /* syntax (dark) */
   --syn-number: #fbbf24;
   --syn-keyword: #c084fc;
@@ -54,6 +60,11 @@
   --danger: #e11d48;
   --plot-grid: #e2e8f0;
   --plot-axis: #94a3b8;
+  --plot-s2: #ea580c;
+  --plot-s3: #16a34a;
+  --plot-s4: #c026d3;
+  --plot-s5: #ca8a04;
+  --plot-s6: #0d9488;
   --syn-number: #b45309;
   --syn-keyword: #7c3aed;
   --syn-atom: #db2777;

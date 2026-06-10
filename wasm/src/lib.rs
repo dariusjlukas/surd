@@ -14,11 +14,18 @@ use wasm_bindgen::prelude::*;
 /// Number of samples per plotted curve. Enough for a smooth 1000-px-wide
 /// canvas; cheap to recompute on zoom by re-evaluating the plot line.
 const PLOT_SAMPLES: usize = 600;
+/// Surface grid resolution per axis (81×81 = 6 561 samples — cheap, and a
+/// finer mesh than a ~600-px canvas can show).
+const SURFACE_GRID: usize = 81;
+/// Cap on curves per plot — beyond this the legend is unreadable and the
+/// caller almost certainly passed a matrix by mistake.
+const MAX_SERIES: usize = 12;
 
 #[derive(Serialize)]
 struct EvalResult {
     ok: bool,
     /// "scalar" | "matrix" | "boolean" | "equation" | "function" | "plot"
+    /// | "plot3d"
     kind: &'static str,
     /// Plain-text rendering (the REPL form; re-parseable).
     text: String,
@@ -27,11 +34,22 @@ struct EvalResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     plot: Option<PlotData>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    plot3d: Option<Plot3dData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
 #[derive(Serialize)]
 struct PlotData {
+    var: String,
+    a: f64,
+    b: f64,
+    /// One entry per curve, drawn over the shared [a, b] window.
+    series: Vec<Series>,
+}
+
+#[derive(Serialize)]
+struct Series {
     /// LaTeX of the plotted expression, for the plot legend.
     latex: String,
     /// Re-parseable plain text of the plotted expression. Workspace bindings
@@ -39,11 +57,25 @@ struct PlotData {
     /// frontend can resample any window with `resample` — no session state
     /// needed.
     text: String,
-    var: String,
-    a: f64,
-    b: f64,
     /// Sampled (x, y) pairs; y is null at poles / domain gaps.
     points: Vec<(f64, Option<f64>)>,
+}
+
+#[derive(Serialize)]
+struct Plot3dData {
+    /// LaTeX / re-parseable text of the surface expression (see [`Series`]).
+    latex: String,
+    text: String,
+    xvar: String,
+    a: f64,
+    b: f64,
+    yvar: String,
+    c: f64,
+    d: f64,
+    nx: usize,
+    ny: usize,
+    /// Row-major heights (y outer, x inner); null at poles / domain gaps.
+    heights: Vec<Option<f64>>,
 }
 
 fn error_result(msg: String) -> EvalResult {
@@ -53,6 +85,7 @@ fn error_result(msg: String) -> EvalResult {
         text: String::new(),
         latex: String::new(),
         plot: None,
+        plot3d: None,
         error: Some(msg),
     }
 }
@@ -67,46 +100,114 @@ fn kind_of(e: &Expr) -> &'static str {
     }
 }
 
-/// A `plot(f, x, a, b)` value, sampled for drawing. `None` if `e` isn't one.
+fn bound_f64(arg: &Expr, who: &str, which: &str) -> Result<f64, String> {
+    f64eval::eval_f64(arg, &[])
+        .map_err(|e| format!("{}: {} bound is not a number ({})", who, which, e))
+}
+
+/// A `plot(f1, ..., fk, x, a, b)` value, sampled for drawing. `None` if `e`
+/// isn't one. Matrix arguments flatten into one curve per entry, so
+/// `plot([sin(x); cos(x)], x, a, b)` works too.
 fn plot_data(e: &Expr) -> Option<Result<PlotData, String>> {
     let Expr::Func(name, args) = e else {
         return None;
     };
-    if name != "plot" || args.len() != 4 {
+    if name != "plot" || args.len() < 4 {
         return None;
     }
-    let Expr::Symbol(var) = &args[1] else {
-        return Some(Err("plot: second argument must be a variable".into()));
+    let var_idx = args.len() - 3;
+    let Expr::Symbol(var) = &args[var_idx] else {
+        return Some(Err("plot: the variable argument must be a name".into()));
     };
-    let bound = |arg: &Expr, which: &str| {
-        f64eval::eval_f64(arg, None)
-            .map_err(|e| format!("plot: {} bound is not a number ({})", which, e))
-    };
-    let a = match bound(&args[2], "lower") {
-        Ok(v) => v,
-        Err(e) => return Some(Err(e)),
-    };
-    let b = match bound(&args[3], "upper") {
-        Ok(v) => v,
-        Err(e) => return Some(Err(e)),
-    };
+    Some(plot_data_inner(args, var_idx, var))
+}
+
+fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData, String> {
+    let a = bound_f64(&args[var_idx + 1], "plot", "lower")?;
+    let b = bound_f64(&args[var_idx + 2], "plot", "upper")?;
     if !(a.is_finite() && b.is_finite() && a < b) {
-        return Some(Err("plot: bounds must be finite with a < b".into()));
+        return Err("plot: bounds must be finite with a < b".into());
     }
-    let points = f64eval::sample(&args[0], var, a, b, PLOT_SAMPLES);
-    if points.iter().all(|(_, y)| y.is_none()) {
-        return Some(Err(
-            "plot: the expression never evaluates to a real number on this interval".into(),
+    let mut exprs: Vec<&Expr> = Vec::new();
+    for target in &args[..var_idx] {
+        match target {
+            Expr::Matrix(rows) => exprs.extend(rows.iter().flatten()),
+            other => exprs.push(other),
+        }
+    }
+    if exprs.len() > MAX_SERIES {
+        return Err(format!(
+            "plot: too many curves ({}, max {})",
+            exprs.len(),
+            MAX_SERIES
         ));
     }
-    Some(Ok(PlotData {
-        latex: latex::to_latex(&args[0]),
-        text: format!("{}", args[0]),
-        var: var.clone(),
+    let mut series = Vec::with_capacity(exprs.len());
+    for expr in exprs {
+        let points = f64eval::sample(expr, var, a, b, PLOT_SAMPLES);
+        if points.iter().all(|(_, y)| y.is_none()) {
+            return Err(format!(
+                "plot: '{}' never evaluates to a real number on this interval",
+                expr
+            ));
+        }
+        series.push(Series {
+            latex: latex::to_latex(expr),
+            text: format!("{}", expr),
+            points,
+        });
+    }
+    Ok(PlotData {
+        var: var.to_string(),
         a,
         b,
-        points,
-    }))
+        series,
+    })
+}
+
+/// A `plot3d(f, x, a, b, y, c, d)` value, sampled on a grid. `None` if `e`
+/// isn't one.
+fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
+    let Expr::Func(name, args) = e else {
+        return None;
+    };
+    if name != "plot3d" || args.len() != 7 {
+        return None;
+    }
+    let (Expr::Symbol(xvar), Expr::Symbol(yvar)) = (&args[1], &args[4]) else {
+        return Some(Err("plot3d: the variable arguments must be names".into()));
+    };
+    let inner = || -> Result<Plot3dData, String> {
+        let a = bound_f64(&args[2], "plot3d", "lower x")?;
+        let b = bound_f64(&args[3], "plot3d", "upper x")?;
+        let c = bound_f64(&args[5], "plot3d", "lower y")?;
+        let d = bound_f64(&args[6], "plot3d", "upper y")?;
+        if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d)
+        {
+            return Err("plot3d: bounds must be finite with a < b and c < d".into());
+        }
+        let heights =
+            f64eval::sample2d(&args[0], xvar, yvar, a, b, c, d, SURFACE_GRID, SURFACE_GRID);
+        if heights.iter().all(|h| h.is_none()) {
+            return Err(
+                "plot3d: the expression never evaluates to a real number on this domain".into(),
+            );
+        }
+        Ok(Plot3dData {
+            latex: latex::to_latex(&args[0]),
+            text: format!("{}", args[0]),
+            xvar: xvar.clone(),
+            a,
+            b,
+            yvar: yvar.clone(),
+            c,
+            d,
+            nx: SURFACE_GRID,
+            ny: SURFACE_GRID,
+            heights,
+        })
+    };
+    Some(inner())
 }
 
 #[wasm_bindgen]
@@ -157,25 +258,23 @@ impl Session {
     pub fn eval(&mut self, src: &str) -> String {
         let result = match self.interp.eval_line(src) {
             Err(e) => error_result(e),
-            Ok(value) => match plot_data(&value) {
-                Some(Err(e)) => error_result(e),
-                Some(Ok(plot)) => EvalResult {
+            Ok(value) => {
+                let ok = |kind, plot, plot3d| EvalResult {
                     ok: true,
-                    kind: "plot",
+                    kind,
                     text: format!("{}", value),
                     latex: latex::to_latex(&value),
-                    plot: Some(plot),
+                    plot,
+                    plot3d,
                     error: None,
-                },
-                None => EvalResult {
-                    ok: true,
-                    kind: kind_of(&value),
-                    text: format!("{}", value),
-                    latex: latex::to_latex(&value),
-                    plot: None,
-                    error: None,
-                },
-            },
+                };
+                match (plot_data(&value), plot3d_data(&value)) {
+                    (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
+                    (Some(Ok(plot)), _) => ok("plot", Some(plot), None),
+                    (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface)),
+                    (None, None) => ok(kind_of(&value), None, None),
+                }
+            }
         };
         serde_json::to_string(&result).expect("EvalResult is always serializable")
     }
@@ -260,7 +359,9 @@ mod tests {
             serde_json::from_str(&s.eval("plot(sin(x), x, -pi, pi)")).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["kind"], "plot");
-        let pts = v["plot"]["points"].as_array().unwrap();
+        let series = v["plot"]["series"].as_array().unwrap();
+        assert_eq!(series.len(), 1);
+        let pts = series[0]["points"].as_array().unwrap();
         assert_eq!(pts.len(), 600);
         // sin over a symmetric interval: first sample is sin(-π) ≈ 0.
         let y0 = pts[0][1].as_f64().unwrap();
@@ -272,5 +373,62 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot(1/x, x, -1, 1)")).unwrap();
         assert_eq!(v["kind"], "plot");
+    }
+
+    #[test]
+    fn multi_curve_plots() {
+        let mut s = Session::new();
+        // variadic form
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot(sin(x), cos(x), x, 0, 1)")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        let series = v["plot"]["series"].as_array().unwrap();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0]["text"], "sin(x)");
+        assert_eq!(series[1]["text"], "cos(x)");
+
+        // matrix form flattens into one curve per entry
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot([x; x^2; x^3], x, 0, 1)")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["plot"]["series"].as_array().unwrap().len(), 3);
+
+        // workspace bindings substitute into every curve
+        s.eval("a := 2");
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot(a*x, a*x^2, x, 0, 1)")).unwrap();
+        assert_eq!(v["plot"]["series"][0]["text"], "2*x");
+    }
+
+    #[test]
+    fn plot3d_results_carry_a_grid() {
+        let mut s = Session::new();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x^2 + y^2, x, -1, 1, y, -1, 1)")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["kind"], "plot3d");
+        let p = &v["plot3d"];
+        assert_eq!(p["xvar"], "x");
+        assert_eq!(p["yvar"], "y");
+        let nx = p["nx"].as_u64().unwrap() as usize;
+        let ny = p["ny"].as_u64().unwrap() as usize;
+        let heights = p["heights"].as_array().unwrap();
+        assert_eq!(heights.len(), nx * ny);
+        // corner (x=-1, y=-1) → 2; center → 0
+        assert!((heights[0].as_f64().unwrap() - 2.0).abs() < 1e-12);
+        let center = (ny / 2) * nx + nx / 2;
+        assert!(heights[center].as_f64().unwrap().abs() < 1e-12);
+
+        // same variable twice is an error, not a hang
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x^2, x, -1, 1, x, -1, 1)")).unwrap();
+        assert_eq!(v["ok"], false);
+
+        // x := 3 must not collapse the surface expression
+        s.eval("x := 3");
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x*y, x, 0, 1, y, 0, 1)")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["plot3d"]["text"], "x*y");
     }
 }

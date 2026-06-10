@@ -20,7 +20,7 @@ const CONSTANTS = ['pi', 'e', 'true', 'false']
 const BUILTINS = [
   'abs', 'charpoly', 'conj', 'cos', 'det', 'diff', 'eig', 'eigenvalues',
   'exp', 'expand', 'eye', 'identity', 'im', 'imag', 'inv', 'ln', 'N',
-  'plot', 'precision', 'rank', 're', 'real', 'rref', 'sin', 'solve',
+  'plot', 'plot3d', 'precision', 'rank', 're', 'real', 'rref', 'sin', 'solve',
   'sqrt', 'subs', 'tan', 'transpose',
 ]
 

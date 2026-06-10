@@ -35,9 +35,17 @@ expect('workspace lists bindings', ws.some((e) => e.name === 'g' && e.text === '
 
 const plot = ev('plot(sin(y)/y, y, -10, 10)');
 expect('plot kind', plot.kind, 'plot');
-expect('plot samples', plot.plot.points.length, 600);
-const mid = plot.plot.points[300][1];
+expect('plot series', plot.plot.series.length, 1);
+expect('plot samples', plot.plot.series[0].points.length, 600);
+const mid = plot.plot.series[0].points[300][1];
 expect('sinc near 1 at 0', Math.abs(mid - 1) < 0.01, true);
+
+const multi = ev('plot(sin(y), cos(y), y, 0, 1)');
+expect('multi-curve series', multi.plot.series.length, 2);
+
+const surf = ev('plot3d(u^2 - v^2, u, -1, 1, v, -1, 1)');
+expect('plot3d kind', surf.kind, 'plot3d');
+expect('plot3d grid', surf.plot3d.heights.length, surf.plot3d.nx * surf.plot3d.ny);
 
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);

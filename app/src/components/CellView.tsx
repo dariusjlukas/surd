@@ -22,6 +22,9 @@ import { MathOutput } from './MathOutput'
 const PlotView = lazy(() =>
   import('../plot/PlotView').then((m) => ({ default: m.PlotView })),
 )
+const Surface3DView = lazy(() =>
+  import('../plot/Surface3DView').then((m) => ({ default: m.Surface3DView })),
+)
 
 export function CellView({ cell }: { cell: Cell }) {
   return cell.kind === 'markdown' ? (
@@ -226,6 +229,14 @@ function Output({ cell }: { cell: Cell }) {
           fallback={<div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />}
         >
           <PlotView plot={r.plot} />
+        </Suspense>
+      ) : null
+    case 'plot3d':
+      return r.plot3d ? (
+        <Suspense
+          fallback={<div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />}
+        >
+          <Surface3DView plot={r.plot3d} />
         </Suspense>
       ) : null
     case 'function':

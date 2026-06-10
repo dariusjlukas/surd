@@ -8,11 +8,11 @@
 use crate::expr::{float_to_rational, Constant, Expr};
 use num_traits::ToPrimitive;
 
-/// Evaluate `e` to an `f64`, with at most one free variable bound to a value
-/// (`var`). Errors on anything symbolic, complex, or non-scalar; IEEE
-/// non-finite results (poles, domain edges) are returned as-is and dealt with
-/// by the caller.
-pub fn eval_f64(e: &Expr, var: Option<(&str, f64)>) -> Result<f64, String> {
+/// Evaluate `e` to an `f64`, with free variables bound by `vars` (one for
+/// curves, two for surfaces). Errors on anything symbolic, complex, or
+/// non-scalar; IEEE non-finite results (poles, domain edges) are returned
+/// as-is and dealt with by the caller.
+pub fn eval_f64(e: &Expr, vars: &[(&str, f64)]) -> Result<f64, String> {
     match e {
         Expr::Int(i) => i
             .to_f64()
@@ -25,27 +25,27 @@ pub fn eval_f64(e: &Expr, var: Option<(&str, f64)>) -> Result<f64, String> {
             .ok_or_else(|| "float is not finite".to_string()),
         Expr::Const(Constant::Pi) => Ok(std::f64::consts::PI),
         Expr::Const(Constant::E) => Ok(std::f64::consts::E),
-        Expr::Symbol(s) => match var {
-            Some((name, x)) if name == s => Ok(x),
-            _ => Err(format!("cannot evaluate free symbol '{}'", s)),
+        Expr::Symbol(s) => match vars.iter().find(|(name, _)| name == s) {
+            Some((_, x)) => Ok(*x),
+            None => Err(format!("cannot evaluate free symbol '{}'", s)),
         },
         Expr::Add(ts) => {
             let mut acc = 0.0;
             for t in ts {
-                acc += eval_f64(t, var)?;
+                acc += eval_f64(t, vars)?;
             }
             Ok(acc)
         }
         Expr::Mul(fs) => {
             let mut acc = 1.0;
             for f in fs {
-                acc *= eval_f64(f, var)?;
+                acc *= eval_f64(f, vars)?;
             }
             Ok(acc)
         }
         Expr::Pow(b, ex) => {
-            let base = eval_f64(b, var)?;
-            let exp = eval_f64(ex, var)?;
+            let base = eval_f64(b, vars)?;
+            let exp = eval_f64(ex, vars)?;
             // Integer exponents use powi so negative bases work ((-2)^3 = -8;
             // powf would give NaN).
             if exp.fract() == 0.0 && exp.abs() <= i32::MAX as f64 {
@@ -55,7 +55,7 @@ pub fn eval_f64(e: &Expr, var: Option<(&str, f64)>) -> Result<f64, String> {
             }
         }
         Expr::Func(name, args) if args.len() == 1 => {
-            let x = eval_f64(&args[0], var)?;
+            let x = eval_f64(&args[0], vars)?;
             match name.as_str() {
                 "sin" => Ok(x.sin()),
                 "cos" => Ok(x.cos()),
@@ -84,13 +84,46 @@ pub fn sample(e: &Expr, var: &str, a: f64, b: f64, n: usize) -> Vec<(f64, Option
     (0..n)
         .map(|i| {
             let x = a + step * i as f64;
-            let y = match eval_f64(e, Some((var, x))) {
+            let y = match eval_f64(e, &[(var, x)]) {
                 Ok(y) if y.is_finite() => Some(y),
                 _ => None,
             };
             (x, y)
         })
         .collect()
+}
+
+/// Sample `e` on an `nx`×`ny` grid over `[a, b]`×`[c, d]`, for surface plots.
+/// Returns heights row-major (`y` outer, `x` inner — `heights[j*nx + i]` is
+/// the value at `(a + i·Δx, c + j·Δy)`); `None` marks poles / domain gaps,
+/// same contract as [`sample`].
+pub fn sample2d(
+    e: &Expr,
+    xvar: &str,
+    yvar: &str,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    nx: usize,
+    ny: usize,
+) -> Vec<Option<f64>> {
+    let nx = nx.clamp(2, 1000);
+    let ny = ny.clamp(2, 1000);
+    let step_x = (b - a) / (nx - 1) as f64;
+    let step_y = (d - c) / (ny - 1) as f64;
+    let mut heights = Vec::with_capacity(nx * ny);
+    for j in 0..ny {
+        let y = c + step_y * j as f64;
+        for i in 0..nx {
+            let x = a + step_x * i as f64;
+            heights.push(match eval_f64(e, &[(xvar, x), (yvar, y)]) {
+                Ok(z) if z.is_finite() => Some(z),
+                _ => None,
+            });
+        }
+    }
+    heights
 }
 
 #[cfg(test)]
@@ -108,7 +141,7 @@ mod tests {
         // f64 path must match exact-then-N to f64 precision.
         for src in ["1/3 + sin(1)", "exp(2) - pi", "2^10 + 1/7", "cos(pi)"] {
             let e = expr_of(src);
-            let fast = eval_f64(&e, None).unwrap();
+            let fast = eval_f64(&e, &[]).unwrap();
             let exact = expr_of(&format!("N({}, 25)", src));
             let exact_str = format!("{}", exact);
             let slow: f64 = exact_str.parse().unwrap();
@@ -125,8 +158,8 @@ mod tests {
     #[test]
     fn variable_binding_and_gaps() {
         let e = expr_of("x^2 + 1");
-        assert_eq!(eval_f64(&e, Some(("x", 3.0))).unwrap(), 10.0);
-        assert!(eval_f64(&e, None).is_err()); // free symbol
+        assert_eq!(eval_f64(&e, &[("x", 3.0)]).unwrap(), 10.0);
+        assert!(eval_f64(&e, &[]).is_err()); // free symbol
 
         // 1/x has a pole at 0: the sample there is a gap, not infinity.
         let inv = expr_of("x^(-1)");
@@ -140,6 +173,6 @@ mod tests {
     #[test]
     fn negative_base_integer_power() {
         let e = expr_of("y^3");
-        assert_eq!(eval_f64(&e, Some(("y", -2.0))).unwrap(), -8.0);
+        assert_eq!(eval_f64(&e, &[("y", -2.0)]).unwrap(), -8.0);
     }
 }

@@ -169,7 +169,7 @@ function ToggleField({
         }`}
       >
         <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+          className={`absolute top-0.5 left-0 h-4 w-4 rounded-full bg-white shadow transition-transform ${
             value ? 'translate-x-4.5' : 'translate-x-0.5'
           }`}
         />
