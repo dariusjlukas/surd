@@ -1,0 +1,5 @@
+# The engine's recursion guards (parser depth 512, eval depth 8000) assume a
+# generous stack. Native embedders get one from `run_with_stack`; the wasm
+# target sets it at link time instead — 32 MiB of linear-memory stack.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=33554432"]

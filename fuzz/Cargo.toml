@@ -1,0 +1,36 @@
+[package]
+name = "exact-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.exact]
+path = ".."
+
+# Catch arithmetic overflow as a crash during fuzzing, and keep enough debug
+# info for readable backtraces. (Profiles are read from the crate cargo-fuzz
+# builds as root, so these apply to `exact` too.)
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "eval"
+path = "fuzz_targets/eval.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false

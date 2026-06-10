@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3e6069053061cee1c59fcdff144a679822a6c0932f794e12731eafbc26f5216b # shrinks to a = Mul(Sub(Num(-1), Add(Num(1), Var('x'))), Num(1))
+cc 155fbac3c8c4a86c1a04c399351ddb757a1126f2256145012c7f4265ef93d35f # shrinks to a = Add(Add(Num(0), Var('x')), Num(1))

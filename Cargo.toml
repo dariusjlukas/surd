@@ -1,0 +1,54 @@
+[workspace]
+members = [".", "wasm"]
+# Plain `cargo build`/`cargo test` stay native-only; the wasm crate is built
+# explicitly with `wasm-pack build wasm`.
+default-members = ["."]
+
+[profile.release]
+# The wasm bundle is the shipping artifact: favor download size. (Native
+# release builds are rare here, and this project trades speed away happily.)
+opt-level = "s"
+lto = true
+
+[package]
+name = "exact"
+version = "0.1.0"
+edition = "2021"
+description = "An exact-by-default computer algebra REPL (prototype)"
+
+[lib]
+name = "exact"
+path = "src/lib.rs"
+
+[[bin]]
+name = "exact"
+path = "src/main.rs"
+
+[dependencies]
+# Pure-Rust arbitrary-precision integers & rationals.
+# Deliberately NOT `rug` (GMP/MPFR/MPC): that pulls in C + assembly and is a
+# nightmare to cross-compile to wasm32. These compile to WASM cleanly, which
+# matters for the eventual browser target.
+num-bigint = "0.4"
+num-rational = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+
+# Pure-Rust arbitrary-precision floating point WITH transcendental functions
+# (sin/exp/ln/pi/…). Chosen over `rug` (GMP, WASM-hostile) and `dashu` (no
+# transcendentals). Drives the exact→approximate boundary in `N(...)`.
+# Default features off: `random` pulls rand→getrandom, which breaks the
+# wasm32-unknown-unknown build (and we use neither random nor serde).
+astro-float = { version = "0.9", default-features = false, features = ["std"] }
+
+# Dev-only line editor for the REPL harness. The real frontend is the wasm/
+# crate + web/ UI; this is just a pleasant way to drive the engine natively.
+# Target-gated so the wasm dependency tree stays free of terminal machinery.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustyline = "14"
+
+[dev-dependencies]
+# Property-based testing: generate random expressions/inputs and check
+# algebraic invariants + that nothing ever panics, with shrinking to minimal
+# failing cases.
+proptest = "1"
