@@ -1250,38 +1250,29 @@ fn snap_negligible(re: BigFloat, im: BigFloat, digits: usize, p: usize) -> Cpx {
 }
 
 /// Render a `BigFloat` as a clean decimal string with `digits` significant
-/// figures. astro-float's own `Display` is scientific with the full mantissa
-/// (`3.1415…e+0`), so we parse that and reformat.
+/// figures.
+///
+/// The binary->decimal conversion is done in exact `BigInt` arithmetic on the
+/// float's true rational value. astro-float's own `Display`/`format` is never
+/// used: its radix conversion has an arithmetic-overflow panic on 32-bit
+/// targets, which took down the wasm32 build for every float it printed
+/// (https://github.com/stencillogic/astro-float/issues/43).
 pub(crate) fn format_bigfloat(bf: &BigFloat, digits: usize) -> String {
-    let raw = format!("{}", bf);
-    if raw.contains("NaN") {
+    if bf.is_nan() {
         return "NaN".to_string();
     }
-    if raw.contains("Inf") {
-        return raw;
+    if bf.is_inf_pos() {
+        return "Inf".to_string();
     }
-    let neg = raw.starts_with('-');
-    let body = raw.trim_start_matches('-');
-
-    let (mantissa, exp_str) = body.split_once(['e', 'E']).unwrap_or((body, "0"));
-    let exp: i64 = exp_str.parse().unwrap_or(0);
-    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-
-    // astro-float normalizes to one digit before the point; "0" means zero.
-    if int_part == "0" && frac_part.chars().all(|c| c == '0') {
+    if bf.is_inf_neg() {
+        return "-Inf".to_string();
+    }
+    let v = float_to_rational(bf).expect("NaN/Inf were handled above");
+    if v.is_zero() {
         return "0".to_string();
     }
-
-    let mut d: Vec<u8> = int_part
-        .bytes()
-        .chain(frac_part.bytes())
-        .filter(u8::is_ascii_digit)
-        .map(|b| b - b'0')
-        .collect();
-    // Exponent of the most-significant digit d[0].
-    let mut lead = exp + int_part.len() as i64 - 1;
-
-    round_significant(&mut d, &mut lead, digits);
+    let neg = v.is_negative();
+    let (mut d, lead) = decimal_digits(&v.abs(), digits.max(1));
     while d.len() > 1 && *d.last().unwrap() == 0 {
         d.pop();
     }
@@ -1294,32 +1285,44 @@ pub(crate) fn format_bigfloat(bf: &BigFloat, digits: usize) -> String {
     }
 }
 
-/// Round a digit vector to `k` significant figures, adjusting `lead` if a carry
-/// grows the number (e.g. 9.99 -> 10.0).
-fn round_significant(d: &mut Vec<u8>, lead: &mut i64, k: usize) {
-    if d.len() <= k {
-        return;
-    }
-    let round_up = d[k] >= 5;
-    d.truncate(k);
-    if round_up {
-        let mut i = k as i64 - 1;
-        loop {
-            if i < 0 {
-                d.insert(0, 1);
-                *lead += 1;
-                d.pop();
-                break;
-            }
-            let idx = i as usize;
-            if d[idx] == 9 {
-                d[idx] = 0;
-                i -= 1;
-            } else {
-                d[idx] += 1;
-                break;
+/// The first `k` significant decimal digits of a positive rational, rounded
+/// half-up on the exact value, plus the decimal exponent of the leading digit.
+fn decimal_digits(v: &BigRational, k: usize) -> (Vec<u8>, i64) {
+    // n-bit / m-bit puts v in (2^(b-1), 2^(b+1)), so this floor(log10) estimate
+    // is within one of the truth; the loop below settles the difference.
+    let b = v.numer().bits() as i64 - v.denom().bits() as i64;
+    let mut lead = ((b - 1) as i128 * 301_029_995_663_981).div_euclid(1_000_000_000_000_000) as i64;
+    loop {
+        // Scale so the last kept digit (decimal exponent `lead - k + 1`) lands
+        // at the units place, then floor-divide: q = floor(v / 10^s).
+        let s = lead - k as i64 + 1;
+        let mut num = v.numer().clone();
+        let mut den = v.denom().clone();
+        if s >= 0 {
+            den *= num_traits::pow(BigInt::from(10), s as usize);
+        } else {
+            num *= num_traits::pow(BigInt::from(10), (-s) as usize);
+        }
+        let mut q = &num / &den;
+        let len = if q.is_zero() { 0 } else { q.to_string().len() };
+        if len < k {
+            lead -= 1;
+            continue;
+        }
+        if len > k {
+            lead += 1;
+            continue;
+        }
+        // Half-up against the exact remainder; a carry that grows 99…9 into
+        // 100…0 shifts the leading digit up one place.
+        if (num - &q * &den) * 2 >= den {
+            q += 1;
+            if q.to_string().len() > k {
+                q /= 10;
+                lead += 1;
             }
         }
+        return (q.to_string().bytes().map(|c| c - b'0').collect(), lead);
     }
 }
 
@@ -1771,5 +1774,20 @@ mod tests {
             BigRational::zero()
         );
         assert!(float_to_rational(&astro_float::NAN).is_none());
+    }
+
+    #[test]
+    fn format_bigfloat_rounds_on_the_exact_value() {
+        let mut cc = Consts::new().unwrap();
+        // Carry propagates through all displayed digits: 99.96 -> 100.
+        let f = BigFloat::parse("99.96", RADIX, 128, ROUND, &mut cc);
+        assert_eq!(format_bigfloat(&f, 3), "100");
+        // Half-up at the cut digit, leading zeros preserved.
+        let f = BigFloat::parse("0.0001234567", RADIX, 128, ROUND, &mut cc);
+        assert_eq!(format_bigfloat(&f, 4), "0.0001235");
+        // Non-values don't reach the rational path.
+        assert_eq!(format_bigfloat(&astro_float::NAN, 5), "NaN");
+        assert_eq!(format_bigfloat(&astro_float::INF_POS, 5), "Inf");
+        assert_eq!(format_bigfloat(&astro_float::INF_NEG, 5), "-Inf");
     }
 }

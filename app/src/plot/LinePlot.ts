@@ -13,9 +13,12 @@ export interface ViewWindow {
   hi: number // y max
 }
 
-const COLOR_GRID = 0x27303f
-const COLOR_AXIS = 0x475569
-const COLOR_CURVE = 0x7dd3fc
+/** Theme token → THREE color, sampled at draw time so grid/axis/curve track
+ * the active theme (index.css guarantees these vars hold plain hex). */
+function themeColor(token: string, fallback: number): THREE.Color {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return v ? new THREE.Color(v) : new THREE.Color(fallback)
+}
 
 export class LinePlot {
   private renderer: THREE.WebGLRenderer
@@ -54,7 +57,9 @@ export class LinePlot {
    * and domain gaps break the line instead of bridging it. */
   setData(points: SamplePoint[]) {
     disposeChildren(this.curve)
-    const material = new THREE.LineBasicMaterial({ color: COLOR_CURVE })
+    const material = new THREE.LineBasicMaterial({
+      color: themeColor('--accent', 0x7dd3fc),
+    })
     let run: number[] = []
     const flush = () => {
       if (run.length >= 6) {
@@ -75,6 +80,14 @@ export class LinePlot {
     this.render()
   }
 
+  /** PNG of the current frame. Rendering immediately before reading is what
+   * makes this work without preserveDrawingBuffer (the WebGL backbuffer is
+   * cleared after compositing, but not within the same task). */
+  snapshot(): string {
+    this.render()
+    return this.renderer.domElement.toDataURL('image/png')
+  }
+
   dispose() {
     disposeChildren(this.grid)
     disposeChildren(this.curve)
@@ -89,7 +102,10 @@ export class LinePlot {
     for (const t of xTicks) gridVerts.push(t, lo, 0, t, hi, 0)
     for (const t of yTicks) gridVerts.push(a, t, 0, b, t, 0)
     this.grid.add(
-      segments(gridVerts, new THREE.LineBasicMaterial({ color: COLOR_GRID })),
+      segments(
+        gridVerts,
+        new THREE.LineBasicMaterial({ color: themeColor('--plot-grid', 0x27303f) }),
+      ),
     )
 
     // zero axes, when in view, drawn on top of the grid
@@ -98,7 +114,10 @@ export class LinePlot {
     if (lo < 0 && hi > 0) axisVerts.push(a, 0, 0, b, 0, 0)
     if (axisVerts.length) {
       this.grid.add(
-        segments(axisVerts, new THREE.LineBasicMaterial({ color: COLOR_AXIS })),
+        segments(
+          axisVerts,
+          new THREE.LineBasicMaterial({ color: themeColor('--plot-axis', 0x475569) }),
+        ),
       )
     }
   }

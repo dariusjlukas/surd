@@ -1,8 +1,155 @@
 @import 'tailwindcss';
 @import 'katex/dist/katex.min.css';
 
-/* KaTeX display math is centered by default; a notebook reads left-aligned. */
+/* ---------------------------------------------------------------------------
+ * Theme tokens.
+ *
+ * Two axes: data-mode (light|dark) picks the neutral scale, data-theme picks
+ * the accent hue. Both attributes live on <html>, set before first paint by
+ * the inline script in index.html and kept current by state/settings.ts.
+ * Values are plain hex (not color-mix) so JS consumers — the ThreeJS plot
+ * painter — can feed them straight to THREE.Color.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* dark neutrals (default — also the no-JS fallback) */
+  color-scheme: dark;
+  --app: #020617;
+  --surface: #0f172a;
+  --raised: #16213a;
+  --hov: #1e293b;
+  --edge: #1e293b;
+  --edge-strong: #334155;
+  --ink: #f1f5f9;
+  --muted: #94a3b8;
+  --faint: #64748b;
+  --on-accent: #071018;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #fb7185;
+  --plot-grid: #27303f;
+  --plot-axis: #475569;
+  /* syntax (dark) */
+  --syn-number: #fbbf24;
+  --syn-keyword: #c084fc;
+  --syn-atom: #f472b6;
+  /* default accent: sky */
+  --accent: #38bdf8;
+}
+
+[data-mode='light'] {
+  color-scheme: light;
+  --app: #f8fafc;
+  --surface: #f1f5f9;
+  --raised: #ffffff;
+  --hov: #e2e8f0;
+  --edge: #e2e8f0;
+  --edge-strong: #cbd5e1;
+  --ink: #0f172a;
+  --muted: #475569;
+  --faint: #94a3b8;
+  --on-accent: #ffffff;
+  --ok: #059669;
+  --warn: #d97706;
+  --danger: #e11d48;
+  --plot-grid: #e2e8f0;
+  --plot-axis: #94a3b8;
+  --syn-number: #b45309;
+  --syn-keyword: #7c3aed;
+  --syn-atom: #db2777;
+  --accent: #0284c7;
+}
+
+[data-theme='violet'] { --accent: #a78bfa; }
+[data-mode='light'][data-theme='violet'] { --accent: #7c3aed; }
+[data-theme='emerald'] { --accent: #34d399; }
+[data-mode='light'][data-theme='emerald'] { --accent: #059669; }
+[data-theme='amber'] { --accent: #fbbf24; --syn-number: #f472b6; }
+[data-mode='light'][data-theme='amber'] { --accent: #d97706; --syn-number: #db2777; }
+[data-theme='rose'] { --accent: #fb7185; --syn-atom: #38bdf8; }
+[data-mode='light'][data-theme='rose'] { --accent: #e11d48; --syn-atom: #0284c7; }
+
+@theme inline {
+  --color-app: var(--app);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hov);
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+}
+
+@layer base {
+  html {
+    background-color: var(--app);
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--edge-strong) transparent;
+  }
+}
+
+/* KaTeX display math is centered by default; a notebook reads left-aligned.
+ * Both the outer wrapper and the inner .katex block carry text-align: center
+ * in KaTeX's stylesheet — override both or the inner one still centers. */
 .katex-display {
   text-align: left;
   margin: 0.25rem 0;
 }
+.katex-display > .katex {
+  text-align: left;
+}
+
+/* Markdown cells — hand-rolled prose styles (no typography plugin). */
+.md-cell {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.md-cell h1,
+.md-cell h2,
+.md-cell h3 {
+  color: var(--ink);
+  font-weight: 600;
+  margin: 0.5rem 0 0.25rem;
+}
+.md-cell h1 { font-size: 1.25rem; }
+.md-cell h2 { font-size: 1.1rem; }
+.md-cell h3 { font-size: 1rem; }
+.md-cell p { margin: 0.25rem 0; }
+.md-cell ul, .md-cell ol { margin: 0.25rem 0; padding-left: 1.5rem; }
+.md-cell ul { list-style: disc; }
+.md-cell ol { list-style: decimal; }
+.md-cell code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--hov);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+.md-cell pre {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.4rem 0;
+  overflow-x: auto;
+}
+.md-cell pre code { background: none; padding: 0; }
+.md-cell a { color: var(--accent); text-decoration: underline; }
+.md-cell blockquote {
+  border-left: 3px solid var(--edge-strong);
+  padding-left: 0.75rem;
+  color: var(--muted);
+  margin: 0.4rem 0;
+}
+.md-cell strong { color: var(--ink); }

@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>exact — a correct-by-default mathematical scratchpad</title>
+    <script>
+      // Set theme attributes before first paint (state/settings.ts owns them
+      // afterwards). Reads the same localStorage key the settings store
+      // persists to; defaults match the store's defaults.
+      ;(function () {
+        var mode = 'system'
+        var accent = 'sky'
+        try {
+          var s = JSON.parse(localStorage.getItem('exact.settings.v1')).state
+          if (s.mode) mode = s.mode
+          if (s.accent) accent = s.accent
+        } catch (e) { /* first visit */ }
+        if (mode === 'system') {
+          mode = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.mode = mode
+        document.documentElement.dataset.theme = accent
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

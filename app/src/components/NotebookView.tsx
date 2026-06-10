@@ -1,20 +1,47 @@
 import { useEffect, useRef } from 'react'
-import { useNotebook } from '../state/store'
+import { useSettings } from '../state/settings'
+import { useActiveNotebook, useNotebook } from '../state/store'
 import { CellView } from './CellView'
+import { openContextMenu } from '../state/contextMenu'
 
 export function NotebookView() {
-  const cells = useNotebook((s) => s.cells)
+  const notebook = useActiveNotebook()
+  const insertCell = useNotebook((s) => s.insertCell)
+  const clearNotebook = useNotebook((s) => s.clearNotebook)
+  const confirmDelete = useSettings((s) => s.confirmDelete)
+  const autoScroll = useSettings((s) => s.autoScroll)
   const endRef = useRef<HTMLDivElement>(null)
-  const count = cells.length
+  const count = notebook.cells.length
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' })
-  }, [count])
+    if (autoScroll) endRef.current?.scrollIntoView({ block: 'end' })
+  }, [count, notebook.id, autoScroll])
 
   return (
-    <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
+    <div
+      className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6"
+      onContextMenu={(e) =>
+        openContextMenu(e, [
+          { label: 'Add text cell', onSelect: () => insertCell(null, 'markdown') },
+          'divider',
+          {
+            label: 'Clear notebook…',
+            danger: true,
+            disabled: count === 0,
+            onSelect: () => {
+              if (
+                !confirmDelete ||
+                window.confirm(`Clear "${notebook.name}" — its cells and workspace?`)
+              ) {
+                clearNotebook()
+              }
+            },
+          },
+        ])
+      }
+    >
       {count === 0 && <Welcome />}
-      {cells.map((c) => (
+      {notebook.cells.map((c) => (
         <CellView key={c.id} cell={c} />
       ))}
       <div ref={endRef} />
@@ -23,6 +50,8 @@ export function NotebookView() {
 }
 
 function Welcome() {
+  const submit = useNotebook((s) => s.submit)
+  const ready = useNotebook((s) => s.engineStatus === 'ready')
   const examples = [
     '1/3 + 1/6',
     'sqrt(2)*sqrt(2)',
@@ -33,19 +62,30 @@ function Welcome() {
     'fact(n) := if n == 0 then 1 else n*fact(n-1) end',
   ]
   return (
-    <div className="text-sm text-slate-500">
-      <p className="mb-2">
-        Exact by default: <code className="text-slate-400">1/3</code> stays a third,{' '}
-        <code className="text-slate-400">sqrt(2)</code> stays a radical. Floats only via{' '}
-        <code className="text-slate-400">N(x)</code>. Try:
+    <div className="mx-auto mt-8 max-w-xl text-sm text-faint">
+      <p className="mb-3">
+        Exact by default: <code className="text-muted">1/3</code> stays a third,{' '}
+        <code className="text-muted">sqrt(2)</code> stays a radical. Floats only via{' '}
+        <code className="text-muted">N(x)</code>. Try one:
       </p>
       <ul className="space-y-1 font-mono">
         {examples.map((e) => (
-          <li key={e} className="text-slate-400">
-            {e}
+          <li key={e}>
+            <button
+              onClick={() => void submit(e)}
+              disabled={!ready}
+              className="rounded-md px-1.5 py-0.5 text-left text-muted hover:bg-hover/80 hover:text-accent disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted"
+            >
+              {e}
+            </button>
           </li>
         ))}
       </ul>
+      <p className="mt-4 text-xs text-faint">
+        <code>:=</code> assigns · <code>plot(f, x, a, b)</code> draws · ↑/↓ recalls
+        history · double-click a cell to edit it (everything below recomputes) ·{' '}
+        <em>+ note</em> adds markdown · notebooks save automatically
+      </p>
     </div>
   )
 }

@@ -8,7 +8,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PlotData, SamplePoint } from '../engine/types'
+import { useSettings } from '../state/settings'
 import { useNotebook } from '../state/store'
+import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
 import { LinePlot } from './LinePlot'
 import { formatTick, niceTicks, quantileDomain } from './scales'
@@ -17,6 +19,9 @@ const RESAMPLE_DEBOUNCE_MS = 180
 
 export function PlotView({ plot }: { plot: PlotData }) {
   const resample = useNotebook((s) => s.resample)
+  // The painter samples theme CSS variables when it (re)builds materials;
+  // keying the draw effects on the theme makes a mode/accent switch repaint.
+  const themeKey = useSettings((s) => `${s.resolvedMode}/${s.accent}`)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -60,7 +65,7 @@ export function PlotView({ plot }: { plot: PlotData }) {
 
   useEffect(() => {
     painterRef.current?.setData(points)
-  }, [points])
+  }, [points, themeKey])
 
   useEffect(() => {
     painterRef.current?.setView(
@@ -68,7 +73,7 @@ export function PlotView({ plot }: { plot: PlotData }) {
       xTicks,
       yTicks,
     )
-  }, [win, yWin, xTicks, yTicks])
+  }, [win, yWin, xTicks, yTicks, themeKey])
 
   // -- pan / zoom → debounced engine resample -------------------------------
   const requestResample = useCallback(
@@ -90,6 +95,7 @@ export function PlotView({ plot }: { plot: PlotData }) {
   )
 
   const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return // right-click opens the context menu, not a drag
     dragRef.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
@@ -170,44 +176,68 @@ export function PlotView({ plot }: { plot: PlotData }) {
     setYWin(quantileDomain(plot.points))
   }
 
+  const savePng = () => {
+    const painter = painterRef.current
+    if (!painter) return
+    const a = document.createElement('a')
+    a.href = painter.snapshot()
+    a.download = `${plot.text.slice(0, 40)}.png`
+    a.click()
+  }
+
   // -- tick label positions (same scales as the painter) ---------------------
   const xPos = (x: number) => ((x - win.a) / (win.b - win.a)) * size.w
   const yPos = (y: number) => size.h - ((y - yWin[0]) / (yWin[1] - yWin[0])) * size.h
 
   return (
     <div className="max-w-2xl">
-      <div className="mb-1 flex items-baseline gap-3 text-sm text-slate-400">
+      <div className="mb-1 flex items-baseline gap-3 text-sm text-muted">
         <MathInline latex={plot.latex} fallback={plot.text} />
         <span className="text-xs">
           {plot.var} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
         </span>
         <span className="text-xs" title="drag to pan · wheel zooms x · shift+wheel zooms y">
           y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
-          <span className={yManual ? 'text-amber-400/80' : 'text-slate-600'}>
+          <span className={yManual ? 'text-warn/80' : 'text-faint'}>
             {yManual ? 'manual' : 'auto'}
           </span>
         </span>
         <button
+          onClick={savePng}
+          title="download the plot as a PNG"
+          className="ml-auto rounded-md border border-edge-strong px-2 text-xs text-muted hover:text-ink"
+        >
+          png
+        </button>
+        <button
           onClick={reset}
-          className="ml-auto rounded border border-slate-700 px-2 text-xs text-slate-400 hover:text-slate-200"
+          className="rounded-md border border-edge-strong px-2 text-xs text-muted hover:text-ink"
         >
           reset
         </button>
       </div>
       <div
         ref={frameRef}
-        className="relative h-80 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-slate-800 bg-slate-900 active:cursor-grabbing"
+        className="relative h-80 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-edge bg-surface active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={reset}
+        onContextMenu={(e) =>
+          openContextMenu(e, [
+            { label: 'Save as PNG', onSelect: savePng },
+            { label: 'Reset view', onSelect: reset },
+            'divider',
+            { label: 'Copy expression', onSelect: () => void navigator.clipboard.writeText(plot.text) },
+          ])
+        }
       >
         <canvas ref={canvasRef} className="block h-full w-full" />
         {xTicks.map((t) => (
           <span
             key={`x${t}`}
-            className="pointer-events-none absolute bottom-0.5 -translate-x-1/2 font-mono text-[10px] text-slate-500"
+            className="pointer-events-none absolute bottom-0.5 -translate-x-1/2 font-mono text-[10px] text-faint"
             style={{ left: xPos(t) }}
           >
             {formatTick(t)}
@@ -216,7 +246,7 @@ export function PlotView({ plot }: { plot: PlotData }) {
         {yTicks.map((t) => (
           <span
             key={`y${t}`}
-            className="pointer-events-none absolute left-1 -translate-y-1/2 font-mono text-[10px] text-slate-500"
+            className="pointer-events-none absolute left-1 -translate-y-1/2 font-mono text-[10px] text-faint"
             style={{ top: yPos(t) }}
           >
             {formatTick(t)}
