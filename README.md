@@ -368,6 +368,11 @@ source ─▶ lexer ─▶ parser ─▶ ast ─▶ eval ─▶ Expr   (canonica
 
 ## Testing
 
+A pre-commit hook (`.githooks/pre-commit`) runs `cargo test` plus the wasm
+smoke test before every commit. Enable it once per clone with
+`git config core.hooksPath .githooks` (bypass a single commit with
+`git commit --no-verify`).
+
 `cargo test` runs ~100 tests across five layers (`cargo clippy` is clean of
 errors):
 

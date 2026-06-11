@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-commit: run the backend test suite, then the frontend smoke test
+# against a freshly built wasm bundle.
+#
+# Enabled per clone with: git config core.hooksPath .githooks
+# Bypass for a single commit with: git commit --no-verify
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-commit] backend: cargo test"
+cargo test --quiet
+
+echo "[pre-commit] frontend: wasm-pack build wasm -> web/pkg"
+wasm-pack build wasm --target web --out-dir ../web/pkg
+
+echo "[pre-commit] frontend: node web/smoke.mjs"
+node web/smoke.mjs
+
+echo "[pre-commit] all checks passed"
