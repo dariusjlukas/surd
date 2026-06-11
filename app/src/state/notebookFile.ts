@@ -11,7 +11,9 @@ import type { Cell, Notebook } from './store'
 import { transcriptOf } from './store'
 import type { EvalResult } from '../engine/types'
 
-const FORMAT = 'exact-notebook'
+const FORMAT = 'surd-notebook'
+// Files exported before the rename to Surd; still accepted on import.
+const LEGACY_FORMAT = 'exact-notebook'
 const VERSION = 3
 
 interface FileCell {
@@ -24,7 +26,7 @@ interface FileCell {
 }
 
 interface NotebookFile {
-  format: typeof FORMAT
+  format: typeof FORMAT | typeof LEGACY_FORMAT
   version: number
   name: string
   transcript: string[]
@@ -74,7 +76,9 @@ export function parseNotebookFile(text: string): { name: string; cells: Cell[] }
   }
   if (typeof data !== 'object' || data === null) throw new Error('not a notebook file')
   const f = data as Partial<NotebookFile>
-  if (f.format !== FORMAT) throw new Error('not an exact notebook file')
+  if (f.format !== FORMAT && f.format !== LEGACY_FORMAT) {
+    throw new Error('not a surd notebook file')
+  }
   if (typeof f.version !== 'number' || f.version > VERSION) {
     throw new Error(`unsupported notebook version ${String(f.version)}`)
   }

@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 /// Safety backstops, since "compute time be damned" still shouldn't mean
 /// "hang the REPL forever" or overflow the stack on adversarial input. These
-/// assume evaluation runs with a generous stack (see `exact::run_with_stack`).
+/// assume evaluation runs with a generous stack (see `surd::run_with_stack`).
 const MAX_FRAMES: usize = 1_500; // function-call recursion depth
 const MAX_EVAL_DEPTH: usize = 8_000; // expression-evaluation recursion depth
 const MAX_ITERS: u64 = 10_000_000;

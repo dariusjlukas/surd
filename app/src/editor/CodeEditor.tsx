@@ -18,7 +18,7 @@ import {
   placeholder as placeholderExt,
   type KeyBinding,
 } from '@codemirror/view'
-import { exactLanguage } from './exactLang'
+import { surdLanguage } from './surdLang'
 
 export interface CodeEditorHandle {
   get(): string
@@ -28,8 +28,8 @@ export interface CodeEditorHandle {
 
 interface Props {
   initialDoc?: string
-  /** 'exact' enables highlighting + completion; 'plain' for markdown source. */
-  lang?: 'exact' | 'plain'
+  /** 'surd' enables highlighting + completion; 'plain' for markdown source. */
+  lang?: 'surd' | 'plain'
   placeholder?: string
   autoFocus?: boolean
   editable?: boolean
@@ -74,7 +74,7 @@ const baseTheme = EditorView.theme({
 })
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
-  { initialDoc = '', lang = 'exact', placeholder, autoFocus, editable = true, keys, onDocChange },
+  { initialDoc = '', lang = 'surd', placeholder, autoFocus, editable = true, keys, onDocChange },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -103,7 +103,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
           Prec.highest(keymap.of(dynamicKeys)),
           history(),
           keymap.of([...completionKeymap, ...historyKeymap, ...defaultKeymap]),
-          lang === 'exact' ? exactLanguage() : [],
+          lang === 'surd' ? surdLanguage() : [],
           placeholderComp.current.of(placeholder ? placeholderExt(placeholder) : []),
           baseTheme,
           EditorView.lineWrapping,

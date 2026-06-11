@@ -11,6 +11,7 @@ import type {
   ExportResult,
   FromWorker,
   ReplayEntry,
+  Resample3dResult,
   ResampleResult,
   SamplePoint,
   ToWorker,
@@ -71,7 +72,7 @@ export class EngineClient {
     return this.request<EvalResult>((id) => ({ type: 'importData', id, name, payload }))
   }
 
-  /** Serialize the named workspace variables into one exact-data file. */
+  /** Serialize the named workspace variables into one surd-data file. */
   async exportData(names: string[]): Promise<string> {
     const r = await this.request<ExportResult>((id) => ({ type: 'exportData', id, names }))
     if (!r.ok || r.data === undefined) throw new Error(r.error ?? 'export failed')
@@ -103,6 +104,34 @@ export class EngineClient {
     }))
     if (!r.ok || !r.points) throw new Error(r.error ?? 'resample failed')
     return r.points
+  }
+
+  /** Re-sample a surface expression over a new [a, b]×[c, d] domain
+   * (pan/zoom). Stateless, like resample. */
+  async resample3d(
+    exprText: string,
+    xvar: string,
+    yvar: string,
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    n: number,
+  ): Promise<(number | null)[]> {
+    const r = await this.request<Resample3dResult>((id) => ({
+      type: 'resample3d',
+      id,
+      exprText,
+      xvar,
+      yvar,
+      a,
+      b,
+      c,
+      d,
+      n,
+    }))
+    if (!r.ok || !r.heights) throw new Error(r.error ?? 'resample3d failed')
+    return r.heights
   }
 
   private request<T>(make: (id: number) => ToWorker): Promise<T> {

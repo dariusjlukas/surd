@@ -6,12 +6,13 @@
 // spawns a fresh one, replaying the transcript (the engine is deterministic,
 // so the transcript of successful inputs is the serialized workspace).
 
-import init, { Session, resample } from './pkg/exact_wasm'
-import wasmUrl from './pkg/exact_wasm_bg.wasm?url'
+import init, { Session, resample, resample3d } from './pkg/surd_wasm'
+import wasmUrl from './pkg/surd_wasm_bg.wasm?url'
 import type {
   EvalResult,
   ExportResult,
   FromWorker,
+  Resample3dResult,
   ResampleResult,
   ToWorker,
   WorkspaceEntry,
@@ -64,6 +65,13 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
         resample(msg.exprText, msg.varName, msg.a, msg.b, msg.n),
       ) as ResampleResult
       post({ type: 'resampled', id: msg.id, result })
+      break
+    }
+    case 'resample3d': {
+      const result = JSON.parse(
+        resample3d(msg.exprText, msg.xvar, msg.yvar, msg.a, msg.b, msg.c, msg.d, msg.n),
+      ) as Resample3dResult
+      post({ type: 'resampled3d', id: msg.id, result })
       break
     }
   }

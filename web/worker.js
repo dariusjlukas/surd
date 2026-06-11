@@ -3,7 +3,7 @@
 // replaying the transcript to rebuild the workspace (the engine is
 // deterministic, so the transcript is the serialized state).
 
-import init, { Session } from './pkg/exact_wasm.js';
+import init, { Session } from './pkg/surd_wasm.js';
 
 let session = null;
 

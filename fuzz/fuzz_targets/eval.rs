@@ -12,8 +12,8 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(data) {
         let text = text.to_owned();
-        exact::run_with_stack(move || {
-            let mut interp = exact::Interpreter::new();
+        surd::run_with_stack(move || {
+            let mut interp = surd::Interpreter::new();
             let _ = interp.eval_line(&text);
         });
     }

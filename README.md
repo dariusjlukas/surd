@@ -1,8 +1,11 @@
-# exact
+# surd
 
 A prototype of an **exact-by-default computer algebra system** — the engine for
 a browser-based, no-install mathematical scratchpad. Written in Rust (pure-Rust
 deps, so it cross-compiles to `wasm32` cleanly for the eventual web frontend).
+
+(A *surd* is an irrational root kept in exact symbolic form — `sqrt(2)` the
+object, not `1.41421…` the approximation. That's the whole idea.)
 
 The thesis: most "plot a curve / linear regression / matrix math / FIR filter"
 work doesn't need heavyweight licensed software, and the popular numeric stacks
@@ -80,13 +83,13 @@ How it holds together:
 - **A workspace panel** lists every binding (name, value as typeset math),
   refreshed from `Session::workspace()` after each successful evaluation.
 - **Raw data imports/exports** live in the workspace panel. Import a file
-  (`exact-data` JSON, generic JSON, or CSV — sniffed) and it lands in a fresh
+  (`surd-data` JSON, generic JSON, or CSV — sniffed) and it lands in a fresh
   variable; files with named members (CSV columns, JSON keys, exported
   variables) arrive inside a *struct* (`sensor.temp`, see below), so imported
   names can never collide with existing bindings. Numbers are read from their
   literal text — `0.1` in a sensor log becomes the exact rational 1/10, never
   an f64. Export saves any selection of workspace variables (anything a
-  variable can hold, functions included) into one `exact-data` file; exact
+  variable can hold, functions included) into one `surd-data` file; exact
   values round-trip losslessly. An import is a notebook *cell* carrying the
   file's text, so the replay model — and notebook export — keeps working with
   data in play.
@@ -389,7 +392,7 @@ a token-count cap and parser-nesting cap (deeply nested input → error, not
 stack overflow), an evaluation-depth cap and recursion-frame cap, a loop
 iteration cap, and a ceiling on exact exponents (`2^(10^15)` stays symbolic
 instead of building a gigabyte bignum). Evaluation runs via
-`exact::run_with_stack` so legitimate deep work has room before the guards trip;
+`surd::run_with_stack` so legitimate deep work has room before the guards trip;
 the WASM target should set its stack size at link time.
 
 **Coverage-guided fuzzing** (`fuzz/`, via `cargo-fuzz`/libFuzzer, nightly) goes

@@ -1,7 +1,7 @@
 //! Behavioral tests. These double as executable documentation of what the
 //! engine currently guarantees.
 
-use exact::Interpreter;
+use surd::Interpreter;
 
 /// Evaluate a single line on a fresh interpreter, returning its rendered form.
 fn ev(src: &str) -> String {

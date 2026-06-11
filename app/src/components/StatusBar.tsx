@@ -67,7 +67,7 @@ export function StatusBar() {
       >
         <FontAwesomeIcon icon={faBars} className="h-4 w-4" />
       </IconButton>
-      <h1 className="font-mono text-base font-semibold text-accent">exact</h1>
+      <h1 className="font-mono text-base font-semibold text-accent">surd</h1>
       {!showSettings && (
         <>
           <span className="hidden text-faint sm:inline">/</span>

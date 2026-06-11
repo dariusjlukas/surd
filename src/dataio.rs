@@ -1,4 +1,4 @@
-//! Raw-data import/export: the `exact-data` JSON file format, plus
+//! Raw-data import/export: the `surd-data` JSON file format, plus
 //! best-effort importers for generic JSON and CSV (sensor logs etc.).
 //!
 //! Exactness contract:
@@ -15,7 +15,7 @@
 //!
 //! On-disk shape:
 //! ```json
-//! { "format": "exact-data", "version": 1,
+//! { "format": "surd-data", "version": 1,
 //!   "variables": [ { "name": "x", "value": ... } ] }
 //! ```
 //! Values are JSON numbers (exact decimals), booleans, nested arrays
@@ -34,7 +34,9 @@ use num_traits::{One, Signed, Zero};
 use serde_json::{json, Map, Number, Value};
 use std::rc::Rc;
 
-const FORMAT: &str = "exact-data";
+const FORMAT: &str = "surd-data";
+/// Files written before the rename to Surd; still accepted on import.
+const LEGACY_FORMAT: &str = "exact-data";
 const VERSION: u64 = 1;
 
 /// Bound on decimal exponents / digit counts while parsing, so a crafted
@@ -45,7 +47,7 @@ const MAX_DECIMAL_DIGITS: usize = 100_000;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Serialize named workspace values into an `exact-data` file.
+/// Serialize named workspace values into a `surd-data` file.
 pub fn export_variables(vars: &[(&str, &Expr)]) -> Result<String, String> {
     let mut entries = Vec::with_capacity(vars.len());
     for (name, value) in vars {
@@ -55,9 +57,9 @@ pub fn export_variables(vars: &[(&str, &Expr)]) -> Result<String, String> {
     serde_json::to_string(&file).map_err(|e| format!("could not serialize: {}", e))
 }
 
-/// Parse a data file (exact-data JSON, generic JSON, or CSV — sniffed from
+/// Parse a data file (surd-data JSON, generic JSON, or CSV — sniffed from
 /// the content) into a single value, ready to bind to one workspace name.
-/// Files with named members (exact-data variables, JSON object keys, CSV
+/// Files with named members (surd-data variables, JSON object keys, CSV
 /// columns) come back as a struct of those members; anonymous data (a bare
 /// JSON array / scalar, a headerless CSV) comes back as the value itself.
 pub fn import(text: &str) -> Result<Expr, String> {
@@ -65,8 +67,9 @@ pub fn import(text: &str) -> Result<Expr, String> {
     if t.starts_with('{') || t.starts_with('[') {
         let v: Value = serde_json::from_str(t).map_err(|e| format!("invalid JSON: {}", e))?;
         if let Value::Object(map) = &v {
-            if map.get("format").and_then(Value::as_str) == Some(FORMAT) {
-                return import_exact(map);
+            let fmt = map.get("format").and_then(Value::as_str);
+            if fmt == Some(FORMAT) || fmt == Some(LEGACY_FORMAT) {
+                return import_native(map);
             }
         }
         decode(&v, Mode::Generic)
@@ -201,16 +204,16 @@ enum Mode {
     Generic,
 }
 
-fn import_exact(map: &Map<String, Value>) -> Result<Expr, String> {
+fn import_native(map: &Map<String, Value>) -> Result<Expr, String> {
     match map.get("version").and_then(Value::as_u64) {
         Some(v) if v <= VERSION => {}
-        Some(v) => return Err(format!("unsupported exact-data version {}", v)),
-        None => return Err("exact-data file has no version".into()),
+        Some(v) => return Err(format!("unsupported surd-data version {}", v)),
+        None => return Err("surd-data file has no version".into()),
     }
     let vars = map
         .get("variables")
         .and_then(Value::as_array)
-        .ok_or("exact-data file has no 'variables' array")?;
+        .ok_or("surd-data file has no 'variables' array")?;
     let mut fields = Vec::with_capacity(vars.len());
     for entry in vars {
         let name = entry
@@ -291,7 +294,7 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
     let tag = map
         .get("t")
         .and_then(Value::as_str)
-        .ok_or("object in exact-data file has no 't' tag")?;
+        .ok_or("object in surd-data file has no 't' tag")?;
     let field = |k: &str| -> Result<&Value, String> {
         map.get(k).ok_or_else(|| format!("'{}' value has no '{}'", tag, k))
     };
@@ -630,7 +633,7 @@ mod tests {
                 assert_eq!(fields[0].0, "x");
                 fields[0].1.clone()
             }
-            other => panic!("import of exact-data should be a struct, got {}", other),
+            other => panic!("import of surd-data should be a struct, got {}", other),
         }
     }
 
@@ -768,14 +771,27 @@ mod tests {
     fn hostile_files_error_rather_than_panic() {
         for text in [
             "{",
+            r#"{"format": "surd-data"}"#,
+            r#"{"format": "surd-data", "version": 99, "variables": []}"#,
+            r#"{"format": "surd-data", "version": 1, "variables": [{"name": "x"}]}"#,
+            r#"{"format": "surd-data", "version": 1, "variables": [{"name": "x", "value": {"t": "wat"}}]}"#,
+            r#"{"format": "surd-data", "version": 1, "variables": [{"name": "x", "value": {"t": "rat", "v": "1/0"}}]}"#,
+            r#"{"format": "surd-data", "version": 1, "variables": []}"#,
+            // The legacy marker must hit the same strict path, not fall
+            // through to the generic-JSON importer (which would succeed).
             r#"{"format": "exact-data"}"#,
-            r#"{"format": "exact-data", "version": 99, "variables": []}"#,
-            r#"{"format": "exact-data", "version": 1, "variables": [{"name": "x"}]}"#,
-            r#"{"format": "exact-data", "version": 1, "variables": [{"name": "x", "value": {"t": "wat"}}]}"#,
-            r#"{"format": "exact-data", "version": 1, "variables": [{"name": "x", "value": {"t": "rat", "v": "1/0"}}]}"#,
-            r#"{"format": "exact-data", "version": 1, "variables": []}"#,
         ] {
             assert!(import(text).is_err(), "should error: {}", text);
+        }
+    }
+
+    #[test]
+    fn legacy_exact_data_files_still_import() {
+        let legacy = r#"{"format": "exact-data", "version": 1,
+            "variables": [{"name": "x", "value": {"t": "rat", "v": "1/3"}}]}"#;
+        match import(legacy).expect("legacy import") {
+            Expr::Struct(fields) => assert_eq!(fields[0].0, "x"),
+            other => panic!("expected struct, got {}", other),
         }
     }
 }

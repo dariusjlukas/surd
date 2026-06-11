@@ -1,4 +1,4 @@
-// Download helper for exact-data exports (workspace variables → .json file).
+// Download helper for surd-data exports (workspace variables → .json file).
 // The file content itself is produced by the engine (Session.export_data);
 // this is just the blob/anchor dance, mirroring notebookFile.downloadNotebook.
 

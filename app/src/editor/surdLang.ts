@@ -1,4 +1,4 @@
-// CodeMirror language support for the exact CAS input language: a stream
+// CodeMirror language support for the surd CAS input language: a stream
 // tokenizer (the syntax is line-regular enough that a full Lezer grammar
 // buys nothing), a highlight style driven by the app's theme tokens, and a
 // completion source over builtins + keywords + live workspace names.
@@ -28,7 +28,7 @@ const KEYWORD_SET = new Set(KEYWORDS)
 const CONSTANT_SET = new Set(CONSTANTS)
 const BUILTIN_SET = new Set(BUILTINS)
 
-const exactStream = StreamLanguage.define<void>({
+const surdStream = StreamLanguage.define<void>({
   token(stream) {
     if (stream.eatSpace()) return null
     if (stream.match(/^(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?/)) return 'number'
@@ -91,9 +91,9 @@ function completionSource(context: CompletionContext): CompletionResult | null {
   }
 }
 
-export function exactLanguage(): Extension {
+export function surdLanguage(): Extension {
   return [
-    exactStream,
+    surdStream,
     syntaxHighlighting(highlight),
     autocompletion({ override: [completionSource], icons: false }),
   ]

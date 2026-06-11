@@ -1,11 +1,14 @@
-// React wrapper around SurfacePlot: owns the orbit and wires drag-to-rotate
-// and wheel-to-dolly. No engine resampling here — the grid is fixed at eval
-// time and orbiting is purely a camera move (change the domain by editing
-// the cell).
+// React wrapper around SurfacePlot: owns the orbit AND the data domain.
+// Drag rotates (a camera move); shift+drag pans the domain and wheel zooms
+// it about the cursor — both re-sample the surface from the engine, exactly
+// like the 2D plot's pan/zoom (alt+wheel still dollies the camera). Resample
+// requests are throttled to one in flight with the latest window queued, so
+// continuous pans track at engine speed instead of debounce cadence.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Plot3dData } from '../engine/types'
 import { useSettings } from '../state/settings'
+import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
 import { formatTick, niceTicks } from './scales'
@@ -19,6 +22,14 @@ import {
   type Orbit,
 } from './SurfacePlot'
 
+/** The data domain currently on screen: [a, b]×[c, d]. */
+interface Win {
+  a: number
+  b: number
+  c: number
+  d: number
+}
+
 interface AxisLabel {
   key: string
   text: string
@@ -30,24 +41,30 @@ interface AxisLabel {
 
 /** Tick + name labels anchored to the box edges facing the camera, so they
  * stay readable (and out of the surface's way) as the user orbits. */
-function axisLabels(plot: Plot3dData, zlo: number, zhi: number, azimuth: number): AxisLabel[] {
+function axisLabels(
+  plot: Plot3dData,
+  win: Win,
+  zlo: number,
+  zhi: number,
+  azimuth: number,
+): AxisLabel[] {
   // Which ±x / ±z box sides the camera is on (scene coords).
   const xSide = Math.sin(azimuth) >= 0 ? 1 : -1
   const zSide = Math.cos(azimuth) >= 0 ? 1 : -1
   // data → scene (see SurfacePlot.setData: data (x, y, z) → THREE (x, z, -y))
-  const sx = (t: number) => -1 + (2 * (t - plot.a)) / (plot.b - plot.a)
-  const sy = (t: number) => 1 - (2 * (t - plot.c)) / (plot.d - plot.c)
+  const sx = (t: number) => -1 + (2 * (t - win.a)) / (win.b - win.a)
+  const sy = (t: number) => 1 - (2 * (t - win.c)) / (win.d - win.c)
   const sz = (t: number) => -Z_SCALE + (2 * Z_SCALE * (t - zlo)) / (zhi - zlo)
 
   const out: AxisLabel[] = []
   // The two bottom edges meet at the corner nearest the camera — the lowest
   // point in the projection. Skip ticks within reach of it: they clip at the
   // frame edge and the two tick rows would collide there anyway.
-  for (const t of niceTicks(plot.a, plot.b, 5)) {
+  for (const t of niceTicks(win.a, win.b, 5)) {
     if (sx(t) * xSide > 0.9) continue
     out.push({ key: `x${t}`, text: formatTick(t), p: [sx(t), -Z_SCALE - 0.05, zSide * 1.14] })
   }
-  for (const t of niceTicks(plot.c, plot.d, 5)) {
+  for (const t of niceTicks(win.c, win.d, 5)) {
     if (sy(t) * zSide > 0.9) continue
     out.push({ key: `y${t}`, text: formatTick(t), p: [xSide * 1.14, -Z_SCALE - 0.05, sy(t)] })
   }
@@ -67,17 +84,28 @@ function axisLabels(plot: Plot3dData, zlo: number, zhi: number, azimuth: number)
   return out
 }
 
+type Drag =
+  | { mode: 'rotate'; pointerId: number; lastX: number; lastY: number }
+  /** Domain pan holds the grabbed data point — each move shifts the window
+   * so that point stays under the cursor (no incremental drift). */
+  | { mode: 'pan'; pointerId: number; grabX: number; grabY: number }
+
 export function Surface3DView({ plot }: { plot: Plot3dData }) {
+  const resample3d = useNotebook((s) => s.resample3d)
   const themeKey = useSettings((s) => `${s.resolvedMode}/${s.accent}`)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const painterRef = useRef<SurfacePlot | null>(null)
-  const dragRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null)
+  const dragRef = useRef<Drag | null>(null)
+  const inFlightRef = useRef(false)
+  const latestWinRef = useRef<Win | null>(null)
 
   const [orbit, setOrbit] = useState<Orbit>(DEFAULT_ORBIT)
   const [size, setSize] = useState({ w: 640, h: 320 })
-  const [zlo, zhi] = useMemo(() => zRange(plot.heights), [plot])
+  const [win, setWin] = useState<Win>({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
+  const [heights, setHeights] = useState(plot.heights)
+  const [zlo, zhi] = useMemo(() => zRange(heights), [heights])
   /** Measurement cursor: the grid node under the pointer. `z` is the true
    * sampled height (the mesh clamps spikes to the box; the readout doesn't);
    * `scene` is where the marker sits, on the (clamped) mesh. */
@@ -88,15 +116,201 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     scene: [number, number, number]
   } | null>(null)
 
+  // A re-evaluated cell hands the (long-lived) component a new plot — reset
+  // during render (React's "adjusting state when a prop changes" pattern).
+  const [prevPlot, setPrevPlot] = useState(plot)
+  if (plot !== prevPlot) {
+    setPrevPlot(plot)
+    setWin({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
+    setHeights(plot.heights)
+  }
+
   const labels = useMemo(
-    () => axisLabels(plot, zlo, zhi, orbit.azimuth),
-    [plot, zlo, zhi, orbit.azimuth],
+    () => axisLabels(plot, win, zlo, zhi, orbit.azimuth),
+    [plot, win, zlo, zhi, orbit.azimuth],
   )
   const positions = useMemo(
     () => projectToPx(labels.map((l) => l.p), orbit, size.w, size.h),
     [labels, orbit, size],
   )
   const probePos = probe ? projectToPx([probe.scene], orbit, size.w, size.h)[0] : null
+
+  // scene ([-1,1] box) ⇄ data (current window)
+  const dataX = (sceneX: number) => win.a + ((sceneX + 1) / 2) * (win.b - win.a)
+  const dataY = (sceneZ: number) => win.c + ((1 - sceneZ) / 2) * (win.d - win.c)
+
+  /** One resample in flight; the newest window fires as soon as the previous
+   * answer lands. Stale heights stay visible meanwhile, like the 2D plot. */
+  const requestResample = (target: Win) => {
+    latestWinRef.current = target
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    const fire = () => {
+      const w = latestWinRef.current
+      if (!w) {
+        inFlightRef.current = false
+        return
+      }
+      resample3d(plot.text, plot.xvar, plot.yvar, w.a, w.b, w.c, w.d, plot.nx)
+        .then((h) => {
+          // apply only the latest request — a response that was superseded
+          // (or belongs to a re-evaluated cell's old plot) is dropped
+          if (latestWinRef.current === w) setHeights(h)
+        })
+        .catch(() => {
+          // engine busy or restarted — stale heights stay visible, the next
+          // interaction tries again
+        })
+        .finally(() => {
+          if (latestWinRef.current !== w) {
+            fire()
+          } else {
+            inFlightRef.current = false
+          }
+        })
+    }
+    fire()
+  }
+
+  const ndcOf = (e: { clientX: number; clientY: number }): [number, number] => {
+    const rect = frameRef.current!.getBoundingClientRect()
+    return [
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -(((e.clientY - rect.top) / rect.height) * 2 - 1),
+    ]
+  }
+
+  // -- drag: rotate (plain) or pan the domain (shift) ------------------------
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    if (e.shiftKey) {
+      const hit = painterRef.current?.pickFloor(...ndcOf(e))
+      if (!hit) return
+      dragRef.current = {
+        mode: 'pan',
+        pointerId: e.pointerId,
+        grabX: dataX(hit.x),
+        grabY: dataY(hit.z),
+      }
+    } else {
+      dragRef.current = {
+        mode: 'rotate',
+        pointerId: e.pointerId,
+        lastX: e.clientX,
+        lastY: e.clientY,
+      }
+    }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  /** Raycast the pointer into the mesh and snap to the nearest grid node —
+   * node values are the honest sampled data (no interpolation invented). */
+  const updateProbe = (e: React.PointerEvent) => {
+    const hit = painterRef.current?.pick(...ndcOf(e))
+    if (!hit) {
+      setProbe(null)
+      return
+    }
+    // invert the scene mapping (see SurfacePlot.setData): scene x = xn,
+    // scene z = -yn, scene y = clamped height band
+    const i = Math.round(((hit.x + 1) / 2) * (plot.nx - 1))
+    const j = Math.round(((1 - hit.z) / 2) * (plot.ny - 1))
+    const h = heights[j * plot.nx + i]
+    if (h === null || h === undefined) {
+      setProbe(null)
+      return
+    }
+    const t = Math.min(1, Math.max(0, (h - zlo) / (zhi - zlo)))
+    setProbe({
+      x: win.a + (i / (plot.nx - 1)) * (win.b - win.a),
+      y: win.c + (j / (plot.ny - 1)) * (win.d - win.c),
+      z: h,
+      scene: [
+        -1 + (2 * i) / (plot.nx - 1),
+        (2 * t - 1) * Z_SCALE,
+        1 - (2 * j) / (plot.ny - 1),
+      ],
+    })
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== e.pointerId) {
+      updateProbe(e)
+      return
+    }
+    setProbe(null)
+    if (drag.mode === 'rotate') {
+      const dx = e.clientX - drag.lastX
+      const dy = e.clientY - drag.lastY
+      drag.lastX = e.clientX
+      drag.lastY = e.clientY
+      setOrbit((o) =>
+        clampOrbit({
+          azimuth: o.azimuth - dx * 0.008,
+          elevation: o.elevation + dy * 0.008,
+          radius: o.radius,
+        }),
+      )
+      return
+    }
+    // pan: keep the grabbed data point under the cursor
+    const hit = painterRef.current?.pickFloor(...ndcOf(e))
+    if (!hit) return
+    const dx = drag.grabX - dataX(hit.x)
+    const dy = drag.grabY - dataY(hit.z)
+    setWin((w) => {
+      const next = { a: w.a + dx, b: w.b + dx, c: w.c + dy, d: w.d + dy }
+      requestResample(next)
+      return next
+    })
+  }
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null
+  }
+
+  // -- wheel: zoom the domain about the cursor (alt: dolly the camera) -------
+  useEffect(() => {
+    const el = frameRef.current!
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const factor = Math.exp(e.deltaY * 0.0015)
+      if (e.altKey) {
+        setOrbit((o) => clampOrbit({ ...o, radius: o.radius * factor }))
+        return
+      }
+      const rect = el.getBoundingClientRect()
+      const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      const ndcY = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
+      const painter = painterRef.current
+      // the probe is only recomputed on pointer move — a stale readout must
+      // not survive into the new domain
+      setProbe(null)
+      // zoom about the surface point under the cursor; the floor where the
+      // surface has gaps; the window center as a last resort
+      const hit = painter?.pick(ndcX, ndcY) ?? painter?.pickFloor(ndcX, ndcY)
+      setWin((w) => {
+        const cx = hit ? w.a + ((hit.x + 1) / 2) * (w.b - w.a) : (w.a + w.b) / 2
+        const cy = hit ? w.c + ((1 - hit.z) / 2) * (w.d - w.c) : (w.c + w.d) / 2
+        const next = {
+          a: cx - (cx - w.a) * factor,
+          b: cx + (w.b - cx) * factor,
+          c: cy - (cy - w.c) * factor,
+          d: cy + (w.d - cy) * factor,
+        }
+        const spanX = next.b - next.a
+        const spanY = next.d - next.c
+        if (spanX < 1e-12 || spanX > 1e12 || spanY < 1e-12 || spanY > 1e12) return w
+        requestResample(next)
+        return next
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+    // requestResample/painterRef are stable refs; win is read via setWin
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plot])
 
   // -- painter lifecycle ----------------------------------------------------
   useEffect(() => {
@@ -118,90 +332,19 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   }, [])
 
   useEffect(() => {
-    painterRef.current?.setData(plot.heights, plot.nx, plot.ny, zlo, zhi)
-  }, [plot, zlo, zhi, themeKey])
+    painterRef.current?.setData(heights, plot.nx, plot.ny, zlo, zhi)
+  }, [heights, plot.nx, plot.ny, zlo, zhi, themeKey])
 
   useEffect(() => {
     painterRef.current?.setOrbit(orbit)
   }, [orbit])
 
-  // -- drag to rotate, wheel to dolly ---------------------------------------
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return
-    dragRef.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY }
-    e.currentTarget.setPointerCapture(e.pointerId)
+  const reset = () => {
+    setOrbit(DEFAULT_ORBIT)
+    setWin({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
+    setHeights(plot.heights)
+    latestWinRef.current = null
   }
-
-  /** Raycast the pointer into the mesh and snap to the nearest grid node —
-   * node values are the honest sampled data (no interpolation invented). */
-  const updateProbe = (e: React.PointerEvent) => {
-    const rect = frameRef.current!.getBoundingClientRect()
-    const hit = painterRef.current?.pick(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -(((e.clientY - rect.top) / rect.height) * 2 - 1),
-    )
-    if (!hit) {
-      setProbe(null)
-      return
-    }
-    // invert the scene mapping (see SurfacePlot.setData): scene x = xn,
-    // scene z = -yn, scene y = clamped height band
-    const i = Math.round(((hit.x + 1) / 2) * (plot.nx - 1))
-    const j = Math.round(((1 - hit.z) / 2) * (plot.ny - 1))
-    const h = plot.heights[j * plot.nx + i]
-    if (h === null || h === undefined) {
-      setProbe(null)
-      return
-    }
-    const t = Math.min(1, Math.max(0, (h - zlo) / (zhi - zlo)))
-    setProbe({
-      x: plot.a + (i / (plot.nx - 1)) * (plot.b - plot.a),
-      y: plot.c + (j / (plot.ny - 1)) * (plot.d - plot.c),
-      z: h,
-      scene: [
-        -1 + (2 * i) / (plot.nx - 1),
-        (2 * t - 1) * Z_SCALE,
-        1 - (2 * j) / (plot.ny - 1),
-      ],
-    })
-  }
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== e.pointerId) {
-      updateProbe(e)
-      return
-    }
-    setProbe(null)
-    const dx = e.clientX - drag.lastX
-    const dy = e.clientY - drag.lastY
-    drag.lastX = e.clientX
-    drag.lastY = e.clientY
-    setOrbit((o) =>
-      clampOrbit({
-        azimuth: o.azimuth - dx * 0.008,
-        elevation: o.elevation + dy * 0.008,
-        radius: o.radius,
-      }),
-    )
-  }
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null
-  }
-
-  useEffect(() => {
-    const el = frameRef.current!
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const factor = Math.exp(e.deltaY * 0.0015)
-      setOrbit((o) => clampOrbit({ ...o, radius: o.radius * factor }))
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [])
-
-  const reset = () => setOrbit(DEFAULT_ORBIT)
 
   const savePng = () => {
     const painter = painterRef.current
@@ -217,10 +360,10 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
       <div className="mb-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted">
         <MathInline latex={plot.latex} fallback={plot.text} />
         <span className="text-xs">
-          {plot.xvar} ∈ [{formatTick(plot.a)}, {formatTick(plot.b)}]
+          {plot.xvar} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
         </span>
         <span className="text-xs">
-          {plot.yvar} ∈ [{formatTick(plot.c)}, {formatTick(plot.d)}]
+          {plot.yvar} ∈ [{formatTick(win.c)}, {formatTick(win.d)}]
         </span>
         <span className="text-xs" title="2%–98% quantile range; spikes clamp to the box">
           z ∈ [{formatTick(zlo)}, {formatTick(zhi)}]
@@ -241,7 +384,7 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
       </div>
       <div
         ref={frameRef}
-        title="drag to rotate · wheel zooms"
+        title="drag rotates · shift+drag pans · wheel zooms the domain · alt+wheel dollies"
         className="relative h-80 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-edge bg-surface active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

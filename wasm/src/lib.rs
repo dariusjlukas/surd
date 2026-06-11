@@ -1,4 +1,4 @@
-//! Browser bindings for the `exact` engine.
+//! Browser bindings for the `surd` engine.
 //!
 //! One `Session` wraps one interpreter. `eval` returns a JSON-encoded
 //! [`EvalResult`] so the JS side gets structure (kind, text, LaTeX, plot
@@ -6,8 +6,8 @@
 //! is the cancellation boundary: killing the worker and replaying the
 //! transcript is the supported way to abort a runaway evaluation.
 
-use exact::expr::Expr;
-use exact::{f64eval, latex};
+use surd::expr::Expr;
+use surd::{f64eval, latex};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -213,7 +213,7 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
 
 #[wasm_bindgen]
 pub struct Session {
-    interp: exact::Interpreter,
+    interp: surd::Interpreter,
 }
 
 impl Default for Session {
@@ -227,7 +227,7 @@ impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Session {
         Session {
-            interp: exact::Interpreter::new(),
+            interp: surd::Interpreter::new(),
         }
     }
 
@@ -255,18 +255,18 @@ impl Session {
         serde_json::to_string(&entries).expect("workspace entries are serializable")
     }
 
-    /// Import a raw data file (exact-data JSON, generic JSON, or CSV —
+    /// Import a raw data file (surd-data JSON, generic JSON, or CSV —
     /// sniffed) and bind the result to `name` in the global workspace.
     /// Returns an [`EvalResult`]-shaped JSON whose `text` is a short import
     /// summary (the value itself can be enormous), kind `"data"`.
     pub fn import_data(&mut self, payload: &str, name: &str) -> String {
-        let result = if !exact::dataio::is_valid_var_name(name) {
+        let result = if !surd::dataio::is_valid_var_name(name) {
             error_result(format!("'{}' is not a valid variable name", name))
         } else {
-            match exact::dataio::import(payload) {
+            match surd::dataio::import(payload) {
                 Err(e) => error_result(e),
                 Ok(value) => {
-                    let summary = format!("{}: {}", name, exact::dataio::describe(&value));
+                    let summary = format!("{}: {}", name, surd::dataio::describe(&value));
                     self.interp.set_global(name, value);
                     EvalResult {
                         ok: true,
@@ -283,7 +283,7 @@ impl Session {
         serde_json::to_string(&result).expect("EvalResult is always serializable")
     }
 
-    /// Export the named workspace variables as one `exact-data` JSON file.
+    /// Export the named workspace variables as one `surd-data` JSON file.
     /// Returns `{ok, data?, error?}`; `data` is the file's text.
     pub fn export_data(&self, names_json: &str) -> String {
         let inner = || -> Result<String, String> {
@@ -300,7 +300,7 @@ impl Session {
                     .ok_or_else(|| format!("no workspace variable named '{}'", n))?;
                 vars.push((n.as_str(), value));
             }
-            exact::dataio::export_variables(&vars)
+            surd::dataio::export_variables(&vars)
         };
         match inner() {
             Ok(data) => serde_json::json!({ "ok": true, "data": data }).to_string(),
@@ -343,7 +343,7 @@ pub fn resample(expr_text: &str, var: &str, a: f64, b: f64, n: usize) -> String 
         return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b"})
             .to_string();
     }
-    let mut interp = exact::Interpreter::new();
+    let mut interp = surd::Interpreter::new();
     match interp.eval_line(expr_text) {
         Err(e) => serde_json::json!({"ok": false, "error": e}).to_string(),
         Ok(expr) => {
@@ -353,17 +353,46 @@ pub fn resample(expr_text: &str, var: &str, a: f64, b: f64, n: usize) -> String 
     }
 }
 
+/// Resample a surface expression over a new [a, b]×[c, d] domain (zoom /
+/// pan). Stateless, like [`resample`]: `expr_text` is `Plot3dData::text`,
+/// closed except for the two plot variables.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn resample3d(
+    expr_text: &str,
+    xvar: &str,
+    yvar: &str,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    n: usize,
+) -> String {
+    if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
+        return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b and c < d"})
+            .to_string();
+    }
+    let mut interp = surd::Interpreter::new();
+    match interp.eval_line(expr_text) {
+        Err(e) => serde_json::json!({"ok": false, "error": e}).to_string(),
+        Ok(expr) => {
+            let heights = f64eval::sample2d(&expr, xvar, yvar, a, b, c, d, n, n);
+            serde_json::json!({"ok": true, "heights": heights}).to_string()
+        }
+    }
+}
+
 /// Should the REPL keep reading lines before evaluating (unclosed brackets or
 /// `if`/`while`/`function` blocks)?
 #[wasm_bindgen]
 pub fn is_incomplete(src: &str) -> bool {
-    exact::lexer::is_incomplete(src)
+    surd::lexer::is_incomplete(src)
 }
 
 /// Only whitespace/comments — nothing to evaluate.
 #[wasm_bindgen]
 pub fn is_blank(src: &str) -> bool {
-    exact::lexer::is_blank(src)
+    surd::lexer::is_blank(src)
 }
 
 #[cfg(test)]
@@ -493,6 +522,32 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot(a*x, a*x^2, x, 0, 1)")).unwrap();
         assert_eq!(v["plot"]["series"][0]["text"], "2*x");
+    }
+
+    #[test]
+    fn resample3d_matches_eval_grid() {
+        // resample3d over the original domain must reproduce eval's grid.
+        let mut s = Session::new();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x*y, x, -1, 1, y, -1, 1)")).unwrap();
+        let text = v["plot3d"]["text"].as_str().unwrap();
+        let n = v["plot3d"]["nx"].as_u64().unwrap() as usize;
+        let r: serde_json::Value =
+            serde_json::from_str(&resample3d(text, "x", "y", -1.0, 1.0, -1.0, 1.0, n)).unwrap();
+        assert_eq!(r["ok"], true, "{}", r["error"]);
+        assert_eq!(r["heights"], v["plot3d"]["heights"]);
+
+        // a zoomed window samples the new domain: corner (2, 2) → 4
+        let r: serde_json::Value =
+            serde_json::from_str(&resample3d(text, "x", "y", 0.0, 2.0, 0.0, 2.0, 3)).unwrap();
+        let h = r["heights"].as_array().unwrap();
+        assert_eq!(h.len(), 9);
+        assert!((h[8].as_f64().unwrap() - 4.0).abs() < 1e-12);
+
+        // inverted bounds are an error, not a panic
+        let r: serde_json::Value =
+            serde_json::from_str(&resample3d(text, "x", "y", 1.0, -1.0, 0.0, 1.0, 3)).unwrap();
+        assert_eq!(r["ok"], false);
     }
 
     #[test]

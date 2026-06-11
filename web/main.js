@@ -1,4 +1,4 @@
-// Main-thread UI for the exact scratchpad.
+// Main-thread UI for the surd scratchpad.
 //
 // - The engine runs in a worker; this thread only renders.
 // - Cancel = terminate the worker + replay the saved transcript (the engine is
@@ -6,7 +6,7 @@
 // - The wasm module is also loaded here, but only for is_incomplete/is_blank —
 //   continuation detection must not queue behind a long-running eval.
 
-import init, { is_incomplete, is_blank } from './pkg/exact_wasm.js';
+import init, { is_incomplete, is_blank } from './pkg/surd_wasm.js';
 
 const TRANSCRIPT_KEY = 'exact.transcript.v1';
 

@@ -1,8 +1,12 @@
 [package]
-name = "exact-fuzz"
+name = "surd-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+
+# Standalone: the root workspace doesn't list this crate (fuzzing is
+# nightly-only and shouldn't gate plain `cargo build`/`cargo test`).
+[workspace]
 
 [package.metadata]
 cargo-fuzz = true
@@ -10,12 +14,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-[dependencies.exact]
+[dependencies.surd]
 path = ".."
 
 # Catch arithmetic overflow as a crash during fuzzing, and keep enough debug
 # info for readable backtraces. (Profiles are read from the crate cargo-fuzz
-# builds as root, so these apply to `exact` too.)
+# builds as root, so these apply to `surd` too.)
 [profile.release]
 debug = 1
 debug-assertions = true

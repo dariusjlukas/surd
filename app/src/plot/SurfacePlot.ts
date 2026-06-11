@@ -188,6 +188,15 @@ export class SurfacePlot {
     return this.raycaster.intersectObject(this.mesh)[0]?.point ?? null
   }
 
+  /** Where that ray crosses the floor plane (y = −Z_SCALE), or null when the
+   * ray runs away from it. Domain panning grabs the floor: it always hits,
+   * even where the surface has gaps. */
+  pickFloor(ndcX: number, ndcY: number): THREE.Vector3 | null {
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
+    const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), Z_SCALE)
+    return this.raycaster.ray.intersectPlane(floor, new THREE.Vector3())
+  }
+
   /** PNG of the current frame (see LinePlot.snapshot for why this works
    * without preserveDrawingBuffer). */
   snapshot(): string {

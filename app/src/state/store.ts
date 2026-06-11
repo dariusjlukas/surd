@@ -104,10 +104,10 @@ interface NotebookState {
 
   boot(): Promise<void>
   submit(src: string): Promise<void>
-  /** Import a raw data file (exact-data/JSON/CSV) as a new data cell, bound
+  /** Import a raw data file (surd-data/JSON/CSV) as a new data cell, bound
    * to a fresh workspace name derived from the file name. */
   importData(fileName: string, text: string): Promise<void>
-  /** Serialize the named workspace variables into one exact-data file. */
+  /** Serialize the named workspace variables into one surd-data file. */
   exportData(names: string[]): Promise<string>
   /** Re-evaluate a cell and everything below it (the cell's old effect on
    * the workspace must be undone, which means replaying the prefix). */
@@ -126,6 +126,16 @@ interface NotebookState {
     a: number,
     b: number,
   ): Promise<SamplePoint[]>
+  resample3d(
+    exprText: string,
+    xvar: string,
+    yvar: string,
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    n: number,
+  ): Promise<(number | null)[]>
 
   createNotebook(): void
   selectNotebook(id: string): void
@@ -405,6 +415,10 @@ export const useNotebook = create<NotebookState>()(
 
         resample(exprText, varName, a, b) {
           return client.resample(exprText, varName, a, b)
+        },
+
+        resample3d(exprText, xvar, yvar, a, b, c, d, n) {
+          return client.resample3d(exprText, xvar, yvar, a, b, c, d, n)
         },
 
         createNotebook() {

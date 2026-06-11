@@ -4,10 +4,10 @@
 // rather than asking KaTeX to typeset a wall. Width is user-resizable
 // (PaneResizer in App); right-click a row to copy or export the binding.
 //
-// Raw data lives here too: "import" reads a file (exact-data JSON, generic
+// Raw data lives here too: "import" reads a file (surd-data JSON, generic
 // JSON, or CSV) into a fresh variable — named members arrive inside a struct
 // so they can't collide with existing bindings — and "export" toggles a
-// selection mode that saves any group of variables into one exact-data file.
+// selection mode that saves any group of variables into one surd-data file.
 
 import { useRef, useState } from 'react'
 import { faDownload, faUpload } from '@fortawesome/free-solid-svg-icons'
@@ -68,7 +68,7 @@ export function WorkspacePanel({ width }: { width: number }) {
         </span>
         <span className="flex gap-1">
           <button
-            title="import raw data (exact-data JSON, generic JSON, or CSV) into a variable"
+            title="import raw data (surd-data JSON, generic JSON, or CSV) into a variable"
             disabled={!ready}
             onClick={() => fileRef.current?.click()}
             className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"

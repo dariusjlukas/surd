@@ -2,9 +2,9 @@
 // Exercises the same module the browser loads — init, eval, persistence,
 // plotting — without needing a browser.
 import { readFile } from 'node:fs/promises';
-import init, { Session, is_incomplete, is_blank } from './pkg/exact_wasm.js';
+import init, { Session, is_incomplete, is_blank } from './pkg/surd_wasm.js';
 
-const bytes = await readFile(new URL('./pkg/exact_wasm_bg.wasm', import.meta.url));
+const bytes = await readFile(new URL('./pkg/surd_wasm_bg.wasm', import.meta.url));
 await init({ module_or_path: bytes });
 
 const s = new Session();

@@ -1,18 +1,18 @@
-//! REPL harness for the `exact` engine.
+//! REPL harness for the `surd` engine.
 //!
 //! Both interactive and piped input accumulate lines until the program is
 //! syntactically complete (balanced brackets and `if`/`while`/`function` …
 //! `end`), then evaluate the whole unit and print its value. Interactive mode
 //! adds line editing, history, and a continuation prompt.
 
-use exact::lexer::{is_blank, is_incomplete};
-use exact::Interpreter;
+use surd::lexer::{is_blank, is_incomplete};
+use surd::Interpreter;
 use std::io::IsTerminal;
 
 fn main() {
     // Run the whole REPL on a large-stack thread so deep recursion/nesting hits
     // the evaluator's depth guards (graceful errors) rather than the OS stack.
-    exact::run_with_stack(|| {
+    surd::run_with_stack(|| {
         let mut interp = Interpreter::new();
         if std::io::stdin().is_terminal() {
             banner();
@@ -24,7 +24,7 @@ fn main() {
 }
 
 fn banner() {
-    println!("exact — an exact-by-default CAS REPL (prototype)");
+    println!("surd — an exact-by-default CAS REPL (prototype)");
     println!("  ':=' assigns, '=' is an equation, 'N(x)' goes to float.");
     println!("  if/while/function are blocks ended with 'end'.");
     println!("  try:  fact(n) := if n == 0 then 1 else n*fact(n-1) end   then   fact(20)");

@@ -19,8 +19,8 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let text = text.to_owned();
-    exact::run_with_stack(move || {
-        let mut interp = exact::Interpreter::new();
+    surd::run_with_stack(move || {
+        let mut interp = surd::Interpreter::new();
         let first = match interp.eval_line(&text) {
             Ok(value) => format!("{}", value),
             Err(_) => return,
@@ -31,7 +31,7 @@ fuzz_target!(|data: &[u8]| {
         }
         // Re-evaluate on a fresh interpreter so definitions in `text` can't
         // change the meaning of the printed form.
-        let mut fresh = exact::Interpreter::new();
+        let mut fresh = surd::Interpreter::new();
         let second = match fresh.eval_line(&first) {
             Ok(value) => format!("{}", value),
             // Conservatively skip rather than flag (the eval target already

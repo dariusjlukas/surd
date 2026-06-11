@@ -85,6 +85,12 @@ export interface ResampleResult {
   error?: string
 }
 
+export interface Resample3dResult {
+  ok: boolean
+  heights?: (number | null)[]
+  error?: string
+}
+
 /** One workspace binding, from Session.workspace(). */
 export interface WorkspaceEntry {
   name: string
@@ -93,7 +99,7 @@ export interface WorkspaceEntry {
   kind: ResultKind
 }
 
-/** Result of Session.export_data: the exact-data file's text, or an error. */
+/** Result of Session.export_data: the surd-data file's text, or an error. */
 export interface ExportResult {
   ok: boolean
   data?: string
@@ -125,6 +131,18 @@ export type ToWorker =
       b: number
       n: number
     }
+  | {
+      type: 'resample3d'
+      id: number
+      exprText: string
+      xvar: string
+      yvar: string
+      a: number
+      b: number
+      c: number
+      d: number
+      n: number
+    }
 
 export type FromWorker =
   | { type: 'ready'; replayed: number }
@@ -133,3 +151,4 @@ export type FromWorker =
   | { type: 'exported'; id: number; result: ExportResult }
   | { type: 'workspace'; id: number; result: WorkspaceEntry[] }
   | { type: 'resampled'; id: number; result: ResampleResult }
+  | { type: 'resampled3d'; id: number; result: Resample3dResult }

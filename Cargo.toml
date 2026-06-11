@@ -11,17 +11,17 @@ opt-level = "s"
 lto = true
 
 [package]
-name = "exact"
+name = "surd"
 version = "0.1.0"
 edition = "2021"
-description = "An exact-by-default computer algebra REPL (prototype)"
+description = "Surd — an exact-by-default computer algebra REPL (prototype)"
 
 [lib]
-name = "exact"
+name = "surd"
 path = "src/lib.rs"
 
 [[bin]]
-name = "exact"
+name = "surd"
 path = "src/main.rs"
 
 [dependencies]

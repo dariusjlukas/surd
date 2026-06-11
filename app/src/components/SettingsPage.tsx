@@ -98,10 +98,11 @@ export function SettingsPage() {
 
         <Section title="About">
           <p className="text-sm text-muted">
-            <span className="font-mono font-semibold text-accent">exact</span> — a
+            <span className="font-mono font-semibold text-accent">surd</span> — a
             correct-by-default mathematical scratchpad. <code className="text-ink">1/3</code>{' '}
-            stays a third, <code className="text-ink">sqrt(2)</code> stays a radical;
-            floats only when you ask with <code className="text-ink">N(x)</code>.
+            stays a third, <code className="text-ink">sqrt(2)</code> stays a radical
+            (a <em>surd</em>); floats only when you ask with{' '}
+            <code className="text-ink">N(x)</code>.
           </p>
           <p className="mt-2 text-xs text-faint">
             {notebookCount} notebook{notebookCount === 1 ? '' : 's'} stored locally in
