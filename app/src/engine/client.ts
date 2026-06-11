@@ -8,7 +8,9 @@
 
 import type {
   EvalResult,
+  ExportResult,
   FromWorker,
+  ReplayEntry,
   ResampleResult,
   SamplePoint,
   ToWorker,
@@ -33,9 +35,10 @@ export class EngineClient {
   private pending = new Map<number, Pending>()
   private readyPromise: Promise<number> | null = null
 
-  /** Boot (or reboot) the worker, replaying `transcript` into a fresh
-   * workspace. Resolves with the number of replayed statements. */
-  restart(transcript: string[]): Promise<number> {
+  /** Boot (or reboot) the worker, replaying `transcript` (evaluated sources
+   * and data imports) into a fresh workspace. Resolves with the number of
+   * replayed entries. */
+  restart(transcript: ReplayEntry[]): Promise<number> {
     this.worker?.terminate()
     for (const p of this.pending.values()) p.reject(new EngineCancelled())
     this.pending.clear()
@@ -61,6 +64,18 @@ export class EngineClient {
    * the store; the worker would queue extras safely anyway. */
   eval(src: string): Promise<EvalResult> {
     return this.request<EvalResult>((id) => ({ type: 'eval', id, src }))
+  }
+
+  /** Import a raw data file's text, binding it to `name` in the workspace. */
+  importData(name: string, payload: string): Promise<EvalResult> {
+    return this.request<EvalResult>((id) => ({ type: 'importData', id, name, payload }))
+  }
+
+  /** Serialize the named workspace variables into one exact-data file. */
+  async exportData(names: string[]): Promise<string> {
+    const r = await this.request<ExportResult>((id) => ({ type: 'exportData', id, names }))
+    if (!r.ok || r.data === undefined) throw new Error(r.error ?? 'export failed')
+    return r.data
   }
 
   /** Current workspace bindings, for the variables panel. */

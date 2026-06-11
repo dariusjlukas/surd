@@ -2,7 +2,9 @@
 // pan/zoom to engine resampling (debounced), and renders DOM tick labels
 // positioned by the same scale math the painter uses. Handles any number of
 // curves over one shared window; the legend chips use the same palette
-// tokens as the painter.
+// tokens as the painter. The live window readout overlays the frame rather
+// than sitting in the header: its width changes every pan/zoom frame, and in
+// flow layout that re-wraps the header and bounces the figure.
 //
 // Y-axis modes: `auto` re-fits the y-window (quantiles) on every resample;
 // touching the y-axis (vertical pan, shift+wheel zoom) switches to `manual`,
@@ -241,15 +243,6 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
             <MathInline latex={s.latex} fallback={s.text} />
           </span>
         ))}
-        <span className="text-xs">
-          {plot.var} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
-        </span>
-        <span className="text-xs" title="drag to pan · wheel zooms x · shift+wheel zooms y">
-          y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
-          <span className={yManual ? 'text-warn/80' : 'text-faint'}>
-            {yManual ? 'manual' : 'auto'}
-          </span>
-        </span>
         <button
           onClick={savePng}
           title="download the plot as a PNG"
@@ -266,6 +259,7 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
       </div>
       <div
         ref={frameRef}
+        title="drag to pan · wheel zooms x · shift+wheel zooms y"
         className="relative h-80 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-edge bg-surface active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -283,6 +277,15 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
         }
       >
         <canvas ref={canvasRef} className="block h-full w-full" />
+        <div className="pointer-events-none absolute right-1.5 top-1 text-right font-mono text-[10px] leading-4 text-faint">
+          <div>
+            {plot.var} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
+          </div>
+          <div>
+            y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
+            <span className={yManual ? 'text-warn/80' : ''}>{yManual ? 'manual' : 'auto'}</span>
+          </div>
+        </div>
         {xTicks.map((t) => (
           <span
             key={`x${t}`}

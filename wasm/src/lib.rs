@@ -96,6 +96,7 @@ fn kind_of(e: &Expr) -> &'static str {
         Expr::Bool(_) => "boolean",
         Expr::Equation(..) => "equation",
         Expr::Function { .. } => "function",
+        Expr::Struct(_) => "struct",
         _ => "scalar",
     }
 }
@@ -254,6 +255,59 @@ impl Session {
         serde_json::to_string(&entries).expect("workspace entries are serializable")
     }
 
+    /// Import a raw data file (exact-data JSON, generic JSON, or CSV —
+    /// sniffed) and bind the result to `name` in the global workspace.
+    /// Returns an [`EvalResult`]-shaped JSON whose `text` is a short import
+    /// summary (the value itself can be enormous), kind `"data"`.
+    pub fn import_data(&mut self, payload: &str, name: &str) -> String {
+        let result = if !exact::dataio::is_valid_var_name(name) {
+            error_result(format!("'{}' is not a valid variable name", name))
+        } else {
+            match exact::dataio::import(payload) {
+                Err(e) => error_result(e),
+                Ok(value) => {
+                    let summary = format!("{}: {}", name, exact::dataio::describe(&value));
+                    self.interp.set_global(name, value);
+                    EvalResult {
+                        ok: true,
+                        kind: "data",
+                        text: summary,
+                        latex: String::new(),
+                        plot: None,
+                        plot3d: None,
+                        error: None,
+                    }
+                }
+            }
+        };
+        serde_json::to_string(&result).expect("EvalResult is always serializable")
+    }
+
+    /// Export the named workspace variables as one `exact-data` JSON file.
+    /// Returns `{ok, data?, error?}`; `data` is the file's text.
+    pub fn export_data(&self, names_json: &str) -> String {
+        let inner = || -> Result<String, String> {
+            let names: Vec<String> = serde_json::from_str(names_json)
+                .map_err(|_| "expected a JSON array of variable names".to_string())?;
+            if names.is_empty() {
+                return Err("nothing selected to export".into());
+            }
+            let mut vars: Vec<(&str, &Expr)> = Vec::with_capacity(names.len());
+            for n in &names {
+                let value = self
+                    .interp
+                    .get_global(n)
+                    .ok_or_else(|| format!("no workspace variable named '{}'", n))?;
+                vars.push((n.as_str(), value));
+            }
+            exact::dataio::export_variables(&vars)
+        };
+        match inner() {
+            Ok(data) => serde_json::json!({ "ok": true, "data": data }).to_string(),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+        }
+    }
+
     /// Evaluate one complete statement block; returns JSON ([`EvalResult`]).
     pub fn eval(&mut self, src: &str) -> String {
         let result = match self.interp.eval_line(src) {
@@ -350,6 +404,47 @@ mod tests {
         assert_eq!(entries[0]["kind"], "function");
         assert_eq!(entries[1]["name"], "x");
         assert_eq!(entries[1]["text"], "3");
+    }
+
+    #[test]
+    fn import_binds_a_struct_and_export_round_trips() {
+        let mut s = Session::new();
+        // CSV with header → struct of column vectors under the given name.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.import_data("t, temp\n0, 1.5\n1, 2.5\n", "sensor")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["kind"], "data");
+        assert!(v["text"].as_str().unwrap().contains("struct with 2 fields"));
+
+        // The struct is live in the workspace; fields are exact.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("sensor.temp")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert!(v["text"].as_str().unwrap().contains("3/2"));
+
+        // Export a group of variables and re-import: lands inside one struct,
+        // so nothing collides with existing bindings.
+        s.eval("x := 1/3");
+        let r: serde_json::Value =
+            serde_json::from_str(&s.export_data(r#"["x", "sensor"]"#)).unwrap();
+        assert_eq!(r["ok"], true, "{}", r["error"]);
+        let mut s2 = Session::new();
+        s2.eval("x := 999"); // would collide if import didn't wrap
+        let v: serde_json::Value =
+            serde_json::from_str(&s2.import_data(r["data"].as_str().unwrap(), "saved")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        let v: serde_json::Value = serde_json::from_str(&s2.eval("saved.x + x")).unwrap();
+        assert_eq!(v["text"], "2998/3");
+        let v: serde_json::Value =
+            serde_json::from_str(&s2.eval("saved.sensor.t")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+
+        // Errors surface, and bad names are rejected.
+        let v: serde_json::Value = serde_json::from_str(&s.import_data("{", "d")).unwrap();
+        assert_eq!(v["ok"], false);
+        let v: serde_json::Value = serde_json::from_str(&s.import_data("1", "not a name")).unwrap();
+        assert_eq!(v["ok"], false);
+        let r: serde_json::Value = serde_json::from_str(&s.export_data(r#"["nope"]"#)).unwrap();
+        assert_eq!(r["ok"], false);
     }
 
     #[test]

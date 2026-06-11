@@ -21,7 +21,7 @@ const BUILTINS = [
   'abs', 'charpoly', 'conj', 'cos', 'det', 'diff', 'eig', 'eigenvalues',
   'exp', 'expand', 'eye', 'identity', 'im', 'imag', 'inv', 'ln', 'N',
   'plot', 'plot3d', 'precision', 'rank', 're', 'real', 'rref', 'sin', 'solve',
-  'sqrt', 'subs', 'tan', 'transpose',
+  'sqrt', 'struct', 'subs', 'tan', 'transpose',
 ]
 
 const KEYWORD_SET = new Set(KEYWORDS)
@@ -31,7 +31,7 @@ const BUILTIN_SET = new Set(BUILTINS)
 const exactStream = StreamLanguage.define<void>({
   token(stream) {
     if (stream.eatSpace()) return null
-    if (stream.match(/^\d+(\.\d+)?([eE][+-]?\d+)?/)) return 'number'
+    if (stream.match(/^(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?/)) return 'number'
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const w = stream.current()
       if (KEYWORD_SET.has(w)) return 'keyword'
@@ -39,7 +39,7 @@ const exactStream = StreamLanguage.define<void>({
       if (BUILTIN_SET.has(w)) return 'builtin'
       return 'variableName'
     }
-    if (stream.match(/^(:=|==|!=|<=|>=|[+\-*/^=<>])/)) return 'operator'
+    if (stream.match(/^(:=|==|!=|<=|>=|[+\-*/^=<>.])/)) return 'operator'
     if (stream.match(/^[[\](){},;]/)) return 'bracket'
     stream.next()
     return null

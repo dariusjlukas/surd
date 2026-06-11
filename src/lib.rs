@@ -15,6 +15,7 @@
 //! values. All canonicalization lives in the smart constructors in [`expr`].
 
 pub mod ast;
+pub mod dataio;
 pub mod eval;
 pub mod expr;
 pub mod f64eval;

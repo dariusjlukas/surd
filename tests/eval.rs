@@ -363,3 +363,54 @@ fn plot_is_a_symbolic_value() {
     assert_eq!(ev("plot(sin(x), x, -pi, pi)"), "plot(sin(x), x, -π, π)");
     assert_eq!(ev_all(&["x := 3", "plot(x^2, x, 0, 1)"]), "plot(x^2, x, 0, 1)");
 }
+
+// ---------------------------------------------------------------------------
+// Structs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn structs_construct_and_access_fields() {
+    assert_eq!(ev("struct(a = 1, b = 2).a"), "1");
+    assert_eq!(ev("struct(a = 1, b = 2).b"), "2");
+    // Fields hold anything a variable can: matrices, functions, equations.
+    assert_eq!(
+        ev_all(&["s := struct(m = [1, 2; 3, 4], k = 1/3)", "det(s.m) + s.k"]),
+        "-5/3"
+    );
+    // Chained access through nested structs.
+    assert_eq!(ev("struct(inner = struct(x = 7)).inner.x"), "7");
+    // Field access binds tighter than ^.
+    assert_eq!(ev("struct(a = 3).a^2"), "9");
+}
+
+#[test]
+fn struct_field_names_come_from_syntax_not_bindings() {
+    // `a` is bound, but struct(a = ...) still names the field "a".
+    assert_eq!(ev_all(&["a := 99", "struct(a = 1).a"]), "1");
+    // ...while the value side does evaluate.
+    assert_eq!(ev_all(&["a := 99", "struct(b = a).b"]), "99");
+}
+
+#[test]
+fn structs_are_canonical_and_compare_by_value() {
+    // Field order doesn't matter: sorted at construction.
+    assert_eq!(ev("struct(b = 2, a = 1) == struct(a = 1, b = 2)"), "true");
+    assert_eq!(ev("struct(a = 1) == struct(a = 2)"), "false");
+    // Display is re-parseable (sorted, parenthesized as needed).
+    assert_eq!(ev("struct(b = 2, a = 1)"), "struct(a = 1, b = 2)");
+}
+
+#[test]
+fn struct_errors_are_graceful() {
+    assert_eq!(
+        ev("struct(a = 1).c"),
+        "error: struct has no field 'c' (fields: a)"
+    );
+    assert!(ev("struct(1, 2)").starts_with("error: struct expects"));
+    assert!(ev("struct()").starts_with("error: a struct needs"));
+    assert!(ev("struct(a = 1, a = 2)").starts_with("error: duplicate struct field"));
+    assert!(ev("(1 + 2).a").starts_with("error: cannot read field"));
+    assert!(ev("struct(a = 1) + 1").starts_with("error: cannot do arithmetic"));
+    // `.5` is still a numeric literal, not field access.
+    assert_eq!(ev("[1, .5]"), "[ 1  1/2 ]");
+}

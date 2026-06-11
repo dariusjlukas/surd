@@ -27,11 +27,9 @@ const Surface3DView = lazy(() =>
 )
 
 export function CellView({ cell }: { cell: Cell }) {
-  return cell.kind === 'markdown' ? (
-    <MarkdownCell cell={cell} />
-  ) : (
-    <MathCell cell={cell} />
-  )
+  if (cell.kind === 'markdown') return <MarkdownCell cell={cell} />
+  if (cell.kind === 'data') return <DataCell cell={cell} />
+  return <MathCell cell={cell} />
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +162,7 @@ function MathCell({ cell }: { cell: Cell }) {
           <span className="select-none text-accent">&gt;&gt; </span>
           {cell.src}
         </pre>
-        <span className="hidden shrink-0 gap-1 group-hover:flex">
+        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
           {ready && (
             <>
               <CellButton label="edit (double-click also works)" onClick={() => setEditing(true)}>
@@ -202,7 +200,8 @@ function MathCell({ cell }: { cell: Cell }) {
 function DeleteButton({ cell }: { cell: Cell }) {
   const deleteCell = useNotebook((s) => s.deleteCell)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
-  if (!ready && cell.kind === 'math') return null
+  // Math and data cells affect the workspace; deleting them needs the engine.
+  if (!ready && cell.kind !== 'markdown') return null
   return (
     <CellButton label="delete cell" onClick={() => void deleteCell(cell.id)}>
       <FontAwesomeIcon icon={faXmark} className="h-3 w-3" />
@@ -240,11 +239,66 @@ function Output({ cell }: { cell: Cell }) {
         </Suspense>
       ) : null
     case 'function':
-      // "<function(n)>" is a value description, not math
+    case 'data':
+      // value descriptions ("<function(n)>", import summaries), not math
       return <div className="font-mono text-sm text-muted">{r.text}</div>
     default:
       return <MathOutput latex={r.latex} fallback={r.text} />
   }
+}
+
+// ---------------------------------------------------------------------------
+// data cells (raw-data imports)
+// ---------------------------------------------------------------------------
+
+/** A raw-data import. The payload isn't editable — re-import the file
+ * instead — so this is a plain row: label, summary, run/delete. */
+function DataCell({ cell }: { cell: Cell }) {
+  const rerun = useNotebook((s) => s.rerun)
+  const insertCell = useNotebook((s) => s.insertCell)
+  const deleteCell = useNotebook((s) => s.deleteCell)
+  const ready = useNotebook((s) => s.engineStatus === 'ready')
+
+  const menu: MenuEntry[] = [
+    { label: 'Run from here', onSelect: () => void rerun(cell.id), disabled: !ready },
+    {
+      label: `Copy variable name (${cell.dataName ?? ''})`,
+      onSelect: () => copy(cell.dataName ?? ''),
+    },
+    { label: 'Copy imported file contents', onSelect: () => copy(cell.dataPayload ?? '') },
+    'divider',
+    { label: 'Add note below', onSelect: () => insertCell(cell.id, 'markdown') },
+    { label: 'Delete cell', onSelect: () => void deleteCell(cell.id), danger: true, disabled: !ready },
+  ]
+
+  return (
+    <div
+      className="group -mx-2 rounded-md px-2 py-1 hover:bg-surface/50"
+      onContextMenu={(e) => openContextMenu(e, menu)}
+    >
+      <div className="flex items-start gap-2">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-sm text-muted">
+          <span className="select-none text-accent">⇣ </span>
+          {cell.src}
+        </pre>
+        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
+          {ready && (
+            <CellButton
+              label="re-import this data and re-evaluate everything below"
+              onClick={() => void rerun(cell.id)}
+            >
+              run
+            </CellButton>
+          )}
+          <InsertNoteButton afterId={cell.id} />
+          <DeleteButton cell={cell} />
+        </span>
+      </div>
+      <div className="pl-6">
+        <Output cell={cell} />
+      </div>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +353,7 @@ function MarkdownCell({ cell }: { cell: Cell }) {
         >
           <MarkdownView src={cell.src} />
         </div>
-        <span className="hidden shrink-0 gap-1 group-hover:flex">
+        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
           <CellButton label="edit (double-click also works)" onClick={() => setEditing(true)}>
             edit
           </CellButton>

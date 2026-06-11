@@ -45,8 +45,11 @@ export type ResultKind =
   | 'boolean'
   | 'equation'
   | 'function'
+  | 'struct'
   | 'plot'
   | 'plot3d'
+  /** A data import's summary result (Session.import_data). */
+  | 'data'
   | 'error'
 
 export interface EvalResult {
@@ -90,13 +93,28 @@ export interface WorkspaceEntry {
   kind: ResultKind
 }
 
+/** Result of Session.export_data: the exact-data file's text, or an error. */
+export interface ExportResult {
+  ok: boolean
+  data?: string
+  error?: string
+}
+
 // ---------------------------------------------------------------------------
 // Worker protocol
 // ---------------------------------------------------------------------------
 
+/** One replayable step of a notebook's engine history: an evaluated source
+ * line, or a raw-data import bound to a workspace name. */
+export type ReplayEntry =
+  | { type: 'eval'; src: string }
+  | { type: 'import'; name: string; payload: string }
+
 export type ToWorker =
-  | { type: 'init'; replay: string[] }
+  | { type: 'init'; replay: ReplayEntry[] }
   | { type: 'eval'; id: number; src: string }
+  | { type: 'importData'; id: number; name: string; payload: string }
+  | { type: 'exportData'; id: number; names: string[] }
   | { type: 'workspace'; id: number }
   | {
       type: 'resample'
@@ -111,5 +129,7 @@ export type ToWorker =
 export type FromWorker =
   | { type: 'ready'; replayed: number }
   | { type: 'result'; id: number; result: EvalResult }
+  | { type: 'imported'; id: number; result: EvalResult }
+  | { type: 'exported'; id: number; result: ExportResult }
   | { type: 'workspace'; id: number; result: WorkspaceEntry[] }
   | { type: 'resampled'; id: number; result: ResampleResult }

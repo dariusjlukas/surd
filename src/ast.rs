@@ -5,7 +5,9 @@
 //! `PartialEq` is derived so that function bodies (stored in an `Expr::Function`
 //! as `Rc<Node>`) can participate in `Expr` equality.
 
-#[derive(Clone, Debug, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Node {
     Num(String),
     Ident(String),
@@ -14,6 +16,8 @@ pub enum Node {
     /// Logical negation: `not x`.
     Not(Box<Node>),
     Call(String, Vec<Node>),
+    /// Struct field access: `base.name`.
+    Field(Box<Node>, String),
     /// A matrix literal, rows of cells: `[1, 2; 3, 4]`.
     Matrix(Vec<Vec<Node>>),
     /// `name := rhs`
@@ -31,7 +35,7 @@ pub enum Node {
     Block(Vec<Node>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     Add,
     Sub,

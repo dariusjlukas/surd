@@ -41,6 +41,13 @@ num-traits = "0.2"
 # wasm32-unknown-unknown build (and we use neither random nor serde).
 astro-float = { version = "0.9", default-features = false, features = ["std"] }
 
+# Data import/export (src/dataio.rs). Function bodies serialize via derive on
+# the AST; `arbitrary_precision` keeps JSON number literals as text so
+# imported decimals become exact rationals instead of round-tripping
+# through f64.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+
 # Dev-only line editor for the REPL harness. The real frontend is the wasm/
 # crate + web/ UI; this is just a pleasant way to drive the engine natively.
 # Target-gated so the wasm dependency tree stays free of terminal machinery.

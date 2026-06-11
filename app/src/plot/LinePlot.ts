@@ -4,7 +4,16 @@
 // mapped to the view window, so pan/zoom is a camera update, not a rebuild.
 
 import * as THREE from 'three'
+import { Line2 } from 'three/addons/lines/Line2.js'
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import type { SamplePoint } from '../engine/types'
+
+/** Curve stroke width in CSS pixels. Native WebGL lines are stuck at 1
+ * device pixel (linewidth is ignored almost everywhere), which reads as a
+ * thin, aliased hairline — so curves use the fat-line addon instead, which
+ * extrudes screen-space quads and antialiases like any other triangle. */
+const CURVE_WIDTH_PX = 2
 
 export interface ViewWindow {
   a: number // x min
@@ -34,16 +43,28 @@ export class LinePlot {
   private grid = new THREE.Group()
   private curve = new THREE.Group()
   private view: ViewWindow = { a: 0, b: 1, lo: 0, hi: 1 }
+  /** Canvas CSS size; LineMaterial needs it to convert linewidth to clip
+   * space, so resize() keeps the curve materials in sync. */
+  private size = new THREE.Vector2(1, 1)
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
     this.camera.position.z = 1
+    // Everything sits at z = 0, and three.js breaks the tie by material.id —
+    // rebuildGrid makes fresh materials each view change, so without an
+    // explicit renderOrder the grid would draw *over* the curves, punching a
+    // gap wherever a gridline crosses (or runs tangent to) a curve.
+    this.curve.renderOrder = 1
     this.scene.add(this.grid, this.curve)
   }
 
   resize(width: number, height: number) {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
     this.renderer.setSize(width, height, false)
+    this.size.set(width, height)
+    for (const child of this.curve.children) {
+      ;((child as Line2).material as LineMaterial).resolution.copy(this.size)
+    }
     this.render()
   }
 
@@ -66,15 +87,17 @@ export class LinePlot {
   setData(series: SamplePoint[][]) {
     disposeChildren(this.curve)
     series.forEach((points, i) => {
-      const material = new THREE.LineBasicMaterial({
-        color: themeColor(seriesColorToken(i), 0x7dd3fc),
+      const material = new LineMaterial({
+        color: themeColor(seriesColorToken(i), 0x7dd3fc).getHex(),
+        linewidth: CURVE_WIDTH_PX,
       })
+      material.resolution.copy(this.size)
       let run: number[] = []
       const flush = () => {
         if (run.length >= 6) {
-          const g = new THREE.BufferGeometry()
-          g.setAttribute('position', new THREE.Float32BufferAttribute(run, 3))
-          this.curve.add(new THREE.Line(g, material))
+          const g = new LineGeometry()
+          g.setPositions(run)
+          this.curve.add(new Line2(g, material))
         }
         run = []
       }

@@ -62,6 +62,12 @@ pub enum Expr {
     Function { params: Vec<String>, body: Rc<Node> },
     /// `lhs = rhs`. A piece of data, not a boolean.
     Equation(Box<Expr>, Box<Expr>),
+    /// Named fields holding arbitrary values: `struct(a = 1, b = [1; 2])`.
+    /// Invariants (enforced by [`structure`]): non-empty, names unique and
+    /// sorted — so derived equality is field-order-independent. Fields are
+    /// read with `.name`; data imports land in the workspace as structs so
+    /// imported names can't collide with existing bindings.
+    Struct(Vec<(String, Expr)>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +112,21 @@ pub fn complex(re: Expr, im: Expr) -> Expr {
 /// The imaginary unit, i.
 pub fn imaginary_unit() -> Expr {
     Expr::Complex(Box::new(int(0)), Box::new(int(1)))
+}
+
+/// Build a struct value, enforcing its invariants: at least one field, names
+/// unique, fields sorted by name (the canonical form).
+pub fn structure(mut fields: Vec<(String, Expr)>) -> Result<Expr, String> {
+    if fields.is_empty() {
+        return Err("a struct needs at least one field".into());
+    }
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    for w in fields.windows(2) {
+        if w[0].0 == w[1].0 {
+            return Err(format!("duplicate struct field '{}'", w[0].0));
+        }
+    }
+    Ok(Expr::Struct(fields))
 }
 
 /// Collapse a rational to an `Int` when its denominator is 1.
@@ -683,8 +704,8 @@ pub fn differentiate(e: &Expr, var: &str) -> Expr {
         Expr::Matrix(rows) => Expr::Matrix(map_entries(rows, |x| differentiate(x, var))),
         // Differentiation distributes over the real and imaginary parts.
         Expr::Complex(re, im) => complex(differentiate(re, var), differentiate(im, var)),
-        // Booleans and functions are opaque to differentiation.
-        Expr::Bool(_) | Expr::Function { .. } => e.clone(),
+        // Booleans, functions, and structs are opaque to differentiation.
+        Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_) => e.clone(),
         Expr::Equation(l, r) => Expr::Equation(
             Box::new(differentiate(l, var)),
             Box::new(differentiate(r, var)),
@@ -714,6 +735,13 @@ pub fn substitute(e: &Expr, var: &str, val: &Expr) -> Expr {
         Expr::Func(name, args) => func(name, args.iter().map(|a| substitute(a, var, val)).collect()),
         Expr::Complex(re, im) => complex(substitute(re, var, val), substitute(im, var, val)),
         Expr::Matrix(rows) => Expr::Matrix(map_entries(rows, |x| substitute(x, var, val))),
+        // Substitution reaches into struct fields (names are not symbols).
+        Expr::Struct(fields) => Expr::Struct(
+            fields
+                .iter()
+                .map(|(n, v)| (n.clone(), substitute(v, var, val)))
+                .collect(),
+        ),
         Expr::Equation(l, r) => Expr::Equation(
             Box::new(substitute(l, var, val)),
             Box::new(substitute(r, var, val)),
@@ -806,6 +834,7 @@ pub fn contains_symbol(e: &Expr, var: &str) -> bool {
         Expr::Func(_, args) => args.iter().any(|a| contains_symbol(a, var)),
         Expr::Complex(re, im) => contains_symbol(re, var) || contains_symbol(im, var),
         Expr::Matrix(rows) => rows.iter().flatten().any(|e| contains_symbol(e, var)),
+        Expr::Struct(fields) => fields.iter().any(|(_, v)| contains_symbol(v, var)),
         Expr::Equation(l, r) => contains_symbol(l, var) || contains_symbol(r, var),
     }
 }
@@ -961,6 +990,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
         Expr::Bool(_) => Err("cannot numerically evaluate a boolean".to_string()),
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
+        Expr::Struct(..) => Err("cannot numerically evaluate a struct".to_string()),
     }
 }
 
@@ -1203,6 +1233,7 @@ fn to_complex(e: &Expr, p: usize, cc: &mut Consts) -> Result<Cpx, String> {
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Matrix(..) => Err("cannot collapse a matrix to a single number".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
+        Expr::Struct(..) => Err("cannot numerically evaluate a struct".to_string()),
     }
 }
 
@@ -1470,6 +1501,7 @@ fn type_rank(e: &Expr) -> u8 {
         Expr::Bool(_) => 8,
         Expr::Function { .. } => 9,
         Expr::Equation(..) => 10,
+        Expr::Struct(_) => 11,
     }
 }
 
@@ -1575,6 +1607,19 @@ impl Expr {
             Expr::Equation(l, r) => (
                 PREC_EQ,
                 format!("{} = {}", l.render(PREC_ADD), r.render(PREC_ADD)),
+            ),
+            // Re-parseable through the `struct(...)` builtin: equation-valued
+            // fields render above PREC_EQ, so they come back parenthesized.
+            Expr::Struct(fields) => (
+                PREC_ATOM,
+                format!(
+                    "struct({})",
+                    fields
+                        .iter()
+                        .map(|(n, v)| format!("{} = {}", n, v.render(PREC_ADD)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             ),
         }
     }

@@ -79,6 +79,17 @@ How it holds together:
   (quantile) to manual until reset.
 - **A workspace panel** lists every binding (name, value as typeset math),
   refreshed from `Session::workspace()` after each successful evaluation.
+- **Raw data imports/exports** live in the workspace panel. Import a file
+  (`exact-data` JSON, generic JSON, or CSV — sniffed) and it lands in a fresh
+  variable; files with named members (CSV columns, JSON keys, exported
+  variables) arrive inside a *struct* (`sensor.temp`, see below), so imported
+  names can never collide with existing bindings. Numbers are read from their
+  literal text — `0.1` in a sensor log becomes the exact rational 1/10, never
+  an f64. Export saves any selection of workspace variables (anything a
+  variable can hold, functions included) into one `exact-data` file; exact
+  values round-trip losslessly. An import is a notebook *cell* carrying the
+  file's text, so the replay model — and notebook export — keeps working with
+  data in play.
 - **The stack is set at link time** (`.cargo/config.toml`, 32 MiB) so the
   engine's recursion guards hold on wasm just like they do under
   `run_with_stack` natively.
@@ -311,6 +322,21 @@ Functions: `f(x) := expr` for one-liners, or `function f(x) … end` for blocks.
 Bodies have their own local scope; recursion works. Operators: `< > <= >= == !=`,
 `and`/`or`/`not`. Reserved words: `if then else end while do function and or not
 true false`.
+
+Structs group named values; fields hold anything a variable can and are read
+with `.` (which binds tighter than `^`). Data imports arrive as structs:
+
+```
+>> s := struct(gain = 1/3, taps = [1, 2; 3, 4])
+struct(gain = 1/3, taps = [ 1  2 ]
+[ 3  4 ])
+>> s.gain * det(s.taps)
+-2/3
+```
+
+Field names are taken from the syntax (a binding for `gain` elsewhere doesn't
+interfere), fields are kept sorted (so `==` is field-order-independent), and
+structs are opaque to arithmetic — `s + 1` is an error, not a guess.
 
 ## Architecture
 

@@ -21,6 +21,9 @@ pub enum Token {
     LBracket,
     RBracket,
     Comma,
+    /// `.` — struct field access. Only when not starting a number: `.5` stays
+    /// a numeric literal, `s.a` is field access.
+    Dot,
     /// `;` — statement separator, or matrix row separator inside `[...]`.
     Semicolon,
     /// A significant newline (statement separator).
@@ -92,6 +95,11 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 push(&mut tokens, Token::RBracket, &mut i);
             }
             ',' => push(&mut tokens, Token::Comma, &mut i),
+            // `.` not followed by a digit is field access; `.5` falls through
+            // to the numeric-literal arm below.
+            '.' if !matches!(chars.get(i + 1), Some(c) if c.is_ascii_digit()) => {
+                push(&mut tokens, Token::Dot, &mut i)
+            }
             ';' => push(&mut tokens, Token::Semicolon, &mut i),
             '=' => {
                 if chars.get(i + 1) == Some(&'=') {

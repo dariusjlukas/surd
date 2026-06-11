@@ -10,6 +10,7 @@ import init, { Session, resample } from './pkg/exact_wasm'
 import wasmUrl from './pkg/exact_wasm_bg.wasm?url'
 import type {
   EvalResult,
+  ExportResult,
   FromWorker,
   ResampleResult,
   ToWorker,
@@ -26,8 +27,10 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     case 'init': {
       await init({ module_or_path: wasmUrl })
       session = new Session()
-      for (const src of msg.replay) {
-        session.eval(src) // rebuild workspace; results were already rendered
+      for (const entry of msg.replay) {
+        // rebuild workspace; results were already rendered
+        if (entry.type === 'eval') session.eval(entry.src)
+        else session.import_data(entry.payload, entry.name)
       }
       post({ type: 'ready', replayed: msg.replay.length })
       break
@@ -35,6 +38,20 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     case 'eval': {
       const result = JSON.parse(session!.eval(msg.src)) as EvalResult
       post({ type: 'result', id: msg.id, result })
+      break
+    }
+    case 'importData': {
+      const result = JSON.parse(
+        session!.import_data(msg.payload, msg.name),
+      ) as EvalResult
+      post({ type: 'imported', id: msg.id, result })
+      break
+    }
+    case 'exportData': {
+      const result = JSON.parse(
+        session!.export_data(JSON.stringify(msg.names)),
+      ) as ExportResult
+      post({ type: 'exported', id: msg.id, result })
       break
     }
     case 'workspace': {

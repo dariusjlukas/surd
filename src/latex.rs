@@ -113,6 +113,17 @@ fn render_inner(e: &Expr) -> (u8, String) {
             PREC_EQ,
             format!("{} = {}", render(l, PREC_ADD), render(r, PREC_ADD)),
         ),
+        Expr::Struct(fields) => (
+            PREC_ATOM,
+            format!(
+                r"\left\{{ {} \right\}}",
+                fields
+                    .iter()
+                    .map(|(n, v)| format!(r"\mathrm{{{}}} = {}", n, render(v, PREC_ADD)))
+                    .collect::<Vec<_>>()
+                    .join(",\\; ")
+            ),
+        ),
     }
 }
 

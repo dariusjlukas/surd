@@ -2,10 +2,19 @@
 // successful evaluation. Values render as math; anything enormous (a
 // 1000-digit integer, a huge matrix) falls back to truncated plain text
 // rather than asking KaTeX to typeset a wall. Width is user-resizable
-// (PaneResizer in App); right-click a row to copy the binding.
+// (PaneResizer in App); right-click a row to copy or export the binding.
+//
+// Raw data lives here too: "import" reads a file (exact-data JSON, generic
+// JSON, or CSV) into a fresh variable — named members arrive inside a struct
+// so they can't collide with existing bindings — and "export" toggles a
+// selection mode that saves any group of variables into one exact-data file.
 
+import { useRef, useState } from 'react'
+import { faDownload, faUpload } from '@fortawesome/free-solid-svg-icons'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import type { WorkspaceEntry } from '../engine/types'
 import { useNotebook } from '../state/store'
+import { downloadDataFile } from '../state/dataFile'
 import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from './MathOutput'
 
@@ -15,35 +24,151 @@ const copy = (text: string) => void navigator.clipboard.writeText(text)
 
 export function WorkspacePanel({ width }: { width: number }) {
   const workspace = useNotebook((s) => s.workspace)
+  const importData = useNotebook((s) => s.importData)
+  const exportData = useNotebook((s) => s.exportData)
+  const ready = useNotebook((s) => s.engineStatus === 'ready')
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  const onImportFile = async (file: File) => {
+    try {
+      await importData(file.name, await file.text())
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'import failed')
+    }
+  }
+
+  const doExport = async (names: string[], baseName: string) => {
+    try {
+      downloadDataFile(await exportData(names), baseName)
+      setError(null)
+      setSelecting(false)
+      setSelected(new Set())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'export failed')
+    }
+  }
+
+  const toggle = (name: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
 
   return (
     <aside style={{ width }} className="flex shrink-0 flex-col border-l border-edge">
-      <div className="border-b border-edge px-4 py-2 text-xs font-medium uppercase tracking-wide text-faint">
-        workspace
+      <div className="flex items-center justify-between border-b border-edge px-4 py-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-faint">
+          workspace
+        </span>
+        <span className="flex gap-1">
+          <button
+            title="import raw data (exact-data JSON, generic JSON, or CSV) into a variable"
+            disabled={!ready}
+            onClick={() => fileRef.current?.click()}
+            className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"
+          >
+            <FontAwesomeIcon icon={faUpload} className="h-3 w-3" />
+          </button>
+          <button
+            title="export variables to a data file"
+            disabled={workspace.length === 0}
+            onClick={() => {
+              setSelecting((s) => !s)
+              setSelected(new Set())
+            }}
+            className={`rounded-md px-1.5 py-0.5 hover:bg-hover hover:text-ink disabled:opacity-40 ${
+              selecting ? 'bg-accent/10 text-accent' : 'text-muted'
+            }`}
+          >
+            <FontAwesomeIcon icon={faDownload} className="h-3 w-3" />
+          </button>
+        </span>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,.csv,.tsv,.txt,application/json,text/csv"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = '' // allow re-importing the same file
+            if (file) void onImportFile(file)
+          }}
+        />
       </div>
+      {error && <p className="border-b border-edge px-4 py-2 text-xs text-danger">{error}</p>}
       <div className="flex-1 overflow-y-auto">
         {workspace.length === 0 ? (
           <p className="px-4 py-3 text-xs text-faint">
-            no variables yet — try <code className="text-muted">x := 3</code>
+            no variables yet — try <code className="text-muted">x := 3</code> or import
+            a data file
           </p>
         ) : (
           <table className="w-full text-sm">
             <tbody>
               {workspace.map((entry) => (
-                <Row key={entry.name} entry={entry} />
+                <Row
+                  key={entry.name}
+                  entry={entry}
+                  selecting={selecting}
+                  selected={selected.has(entry.name)}
+                  onToggle={() => toggle(entry.name)}
+                  onExportOne={() => void doExport([entry.name], entry.name)}
+                />
               ))}
             </tbody>
           </table>
         )}
       </div>
+      {selecting && (
+        <div className="flex items-center gap-2 border-t border-edge px-3 py-2">
+          <button
+            onClick={() =>
+              setSelected((prev) =>
+                prev.size === workspace.length
+                  ? new Set()
+                  : new Set(workspace.map((w) => w.name)),
+              )
+            }
+            className="rounded-md border border-edge px-2 py-1 text-xs text-muted hover:border-edge-strong hover:text-ink"
+          >
+            {selected.size === workspace.length ? 'none' : 'all'}
+          </button>
+          <button
+            disabled={selected.size === 0}
+            onClick={() => void doExport([...selected], 'workspace')}
+            className="flex-1 rounded-md border border-edge px-2 py-1 text-xs text-muted hover:border-edge-strong hover:text-ink disabled:opacity-40"
+          >
+            export {selected.size || ''} selected…
+          </button>
+        </div>
+      )}
     </aside>
   )
 }
 
-function Row({ entry }: { entry: WorkspaceEntry }) {
+function Row({
+  entry,
+  selecting,
+  selected,
+  onToggle,
+  onExportOne,
+}: {
+  entry: WorkspaceEntry
+  selecting: boolean
+  selected: boolean
+  onToggle: () => void
+  onExportOne: () => void
+}) {
   return (
     <tr
       className="border-b border-edge/60 align-baseline hover:bg-hover/30"
+      onClick={selecting ? onToggle : undefined}
       onContextMenu={(e) =>
         openContextMenu(e, [
           { label: 'Copy name', onSelect: () => copy(entry.name) },
@@ -52,9 +177,16 @@ function Row({ entry }: { entry: WorkspaceEntry }) {
             label: `Copy as assignment (${entry.name} := …)`,
             onSelect: () => copy(`${entry.name} := ${entry.text}`),
           },
+          'divider',
+          { label: 'Export variable…', onSelect: onExportOne },
         ])
       }
     >
+      {selecting && (
+        <td className="w-1 pl-3">
+          <input type="checkbox" checked={selected} readOnly className="accent-current" />
+        </td>
+      )}
       <td className="w-1 whitespace-nowrap px-4 py-1.5 font-mono text-accent">
         {entry.name}
       </td>

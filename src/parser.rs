@@ -333,13 +333,24 @@ impl Parser {
     }
 
     fn parse_power(&mut self) -> Result<Node, String> {
-        let base = self.parse_atom()?;
+        let base = self.parse_postfix()?;
         if self.eat(&Token::Caret) {
             let exp = self.parse_unary()?; // right-assoc; exponent may be negative
             Ok(Node::BinOp(Op::Pow, Box::new(base), Box::new(exp)))
         } else {
             Ok(base)
         }
+    }
+
+    /// Struct field access binds tighter than `^`: `s.a^2` is `(s.a)^2`.
+    /// Chains: `s.a.b`.
+    fn parse_postfix(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_atom()?;
+        while self.eat(&Token::Dot) {
+            let name = self.expect_ident()?;
+            node = Node::Field(Box::new(node), name);
+        }
+        Ok(node)
     }
 
     fn parse_atom(&mut self) -> Result<Node, String> {

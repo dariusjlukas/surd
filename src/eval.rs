@@ -56,6 +56,17 @@ impl Interpreter {
         self.frames[0].iter()
     }
 
+    /// Bind a value directly in the global workspace, bypassing the parser.
+    /// Used by data imports, where the value never had source text.
+    pub fn set_global(&mut self, name: &str, value: Expr) {
+        self.frames[0].insert(name.to_string(), value);
+    }
+
+    /// Look up a global binding by name (for data export).
+    pub fn get_global(&self, name: &str) -> Option<&Expr> {
+        self.frames[0].get(name)
+    }
+
     // -- scope ---------------------------------------------------------------
 
     /// Look up a bound value: the current frame first, then the global frame.
@@ -109,6 +120,28 @@ impl Interpreter {
                 }
                 matrix::matrix(rows)
             }
+            Node::Field(base, field) => {
+                let value = self.eval_node(base)?;
+                match value {
+                    Expr::Struct(fields) => fields
+                        .iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| {
+                            let names: Vec<&str> =
+                                fields.iter().map(|(n, _)| n.as_str()).collect();
+                            format!(
+                                "struct has no field '{}' (fields: {})",
+                                field,
+                                names.join(", ")
+                            )
+                        }),
+                    other => Err(format!(
+                        "cannot read field '.{}' of a non-struct value '{}'",
+                        field, other
+                    )),
+                }
+            }
             Node::Call(name, args) => {
                 // diff/subs treat their variable argument as a *name*, not a
                 // value — they must see the expression before the workspace
@@ -119,6 +152,13 @@ impl Interpreter {
                     && !matches!(self.get_var(name), Some(Expr::Function { .. }))
                 {
                     return self.call_calculus(name, args);
+                }
+                // struct(a = 1, ...) reads its field names from the syntax —
+                // the `a` must not collapse to a workspace binding first.
+                if name == "struct"
+                    && !matches!(self.get_var(name), Some(Expr::Function { .. }))
+                {
+                    return self.call_struct(args);
                 }
                 let evaluated = args
                     .iter()
@@ -205,8 +245,8 @@ impl Interpreter {
     }
 
     fn eval_arith(&mut self, op: Op, x: Expr, y: Expr) -> Result<Expr, String> {
-        if is_bool_or_function(&x) || is_bool_or_function(&y) {
-            return Err("cannot do arithmetic on a boolean or function value".into());
+        if is_opaque_value(&x) || is_opaque_value(&y) {
+            return Err("cannot do arithmetic on a boolean, function, or struct value".into());
         }
         if matrix::is_matrix(&x) || matrix::is_matrix(&y) {
             return matrix_binop(op, x, y);
@@ -358,6 +398,22 @@ impl Interpreter {
                 self.eval_node(&args[6])?,
             ],
         ))
+    }
+
+    /// `struct(name = value, ...)` — each argument must literally be
+    /// `name = value`; the names become fields, the values evaluate normally.
+    fn call_struct(&mut self, args: &[Node]) -> Result<Expr, String> {
+        let mut fields = Vec::with_capacity(args.len());
+        for arg in args {
+            let Node::Equation(lhs, rhs) = arg else {
+                return Err("struct expects 'name = value' arguments, e.g. struct(a = 1)".into());
+            };
+            let Node::Ident(name) = lhs.as_ref() else {
+                return Err("struct field names must be plain identifiers".into());
+            };
+            fields.push((name.clone(), self.eval_node(rhs)?));
+        }
+        structure(fields)
     }
 
     /// A *name* argument (the variable of diff/subs/plot): a bare identifier,
@@ -613,8 +669,9 @@ fn as_bool(e: &Expr) -> Result<bool, String> {
     }
 }
 
-fn is_bool_or_function(e: &Expr) -> bool {
-    matches!(e, Expr::Bool(_) | Expr::Function { .. })
+/// Values arithmetic can never touch: booleans, functions, structs.
+fn is_opaque_value(e: &Expr) -> bool {
+    matches!(e, Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_))
 }
 
 fn expect_matrix(name: &str, e: &Expr) -> Result<(), String> {

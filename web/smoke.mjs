@@ -47,6 +47,19 @@ const surf = ev('plot3d(u^2 - v^2, u, -1, 1, v, -1, 1)');
 expect('plot3d kind', surf.kind, 'plot3d');
 expect('plot3d grid', surf.plot3d.heights.length, surf.plot3d.nx * surf.plot3d.ny);
 
+// Raw-data import (CSV → struct of exact column vectors) + grouped export.
+const imp = JSON.parse(s.import_data('t, val\n0, 0.5\n1, 2e1\n', 'sensor'));
+expect('csv import ok', imp.ok, true);
+expect('csv import kind', imp.kind, 'data');
+expect('imported field is exact', ev('sensor.val').text.includes('1/2'), true);
+expect('struct field access', ev('struct(a = 1/3, b = 2).a').text, '1/3');
+const exp = JSON.parse(s.export_data('["sensor", "g"]'));
+expect('export ok', exp.ok, true);
+const re = JSON.parse(s.import_data(exp.data, 'saved'));
+expect('re-import ok', re.ok, true);
+expect('round-trip scalar', ev('saved.g + 1').text, '8');
+expect('round-trip matrix', ev('saved.sensor.t + saved.sensor.val').kind, 'matrix');
+
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);
 } else {
