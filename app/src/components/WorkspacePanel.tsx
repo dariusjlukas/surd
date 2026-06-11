@@ -61,7 +61,10 @@ export function WorkspacePanel({ width }: { width: number }) {
     })
 
   return (
-    <aside style={{ width }} className="flex shrink-0 flex-col border-l border-edge">
+    <aside
+      style={{ width }}
+      className="flex shrink-0 flex-col border-l border-edge"
+    >
       <div className="flex items-center justify-between border-b border-edge px-4 py-2">
         <span className="text-xs font-medium uppercase tracking-wide text-faint">
           workspace
@@ -101,12 +104,16 @@ export function WorkspacePanel({ width }: { width: number }) {
           }}
         />
       </div>
-      {error && <p className="border-b border-edge px-4 py-2 text-xs text-danger">{error}</p>}
+      {error && (
+        <p className="border-b border-edge px-4 py-2 text-xs text-danger">
+          {error}
+        </p>
+      )}
       <div className="flex-1 overflow-y-auto">
         {workspace.length === 0 ? (
           <p className="px-4 py-3 text-xs text-faint">
-            no variables yet — try <code className="text-muted">x := 3</code> or import
-            a data file
+            no variables yet — try <code className="text-muted">x := 3</code> or
+            import a data file
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -184,7 +191,12 @@ function Row({
     >
       {selecting && (
         <td className="w-1 pl-3">
-          <input type="checkbox" checked={selected} readOnly className="accent-current" />
+          <input
+            type="checkbox"
+            checked={selected}
+            readOnly
+            className="accent-current"
+          />
         </td>
       )}
       <td className="w-1 whitespace-nowrap px-4 py-1.5 font-mono text-accent">
@@ -200,7 +212,10 @@ function Row({
 function Value({ entry }: { entry: WorkspaceEntry }) {
   if (entry.kind === 'function' || entry.text.length > MAX_RENDERED_CHARS) {
     return (
-      <span className="break-all font-mono text-xs text-muted" title={entry.text}>
+      <span
+        className="break-all font-mono text-xs text-muted"
+        title={entry.text}
+      >
         {entry.text.length > MAX_RENDERED_CHARS
           ? entry.text.slice(0, MAX_RENDERED_CHARS) + '…'
           : entry.text}

@@ -84,7 +84,9 @@ export function InputBar() {
   return (
     <div className="border-t border-edge bg-surface/30 px-4 py-3 sm:px-6">
       <div className="flex items-start gap-2">
-        <span className="select-none pt-0.5 font-mono text-accent">&gt;&gt;</span>
+        <span className="select-none pt-0.5 font-mono text-accent">
+          &gt;&gt;
+        </span>
         <CodeEditor
           ref={editorRef}
           placeholder={ready ? '' : 'engine loading…'}

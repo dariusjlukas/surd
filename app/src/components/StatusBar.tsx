@@ -1,7 +1,11 @@
 import { faBars, faGear, faTableList } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useSettings } from '../state/settings'
-import { useActiveNotebook, useNotebook, type EngineStatus } from '../state/store'
+import {
+  useActiveNotebook,
+  useNotebook,
+  type EngineStatus,
+} from '../state/store'
 
 const LABEL: Record<EngineStatus, string> = {
   booting: 'loading engine…',
@@ -93,7 +97,9 @@ export function StatusBar() {
           onClick={() => {
             if (
               !confirmDelete ||
-              window.confirm(`Clear "${active.name}" — its cells and workspace?`)
+              window.confirm(
+                `Clear "${active.name}" — its cells and workspace?`,
+              )
             ) {
               clearNotebook()
             }
@@ -105,7 +111,11 @@ export function StatusBar() {
       )}
       <IconButton
         onClick={toggleWorkspace}
-        title={showWorkspace ? 'hide workspace variables' : 'show workspace variables'}
+        title={
+          showWorkspace
+            ? 'hide workspace variables'
+            : 'show workspace variables'
+        }
         active={showWorkspace}
       >
         <FontAwesomeIcon icon={faTableList} className="h-4 w-4" />

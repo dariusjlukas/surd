@@ -3,12 +3,7 @@
 // imperative handle (the input bar's submit-and-clear and history recall
 // don't fit a controlled-component shape).
 
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-} from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { completionKeymap } from '@codemirror/autocomplete'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
@@ -73,84 +68,102 @@ const baseTheme = EditorView.theme({
   '.cm-completionDetail': { color: 'var(--faint)', fontStyle: 'normal' },
 })
 
-export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
-  { initialDoc = '', lang = 'surd', placeholder, autoFocus, editable = true, keys, onDocChange },
-  ref,
-) {
-  const hostRef = useRef<HTMLDivElement>(null)
-  const viewRef = useRef<EditorView | null>(null)
-  const editableComp = useRef(new Compartment())
-  const placeholderComp = useRef(new Compartment())
-
-  // Latest callbacks without rebuilding the view.
-  const keysRef = useRef(keys)
-  keysRef.current = keys
-  const onDocChangeRef = useRef(onDocChange)
-  onDocChangeRef.current = onDocChange
-
-  useEffect(() => {
-    // Bindings delegate through keysRef so parents can pass fresh closures
-    // every render without rebuilding the view.
-    const dynamicKeys: KeyBinding[] = (keysRef.current ?? []).map((k, i) => ({
-      ...k,
-      run: (view: EditorView) => keysRef.current?.[i]?.run?.(view) ?? false,
-    }))
-    const view = new EditorView({
-      parent: hostRef.current!,
-      state: EditorState.create({
-        doc: initialDoc,
-        extensions: [
-          Prec.highest(keymap.of(dynamicKeys)),
-          history(),
-          keymap.of([...completionKeymap, ...historyKeymap, ...defaultKeymap]),
-          lang === 'surd' ? surdLanguage() : [],
-          placeholderComp.current.of(placeholder ? placeholderExt(placeholder) : []),
-          baseTheme,
-          EditorView.lineWrapping,
-          editableComp.current.of(EditorView.editable.of(editable)),
-          EditorView.updateListener.of((u) => {
-            if (u.docChanged) onDocChangeRef.current?.(u.state.doc.toString())
-          }),
-        ],
-      }),
-    })
-    viewRef.current = view
-    if (autoFocus) view.focus()
-    return () => {
-      view.destroy()
-      viewRef.current = null
-    }
-    // The view is intentionally built once; initialDoc/lang don't change for
-    // a mounted editor (cells remount via key).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: editableComp.current.reconfigure(EditorView.editable.of(editable)),
-    })
-  }, [editable])
-
-  useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: placeholderComp.current.reconfigure(
-        placeholder ? placeholderExt(placeholder) : [],
-      ),
-    })
-  }, [placeholder])
-
-  useImperativeHandle(ref, () => ({
-    get: () => viewRef.current?.state.doc.toString() ?? '',
-    set: (doc: string) => {
-      const view = viewRef.current
-      if (!view) return
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: doc },
-        selection: { anchor: doc.length },
-      })
+export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
+  function CodeEditor(
+    {
+      initialDoc = '',
+      lang = 'surd',
+      placeholder,
+      autoFocus,
+      editable = true,
+      keys,
+      onDocChange,
     },
-    focus: () => viewRef.current?.focus(),
-  }))
+    ref,
+  ) {
+    const hostRef = useRef<HTMLDivElement>(null)
+    const viewRef = useRef<EditorView | null>(null)
+    const editableComp = useRef(new Compartment())
+    const placeholderComp = useRef(new Compartment())
 
-  return <div ref={hostRef} className="min-w-0 flex-1" />
-})
+    // Latest callbacks without rebuilding the view.
+    const keysRef = useRef(keys)
+    keysRef.current = keys
+    const onDocChangeRef = useRef(onDocChange)
+    onDocChangeRef.current = onDocChange
+
+    useEffect(() => {
+      // Bindings delegate through keysRef so parents can pass fresh closures
+      // every render without rebuilding the view.
+      const dynamicKeys: KeyBinding[] = (keysRef.current ?? []).map((k, i) => ({
+        ...k,
+        run: (view: EditorView) => keysRef.current?.[i]?.run?.(view) ?? false,
+      }))
+      const view = new EditorView({
+        parent: hostRef.current!,
+        state: EditorState.create({
+          doc: initialDoc,
+          extensions: [
+            Prec.highest(keymap.of(dynamicKeys)),
+            history(),
+            keymap.of([
+              ...completionKeymap,
+              ...historyKeymap,
+              ...defaultKeymap,
+            ]),
+            lang === 'surd' ? surdLanguage() : [],
+            placeholderComp.current.of(
+              placeholder ? placeholderExt(placeholder) : [],
+            ),
+            baseTheme,
+            EditorView.lineWrapping,
+            editableComp.current.of(EditorView.editable.of(editable)),
+            EditorView.updateListener.of((u) => {
+              if (u.docChanged) onDocChangeRef.current?.(u.state.doc.toString())
+            }),
+          ],
+        }),
+      })
+      viewRef.current = view
+      if (autoFocus) view.focus()
+      return () => {
+        view.destroy()
+        viewRef.current = null
+      }
+      // The view is intentionally built once; initialDoc/lang don't change for
+      // a mounted editor (cells remount via key).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: editableComp.current.reconfigure(
+          EditorView.editable.of(editable),
+        ),
+      })
+    }, [editable])
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: placeholderComp.current.reconfigure(
+          placeholder ? placeholderExt(placeholder) : [],
+        ),
+      })
+    }, [placeholder])
+
+    useImperativeHandle(ref, () => ({
+      get: () => viewRef.current?.state.doc.toString() ?? '',
+      set: (doc: string) => {
+        const view = viewRef.current
+        if (!view) return
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: doc },
+          selection: { anchor: doc.length },
+        })
+      },
+      focus: () => viewRef.current?.focus(),
+    }))
+
+    return <div ref={hostRef} className="min-w-0 flex-1" />
+  },
+)

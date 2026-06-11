@@ -11,7 +11,11 @@
 // which holds the window until reset. Plain wheel zooms x about the cursor.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { normalizePlotData, type PlotData, type SamplePoint } from '../engine/types'
+import {
+  normalizePlotData,
+  type PlotData,
+  type SamplePoint,
+} from '../engine/types'
 import { useSettings } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
@@ -33,7 +37,11 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   const frameRef = useRef<HTMLDivElement>(null)
   const painterRef = useRef<LinePlot | null>(null)
   const debounceRef = useRef<number>(0)
-  const dragRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null)
+  const dragRef = useRef<{
+    pointerId: number
+    lastX: number
+    lastY: number
+  } | null>(null)
   const yManualRef = useRef(false)
 
   const initialPoints = useMemo(() => plot.series.map((s) => s.points), [plot])
@@ -46,7 +54,11 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   const [size, setSize] = useState({ w: 640, h: 320 })
   /** Measurement cursor: the snapped sample under the pointer (data coords,
    * so it stays glued to the curve through pan/zoom). */
-  const [probe, setProbe] = useState<{ x: number; y: number; si: number } | null>(null)
+  const [probe, setProbe] = useState<{
+    x: number
+    y: number
+    si: number
+  } | null>(null)
 
   const xTicks = useMemo(() => niceTicks(win.a, win.b), [win])
   const yTicks = useMemo(() => niceTicks(yWin[0], yWin[1]), [yWin])
@@ -108,7 +120,11 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return // right-click opens the context menu, not a drag
-    dragRef.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY }
+    dragRef.current = {
+      pointerId: e.pointerId,
+      lastX: e.clientX,
+      lastY: e.clientY,
+    }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
@@ -126,7 +142,9 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
       const idx = Math.round(((xData - pts[0][0]) / span) * (pts.length - 1))
       const [xs, ys] = pts[Math.min(pts.length - 1, Math.max(0, idx))]
       if (ys === null) return []
-      const dPx = Math.abs(size.h - ((ys - yWin[0]) / (yWin[1] - yWin[0])) * size.h - py)
+      const dPx = Math.abs(
+        size.h - ((ys - yWin[0]) / (yWin[1] - yWin[0])) * size.h - py,
+      )
       return [{ x: xs, y: ys, si, dPx }]
     })
     const best = candidates.reduce(
@@ -188,7 +206,9 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
             cursorY - (cursorY - lo) * factor,
             cursorY + (hi - cursorY) * factor,
           ]
-          return next[1] - next[0] < 1e-12 || next[1] - next[0] > 1e12 ? [lo, hi] : next
+          return next[1] - next[0] < 1e-12 || next[1] - next[0] > 1e12
+            ? [lo, hi]
+            : next
         })
       } else {
         const frac = (e.clientX - rect.left) / rect.width
@@ -229,7 +249,8 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
 
   // -- tick label positions (same scales as the painter) ---------------------
   const xPos = (x: number) => ((x - win.a) / (win.b - win.a)) * size.w
-  const yPos = (y: number) => size.h - ((y - yWin[0]) / (yWin[1] - yWin[0])) * size.h
+  const yPos = (y: number) =>
+    size.h - ((y - yWin[0]) / (yWin[1] - yWin[0])) * size.h
 
   return (
     <div className="max-w-2xl">
@@ -272,7 +293,10 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
             { label: 'Save as PNG', onSelect: savePng },
             { label: 'Reset view', onSelect: reset },
             'divider',
-            { label: 'Copy expression', onSelect: () => void navigator.clipboard.writeText(exprText) },
+            {
+              label: 'Copy expression',
+              onSelect: () => void navigator.clipboard.writeText(exprText),
+            },
           ])
         }
       >
@@ -283,7 +307,9 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
           </div>
           <div>
             y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
-            <span className={yManual ? 'text-warn/80' : ''}>{yManual ? 'manual' : 'auto'}</span>
+            <span className={yManual ? 'text-warn/80' : ''}>
+              {yManual ? 'manual' : 'auto'}
+            </span>
           </div>
         </div>
         {xTicks.map((t) => (
@@ -327,7 +353,10 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
               style={{
                 left: xPos(probe.x) + (xPos(probe.x) > size.w - 130 ? -10 : 10),
                 top: yPos(probe.y) - 26,
-                transform: xPos(probe.x) > size.w - 130 ? 'translateX(-100%)' : undefined,
+                transform:
+                  xPos(probe.x) > size.w - 130
+                    ? 'translateX(-100%)'
+                    : undefined,
               }}
             >
               ({formatTick(probe.x)}, {formatTick(probe.y)})

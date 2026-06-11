@@ -70,12 +70,26 @@ export function transcriptOf(cells: Cell[]): ReplayEntry[] {
 /** Reserved words a workspace variable may not shadow. Mirrors the engine's
  * lexer (plus `struct`, the constructor data imports rely on). */
 const RESERVED = new Set([
-  'if', 'then', 'else', 'end', 'while', 'do', 'function',
-  'and', 'or', 'not', 'true', 'false', 'struct',
+  'if',
+  'then',
+  'else',
+  'end',
+  'while',
+  'do',
+  'function',
+  'and',
+  'or',
+  'not',
+  'true',
+  'false',
+  'struct',
 ])
 
 /** A valid, unused workspace name derived from an imported file's name. */
-export function importVarName(fileName: string, taken: Iterable<string>): string {
+export function importVarName(
+  fileName: string,
+  taken: Iterable<string>,
+): string {
   let base = fileName
     .replace(/\.[^.]*$/, '')
     .trim()
@@ -147,7 +161,13 @@ interface NotebookState {
 
 function newNotebook(name: string): Notebook {
   const now = Date.now()
-  return { id: crypto.randomUUID(), name, cells: [], createdAt: now, updatedAt: now }
+  return {
+    id: crypto.randomUUID(),
+    name,
+    cells: [],
+    createdAt: now,
+    updatedAt: now,
+  }
 }
 
 /** A name like "Notebook 3" that no existing notebook already uses. */
@@ -206,19 +226,29 @@ export const useNotebook = create<NotebookState>()(
           notebooks: s.notebooks.map((n) => ({
             ...n,
             cells: n.cells.map((c) =>
-              c.status === 'pending' ? { ...c, status: 'cancelled' as const } : c,
+              c.status === 'pending'
+                ? { ...c, status: 'cancelled' as const }
+                : c,
             ),
           })),
         }))
 
-      const patchCell = (notebookId: string, cellId: string, p: Partial<Cell>) =>
+      const patchCell = (
+        notebookId: string,
+        cellId: string,
+        p: Partial<Cell>,
+      ) =>
         patch(notebookId, (n) => ({
           cells: n.cells.map((c) => (c.id === cellId ? { ...c, ...p } : c)),
         }))
 
       /** Evaluate `src` and write the outcome into an existing (pending)
        * cell. Used by submit; recomputeFrom inlines the same shape. */
-      const evalIntoCell = async (notebookId: string, cellId: string, src: string) => {
+      const evalIntoCell = async (
+        notebookId: string,
+        cellId: string,
+        src: string,
+      ) => {
         set({ engineStatus: 'busy' })
         try {
           const result = await client.eval(src)
@@ -266,7 +296,10 @@ export const useNotebook = create<NotebookState>()(
           try {
             const result =
               cell.kind === 'data'
-                ? await client.importData(cell.dataName ?? '', cell.dataPayload ?? '')
+                ? await client.importData(
+                    cell.dataName ?? '',
+                    cell.dataPayload ?? '',
+                  )
                 : await client.eval(cell.src)
             patchCell(notebookId, cellId, { status: 'done', result })
           } catch (e) {
@@ -286,7 +319,8 @@ export const useNotebook = create<NotebookState>()(
         showWorkspace: true,
         showSidebar: true,
         showSettings: false,
-        toggleWorkspace: () => set((s) => ({ showWorkspace: !s.showWorkspace })),
+        toggleWorkspace: () =>
+          set((s) => ({ showWorkspace: !s.showWorkspace })),
         toggleSidebar: () => set((s) => ({ showSidebar: !s.showSidebar })),
         toggleSettings: () => set((s) => ({ showSettings: !s.showSettings })),
 
@@ -379,7 +413,9 @@ export const useNotebook = create<NotebookState>()(
             cell.status === 'done' &&
             cell.result?.ok
           if (affectsWorkspace && get().engineStatus !== 'ready') return
-          patch(nb.id, (n) => ({ cells: n.cells.filter((c) => c.id !== cellId) }))
+          patch(nb.id, (n) => ({
+            cells: n.cells.filter((c) => c.id !== cellId),
+          }))
           // After removal, `index` is the first cell that saw the deleted
           // binding — recompute from there to undo its workspace effect.
           if (affectsWorkspace) await recomputeFrom(nb.id, index)
@@ -397,7 +433,9 @@ export const useNotebook = create<NotebookState>()(
             const at = afterId
               ? n.cells.findIndex((c) => c.id === afterId) + 1
               : n.cells.length
-            return { cells: [...n.cells.slice(0, at), cell, ...n.cells.slice(at)] }
+            return {
+              cells: [...n.cells.slice(0, at), cell, ...n.cells.slice(at)],
+            }
           })
           return cell.id
         },

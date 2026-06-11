@@ -9,19 +9,61 @@ import {
   type CompletionContext,
   type CompletionResult,
 } from '@codemirror/autocomplete'
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import {
+  HighlightStyle,
+  StreamLanguage,
+  syntaxHighlighting,
+} from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 import { useNotebook } from '../state/store'
 
-const KEYWORDS = ['if', 'then', 'else', 'end', 'while', 'do', 'function', 'and', 'or', 'not']
+const KEYWORDS = [
+  'if',
+  'then',
+  'else',
+  'end',
+  'while',
+  'do',
+  'function',
+  'and',
+  'or',
+  'not',
+]
 const CONSTANTS = ['pi', 'e', 'true', 'false']
 // Mirrors the builtin dispatch in src/eval.rs (call_builtin / call_calculus).
 const BUILTINS = [
-  'abs', 'charpoly', 'conj', 'cos', 'det', 'diff', 'eig', 'eigenvalues',
-  'exp', 'expand', 'eye', 'identity', 'im', 'imag', 'inv', 'ln', 'N',
-  'plot', 'plot3d', 'precision', 'rank', 're', 'real', 'rref', 'sin', 'solve',
-  'sqrt', 'struct', 'subs', 'tan', 'transpose',
+  'abs',
+  'charpoly',
+  'conj',
+  'cos',
+  'det',
+  'diff',
+  'eig',
+  'eigenvalues',
+  'exp',
+  'expand',
+  'eye',
+  'identity',
+  'im',
+  'imag',
+  'inv',
+  'ln',
+  'N',
+  'plot',
+  'plot3d',
+  'precision',
+  'rank',
+  're',
+  'real',
+  'rref',
+  'sin',
+  'solve',
+  'sqrt',
+  'struct',
+  'subs',
+  'tan',
+  'transpose',
 ]
 
 const KEYWORD_SET = new Set(KEYWORDS)
@@ -77,13 +119,11 @@ const STATIC_COMPLETIONS: Completion[] = [
 function completionSource(context: CompletionContext): CompletionResult | null {
   const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/)
   if (!word || (word.from === word.to && !context.explicit)) return null
-  const workspace = useNotebook
-    .getState()
-    .workspace.map((entry) => ({
-      label: entry.name,
-      type: entry.kind === 'function' ? 'function' : 'variable',
-      detail: entry.text.length > 24 ? entry.text.slice(0, 24) + '…' : entry.text,
-    }))
+  const workspace = useNotebook.getState().workspace.map((entry) => ({
+    label: entry.name,
+    type: entry.kind === 'function' ? 'function' : 'variable',
+    detail: entry.text.length > 24 ? entry.text.slice(0, 24) + '…' : entry.text,
+  }))
   return {
     from: word.from,
     options: [...workspace, ...STATIC_COMPLETIONS],

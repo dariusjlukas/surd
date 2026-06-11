@@ -62,19 +62,41 @@ function axisLabels(
   // frame edge and the two tick rows would collide there anyway.
   for (const t of niceTicks(win.a, win.b, 5)) {
     if (sx(t) * xSide > 0.9) continue
-    out.push({ key: `x${t}`, text: formatTick(t), p: [sx(t), -Z_SCALE - 0.05, zSide * 1.14] })
+    out.push({
+      key: `x${t}`,
+      text: formatTick(t),
+      p: [sx(t), -Z_SCALE - 0.05, zSide * 1.14],
+    })
   }
   for (const t of niceTicks(win.c, win.d, 5)) {
     if (sy(t) * zSide > 0.9) continue
-    out.push({ key: `y${t}`, text: formatTick(t), p: [xSide * 1.14, -Z_SCALE - 0.05, sy(t)] })
+    out.push({
+      key: `y${t}`,
+      text: formatTick(t),
+      p: [xSide * 1.14, -Z_SCALE - 0.05, sy(t)],
+    })
   }
   for (const t of niceTicks(zlo, zhi, 4)) {
-    out.push({ key: `z${t}`, text: formatTick(t), p: [-xSide * 1.08, sz(t), zSide * 1.08] })
+    out.push({
+      key: `z${t}`,
+      text: formatTick(t),
+      p: [-xSide * 1.08, sz(t), zSide * 1.08],
+    })
   }
   // Names push outward along the edge normal, not downward — below-the-box
   // anchors fall off the bottom of the frame at the default orbit.
-  out.push({ key: 'xname', text: plot.xvar, isName: true, p: [0, -Z_SCALE - 0.08, zSide * 1.38] })
-  out.push({ key: 'yname', text: plot.yvar, isName: true, p: [xSide * 1.38, -Z_SCALE - 0.08, 0] })
+  out.push({
+    key: 'xname',
+    text: plot.xvar,
+    isName: true,
+    p: [0, -Z_SCALE - 0.08, zSide * 1.38],
+  })
+  out.push({
+    key: 'yname',
+    text: plot.yvar,
+    isName: true,
+    p: [xSide * 1.38, -Z_SCALE - 0.08, 0],
+  })
   out.push({
     key: 'zname',
     text: 'z',
@@ -103,7 +125,12 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
 
   const [orbit, setOrbit] = useState<Orbit>(DEFAULT_ORBIT)
   const [size, setSize] = useState({ w: 640, h: 320 })
-  const [win, setWin] = useState<Win>({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
+  const [win, setWin] = useState<Win>({
+    a: plot.a,
+    b: plot.b,
+    c: plot.c,
+    d: plot.d,
+  })
   const [heights, setHeights] = useState(plot.heights)
   const [zlo, zhi] = useMemo(() => zRange(heights), [heights])
   /** Measurement cursor: the grid node under the pointer. `z` is the true
@@ -130,10 +157,18 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     [plot, win, zlo, zhi, orbit.azimuth],
   )
   const positions = useMemo(
-    () => projectToPx(labels.map((l) => l.p), orbit, size.w, size.h),
+    () =>
+      projectToPx(
+        labels.map((l) => l.p),
+        orbit,
+        size.w,
+        size.h,
+      ),
     [labels, orbit, size],
   )
-  const probePos = probe ? projectToPx([probe.scene], orbit, size.w, size.h)[0] : null
+  const probePos = probe
+    ? projectToPx([probe.scene], orbit, size.w, size.h)[0]
+    : null
 
   // scene ([-1,1] box) ⇄ data (current window)
   const dataX = (sceneX: number) => win.a + ((sceneX + 1) / 2) * (win.b - win.a)
@@ -301,7 +336,8 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
         }
         const spanX = next.b - next.a
         const spanY = next.d - next.c
-        if (spanX < 1e-12 || spanX > 1e12 || spanY < 1e-12 || spanY > 1e12) return w
+        if (spanX < 1e-12 || spanX > 1e12 || spanY < 1e-12 || spanY > 1e12)
+          return w
         requestResample(next)
         return next
       })
@@ -365,7 +401,10 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
         <span className="text-xs">
           {plot.yvar} ∈ [{formatTick(win.c)}, {formatTick(win.d)}]
         </span>
-        <span className="text-xs" title="2%–98% quantile range; spikes clamp to the box">
+        <span
+          className="text-xs"
+          title="2%–98% quantile range; spikes clamp to the box"
+        >
           z ∈ [{formatTick(zlo)}, {formatTick(zhi)}]
         </span>
         <button
@@ -429,10 +468,12 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
               style={{
                 left: probePos.x + (probePos.x > size.w - 180 ? -10 : 10),
                 top: probePos.y - 26,
-                transform: probePos.x > size.w - 180 ? 'translateX(-100%)' : undefined,
+                transform:
+                  probePos.x > size.w - 180 ? 'translateX(-100%)' : undefined,
               }}
             >
-              ({formatTick(probe.x)}, {formatTick(probe.y)}, {formatTick(probe.z)})
+              ({formatTick(probe.x)}, {formatTick(probe.y)},{' '}
+              {formatTick(probe.z)})
             </div>
           </>
         )}

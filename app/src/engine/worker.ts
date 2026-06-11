@@ -69,7 +69,16 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     }
     case 'resample3d': {
       const result = JSON.parse(
-        resample3d(msg.exprText, msg.xvar, msg.yvar, msg.a, msg.b, msg.c, msg.d, msg.n),
+        resample3d(
+          msg.exprText,
+          msg.xvar,
+          msg.yvar,
+          msg.a,
+          msg.b,
+          msg.c,
+          msg.d,
+          msg.n,
+        ),
       ) as Resample3dResult
       post({ type: 'resampled3d', id: msg.id, result })
       break

@@ -13,8 +13,18 @@ interface Props {
   label: string
 }
 
-export function PaneResizer({ width, defaultWidth, invert, onResize, label }: Props) {
-  const dragRef = useRef<{ pointerId: number; startX: number; startW: number } | null>(null)
+export function PaneResizer({
+  width,
+  defaultWidth,
+  invert,
+  onResize,
+  label,
+}: Props) {
+  const dragRef = useRef<{
+    pointerId: number
+    startX: number
+    startW: number
+  } | null>(null)
 
   return (
     <div
@@ -24,7 +34,11 @@ export function PaneResizer({ width, defaultWidth, invert, onResize, label }: Pr
       title={`drag to resize · double-click to reset`}
       onPointerDown={(e) => {
         if (e.button !== 0) return
-        dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startW: width }
+        dragRef.current = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startW: width,
+        }
         e.currentTarget.setPointerCapture(e.pointerId)
       }}
       onPointerMove={(e) => {

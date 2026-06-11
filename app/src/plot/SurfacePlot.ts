@@ -31,7 +31,11 @@ export interface Orbit {
   radius: number
 }
 
-export const DEFAULT_ORBIT: Orbit = { azimuth: 0.65, elevation: 0.5, radius: 3.8 }
+export const DEFAULT_ORBIT: Orbit = {
+  azimuth: 0.65,
+  elevation: 0.5,
+  radius: 3.8,
+}
 
 export function clampOrbit(o: Orbit): Orbit {
   return {
@@ -45,7 +49,9 @@ export function clampOrbit(o: Orbit): Orbit {
  * spike must not flatten the rest of the surface (values beyond the range
  * clamp to the top/bottom of the box). */
 export function zRange(heights: (number | null)[]): [number, number] {
-  const zs = heights.filter((h): h is number => h !== null).sort((a, b) => a - b)
+  const zs = heights
+    .filter((h): h is number => h !== null)
+    .sort((a, b) => a - b)
   if (zs.length === 0) return [-1, 1]
   let lo = zs[Math.floor(zs.length * 0.02)]
   let hi = zs[Math.min(zs.length - 1, Math.floor(zs.length * 0.98))]
@@ -96,7 +102,11 @@ export class SurfacePlot {
   private raycaster = new THREE.Raycaster()
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+    })
     this.scene.add(this.surface, this.frame)
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.65))
     const sun = new THREE.DirectionalLight(0xffffff, 1.6)
@@ -127,7 +137,13 @@ export class SurfacePlot {
   /** Rebuild the surface mesh from a row-major heights grid (y outer, x
    * inner). Values are normalized into the unit box against [zlo, zhi];
    * out-of-range values clamp to the box top/bottom. */
-  setData(heights: (number | null)[], nx: number, ny: number, zlo: number, zhi: number) {
+  setData(
+    heights: (number | null)[],
+    nx: number,
+    ny: number,
+    zlo: number,
+    zhi: number,
+  ) {
     disposeGroup(this.surface)
     disposeGroup(this.frame)
 
@@ -172,7 +188,10 @@ export class SurfacePlot {
     geometry.computeVertexNormals()
     this.mesh = new THREE.Mesh(
       geometry,
-      new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+      new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+      }),
     )
     this.surface.add(this.mesh)
 

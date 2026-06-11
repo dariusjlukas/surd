@@ -51,11 +51,13 @@ export class EngineClient {
     this.readyPromise = new Promise((resolve, reject) => {
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         if (e.data.type === 'ready') {
-          worker.onmessage = (ev: MessageEvent<FromWorker>) => this.dispatch(ev.data)
+          worker.onmessage = (ev: MessageEvent<FromWorker>) =>
+            this.dispatch(ev.data)
           resolve(e.data.replayed)
         }
       }
-      worker.onerror = (e) => reject(new Error(`engine worker failed: ${e.message}`))
+      worker.onerror = (e) =>
+        reject(new Error(`engine worker failed: ${e.message}`))
     })
     this.post({ type: 'init', replay: transcript })
     return this.readyPromise
@@ -69,13 +71,23 @@ export class EngineClient {
 
   /** Import a raw data file's text, binding it to `name` in the workspace. */
   importData(name: string, payload: string): Promise<EvalResult> {
-    return this.request<EvalResult>((id) => ({ type: 'importData', id, name, payload }))
+    return this.request<EvalResult>((id) => ({
+      type: 'importData',
+      id,
+      name,
+      payload,
+    }))
   }
 
   /** Serialize the named workspace variables into one surd-data file. */
   async exportData(names: string[]): Promise<string> {
-    const r = await this.request<ExportResult>((id) => ({ type: 'exportData', id, names }))
-    if (!r.ok || r.data === undefined) throw new Error(r.error ?? 'export failed')
+    const r = await this.request<ExportResult>((id) => ({
+      type: 'exportData',
+      id,
+      names,
+    }))
+    if (!r.ok || r.data === undefined)
+      throw new Error(r.error ?? 'export failed')
     return r.data
   }
 

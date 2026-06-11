@@ -70,7 +70,9 @@ export const useSettings = create<SettingsState>()(
       setSidebarWidth: (px) =>
         set({ sidebarWidth: clamp(px, SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max) }),
       setWorkspaceWidth: (px) =>
-        set({ workspaceWidth: clamp(px, WORKSPACE_WIDTH.min, WORKSPACE_WIDTH.max) }),
+        set({
+          workspaceWidth: clamp(px, WORKSPACE_WIDTH.min, WORKSPACE_WIDTH.max),
+        }),
       setConfirmDelete: (confirmDelete) => set({ confirmDelete }),
       setAutoScroll: (autoScroll) => set({ autoScroll }),
     }),
@@ -92,11 +94,13 @@ const media = window.matchMedia('(prefers-color-scheme: dark)')
 
 function applyTheme() {
   const s = useSettings.getState()
-  const resolved = s.mode === 'system' ? (media.matches ? 'dark' : 'light') : s.mode
+  const resolved =
+    s.mode === 'system' ? (media.matches ? 'dark' : 'light') : s.mode
   const root = document.documentElement
   root.dataset.mode = resolved
   root.dataset.theme = s.accent
-  if (s.resolvedMode !== resolved) useSettings.setState({ resolvedMode: resolved })
+  if (s.resolvedMode !== resolved)
+    useSettings.setState({ resolvedMode: resolved })
 }
 
 useSettings.subscribe(applyTheme)

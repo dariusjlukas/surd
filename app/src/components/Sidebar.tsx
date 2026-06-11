@@ -4,7 +4,12 @@
 // (PaneResizer in App).
 
 import { useRef, useState } from 'react'
-import { faDownload, faPen, faPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons'
+import {
+  faDownload,
+  faPen,
+  faPlus,
+  faTrashCan,
+} from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { downloadNotebook, parseNotebookFile } from '../state/notebookFile'
 import { useSettings } from '../state/settings'
@@ -57,7 +62,9 @@ export function Sidebar({ width }: { width: number }) {
       </div>
       <div className="border-t border-edge p-2">
         {importError && (
-          <p className="mb-1 px-1 text-xs text-danger">import failed: {importError}</p>
+          <p className="mb-1 px-1 text-xs text-danger">
+            import failed: {importError}
+          </p>
         )}
         <button
           onClick={() => fileRef.current?.click()}
@@ -98,7 +105,10 @@ function NotebookRow({ nb, active }: { nb: Notebook; active: boolean }) {
     renameNotebook(nb.id, draft)
   }
   const remove = () => {
-    if (!confirmDelete || window.confirm(`Delete "${nb.name}" and its workspace?`)) {
+    if (
+      !confirmDelete ||
+      window.confirm(`Delete "${nb.name}" and its workspace?`)
+    ) {
       deleteNotebook(nb.id)
     }
   }
@@ -128,7 +138,11 @@ function NotebookRow({ nb, active }: { nb: Notebook; active: boolean }) {
       onDoubleClick={startRename}
       onContextMenu={(e) =>
         openContextMenu(e, [
-          { label: 'Open', onSelect: () => selectNotebook(nb.id), disabled: active },
+          {
+            label: 'Open',
+            onSelect: () => selectNotebook(nb.id),
+            disabled: active,
+          },
           { label: 'Rename…', onSelect: startRename },
           { label: 'Export as JSON', onSelect: () => downloadNotebook(nb) },
           'divider',

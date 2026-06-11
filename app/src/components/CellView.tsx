@@ -84,7 +84,10 @@ function CellButton({
 function InsertNoteButton({ afterId }: { afterId: string }) {
   const insertCell = useNotebook((s) => s.insertCell)
   return (
-    <CellButton label="insert text cell below" onClick={() => insertCell(afterId, 'markdown')}>
+    <CellButton
+      label="insert text cell below"
+      onClick={() => insertCell(afterId, 'markdown')}
+    >
       +note
     </CellButton>
   )
@@ -101,7 +104,8 @@ function MathCell({ cell }: { cell: Cell }) {
   const insertCell = useNotebook((s) => s.insertCell)
   const deleteCell = useNotebook((s) => s.deleteCell)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
-  const { editing, setEditing, editorRef, commit, cancel } = useCellEditing(cell)
+  const { editing, setEditing, editorRef, commit, cancel } =
+    useCellEditing(cell)
 
   if (editing) {
     const keys: KeyBinding[] = [
@@ -122,8 +126,15 @@ function MathCell({ cell }: { cell: Cell }) {
     return (
       <div className="-mx-2 rounded-md border border-accent/50 bg-surface/60 px-2 py-1">
         <div className="flex items-start gap-2">
-          <span className="select-none pt-0.5 font-mono text-sm text-accent">&gt;&gt;</span>
-          <CodeEditor ref={editorRef} initialDoc={cell.src} autoFocus keys={keys} />
+          <span className="select-none pt-0.5 font-mono text-sm text-accent">
+            &gt;&gt;
+          </span>
+          <CodeEditor
+            ref={editorRef}
+            initialDoc={cell.src}
+            autoFocus
+            keys={keys}
+          />
         </div>
         <div className="pl-6 pt-0.5 text-[11px] text-faint">
           enter evaluates from here down · esc cancels
@@ -135,7 +146,11 @@ function MathCell({ cell }: { cell: Cell }) {
   const r = cell.result
   const menu: MenuEntry[] = [
     { label: 'Edit', onSelect: () => setEditing(true), disabled: !ready },
-    { label: 'Run from here', onSelect: () => void rerun(cell.id), disabled: !ready },
+    {
+      label: 'Run from here',
+      onSelect: () => void rerun(cell.id),
+      disabled: !ready,
+    },
     'divider',
     { label: 'Copy input', onSelect: () => copy(cell.src) },
     ...(r?.ok
@@ -145,8 +160,16 @@ function MathCell({ cell }: { cell: Cell }) {
         ] satisfies MenuEntry[])
       : []),
     'divider',
-    { label: 'Add note below', onSelect: () => insertCell(cell.id, 'markdown') },
-    { label: 'Delete cell', onSelect: () => void deleteCell(cell.id), danger: true, disabled: !ready },
+    {
+      label: 'Add note below',
+      onSelect: () => insertCell(cell.id, 'markdown'),
+    },
+    {
+      label: 'Delete cell',
+      onSelect: () => void deleteCell(cell.id),
+      danger: true,
+      disabled: !ready,
+    },
   ]
 
   return (
@@ -165,7 +188,10 @@ function MathCell({ cell }: { cell: Cell }) {
         <span className="invisible flex shrink-0 gap-1 group-hover:visible">
           {ready && (
             <>
-              <CellButton label="edit (double-click also works)" onClick={() => setEditing(true)}>
+              <CellButton
+                label="edit (double-click also works)"
+                onClick={() => setEditing(true)}
+              >
                 edit
               </CellButton>
               <CellButton
@@ -178,10 +204,16 @@ function MathCell({ cell }: { cell: Cell }) {
           )}
           {r?.ok && (
             <>
-              <CellButton label="copy result as plain text" onClick={() => copy(r.text)}>
+              <CellButton
+                label="copy result as plain text"
+                onClick={() => copy(r.text)}
+              >
                 txt
               </CellButton>
-              <CellButton label="copy result as LaTeX" onClick={() => copy(r.latex)}>
+              <CellButton
+                label="copy result as LaTeX"
+                onClick={() => copy(r.latex)}
+              >
                 tex
               </CellButton>
             </>
@@ -225,7 +257,9 @@ function Output({ cell }: { cell: Cell }) {
     case 'plot':
       return r.plot ? (
         <Suspense
-          fallback={<div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />}
+          fallback={
+            <div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />
+          }
         >
           <PlotView plot={r.plot} />
         </Suspense>
@@ -233,7 +267,9 @@ function Output({ cell }: { cell: Cell }) {
     case 'plot3d':
       return r.plot3d ? (
         <Suspense
-          fallback={<div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />}
+          fallback={
+            <div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />
+          }
         >
           <Surface3DView plot={r.plot3d} />
         </Suspense>
@@ -260,15 +296,30 @@ function DataCell({ cell }: { cell: Cell }) {
   const ready = useNotebook((s) => s.engineStatus === 'ready')
 
   const menu: MenuEntry[] = [
-    { label: 'Run from here', onSelect: () => void rerun(cell.id), disabled: !ready },
+    {
+      label: 'Run from here',
+      onSelect: () => void rerun(cell.id),
+      disabled: !ready,
+    },
     {
       label: `Copy variable name (${cell.dataName ?? ''})`,
       onSelect: () => copy(cell.dataName ?? ''),
     },
-    { label: 'Copy imported file contents', onSelect: () => copy(cell.dataPayload ?? '') },
+    {
+      label: 'Copy imported file contents',
+      onSelect: () => copy(cell.dataPayload ?? ''),
+    },
     'divider',
-    { label: 'Add note below', onSelect: () => insertCell(cell.id, 'markdown') },
-    { label: 'Delete cell', onSelect: () => void deleteCell(cell.id), danger: true, disabled: !ready },
+    {
+      label: 'Add note below',
+      onSelect: () => insertCell(cell.id, 'markdown'),
+    },
+    {
+      label: 'Delete cell',
+      onSelect: () => void deleteCell(cell.id),
+      danger: true,
+      disabled: !ready,
+    },
   ]
 
   return (
@@ -308,7 +359,8 @@ function DataCell({ cell }: { cell: Cell }) {
 function MarkdownCell({ cell }: { cell: Cell }) {
   const insertCell = useNotebook((s) => s.insertCell)
   const deleteCell = useNotebook((s) => s.deleteCell)
-  const { editing, setEditing, editorRef, commit, cancel } = useCellEditing(cell)
+  const { editing, setEditing, editorRef, commit, cancel } =
+    useCellEditing(cell)
 
   if (editing) {
     const keys: KeyBinding[] = [
@@ -341,8 +393,15 @@ function MarkdownCell({ cell }: { cell: Cell }) {
           { label: 'Edit', onSelect: () => setEditing(true) },
           { label: 'Copy source', onSelect: () => copy(cell.src) },
           'divider',
-          { label: 'Add note below', onSelect: () => insertCell(cell.id, 'markdown') },
-          { label: 'Delete cell', onSelect: () => void deleteCell(cell.id), danger: true },
+          {
+            label: 'Add note below',
+            onSelect: () => insertCell(cell.id, 'markdown'),
+          },
+          {
+            label: 'Delete cell',
+            onSelect: () => void deleteCell(cell.id),
+            danger: true,
+          },
         ])
       }
     >
@@ -354,7 +413,10 @@ function MarkdownCell({ cell }: { cell: Cell }) {
           <MarkdownView src={cell.src} />
         </div>
         <span className="invisible flex shrink-0 gap-1 group-hover:visible">
-          <CellButton label="edit (double-click also works)" onClick={() => setEditing(true)}>
+          <CellButton
+            label="edit (double-click also works)"
+            onClick={() => setEditing(true)}
+          >
             edit
           </CellButton>
           <InsertNoteButton afterId={cell.id} />
@@ -370,5 +432,10 @@ function MarkdownView({ src }: { src: string }) {
     () => DOMPurify.sanitize(marked.parse(src, { async: false })),
     [src],
   )
-  return <div className="md-cell text-sm" dangerouslySetInnerHTML={{ __html: html }} />
+  return (
+    <div
+      className="md-cell text-sm"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
 }

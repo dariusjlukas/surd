@@ -34,10 +34,7 @@ export function SettingsPage() {
         </div>
 
         <Section title="Appearance">
-          <Field
-            label="Mode"
-            hint="System follows your OS preference."
-          >
+          <Field label="Mode" hint="System follows your OS preference.">
             <div className="flex overflow-hidden rounded-md border border-edge">
               {MODES.map((m) => (
                 <button
@@ -54,11 +51,15 @@ export function SettingsPage() {
               ))}
             </div>
           </Field>
-          <Field label="Theme" hint="Accent color for prompts, highlights, and plots.">
+          <Field
+            label="Theme"
+            hint="Accent color for prompts, highlights, and plots."
+          >
             <div className="flex flex-wrap gap-2">
               {ACCENT_THEMES.map((t) => {
                 const active = settings.accent === t.id
-                const swatch = settings.resolvedMode === 'dark' ? t.swatch[0] : t.swatch[1]
+                const swatch =
+                  settings.resolvedMode === 'dark' ? t.swatch[0] : t.swatch[1]
                 return (
                   <button
                     key={t.id}
@@ -98,16 +99,17 @@ export function SettingsPage() {
 
         <Section title="About">
           <p className="text-sm text-muted">
-            <span className="font-mono font-semibold text-accent">surd</span> — a
-            correct-by-default mathematical scratchpad. <code className="text-ink">1/3</code>{' '}
-            stays a third, <code className="text-ink">sqrt(2)</code> stays a radical
-            (a <em>surd</em>); floats only when you ask with{' '}
+            <span className="font-mono font-semibold text-accent">surd</span> —
+            a correct-by-default mathematical scratchpad.{' '}
+            <code className="text-ink">1/3</code> stays a third,{' '}
+            <code className="text-ink">sqrt(2)</code> stays a radical (a{' '}
+            <em>surd</em>); floats only when you ask with{' '}
             <code className="text-ink">N(x)</code>.
           </p>
           <p className="mt-2 text-xs text-faint">
-            {notebookCount} notebook{notebookCount === 1 ? '' : 's'} stored locally in
-            your browser (IndexedDB). Nothing leaves your machine — export a notebook
-            from the sidebar to back it up.
+            {notebookCount} notebook{notebookCount === 1 ? '' : 's'} stored
+            locally in your browser (IndexedDB). Nothing leaves your machine —
+            export a notebook from the sidebar to back it up.
           </p>
         </Section>
       </div>
@@ -115,7 +117,13 @@ export function SettingsPage() {
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
   return (
     <section className="mb-6 rounded-lg border border-edge bg-surface/40 p-4">
       <h3 className="mb-3 text-xs font-medium uppercase tracking-wide text-faint">

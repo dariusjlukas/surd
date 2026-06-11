@@ -25,7 +25,9 @@ export interface ViewWindow {
 /** Theme token → THREE color, sampled at draw time so grid/axis/curve track
  * the active theme (index.css guarantees these vars hold plain hex). */
 export function themeColor(token: string, fallback: number): THREE.Color {
-  const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue(token)
+    .trim()
   return v ? new THREE.Color(v) : new THREE.Color(fallback)
 }
 
@@ -48,7 +50,11 @@ export class LinePlot {
   private size = new THREE.Vector2(1, 1)
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+    })
     this.camera.position.z = 1
     // Everything sits at z = 0, and three.js breaks the tie by material.id —
     // rebuildGrid makes fresh materials each view change, so without an
@@ -137,7 +143,9 @@ export class LinePlot {
     this.grid.add(
       segments(
         gridVerts,
-        new THREE.LineBasicMaterial({ color: themeColor('--plot-grid', 0x27303f) }),
+        new THREE.LineBasicMaterial({
+          color: themeColor('--plot-grid', 0x27303f),
+        }),
       ),
     )
 
@@ -149,7 +157,9 @@ export class LinePlot {
       this.grid.add(
         segments(
           axisVerts,
-          new THREE.LineBasicMaterial({ color: themeColor('--plot-axis', 0x475569) }),
+          new THREE.LineBasicMaterial({
+            color: themeColor('--plot-axis', 0x475569),
+          }),
         ),
       )
     }

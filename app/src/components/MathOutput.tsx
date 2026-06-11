@@ -13,7 +13,10 @@ export function MathOutput({ latex, fallback }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     try {
-      katex.render(latex, ref.current!, { displayMode: true, throwOnError: true })
+      katex.render(latex, ref.current!, {
+        displayMode: true,
+        throwOnError: true,
+      })
     } catch {
       ref.current!.textContent = fallback
     }
@@ -25,7 +28,10 @@ export function MathInline({ latex, fallback }: Props) {
   const ref = useRef<HTMLSpanElement>(null)
   useEffect(() => {
     try {
-      katex.render(latex, ref.current!, { displayMode: false, throwOnError: true })
+      katex.render(latex, ref.current!, {
+        displayMode: false,
+        throwOnError: true,
+      })
     } catch {
       ref.current!.textContent = fallback
     }

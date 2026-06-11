@@ -42,15 +42,17 @@ export function serializeNotebook(nb: Notebook): string {
     transcript: transcriptOf(nb.cells).map((e) =>
       e.type === 'eval' ? e.src : `# imported data → ${e.name}`,
     ),
-    cells: nb.cells.map(({ kind, src, status, result, dataName, dataPayload }) => ({
-      kind,
-      src,
-      // A pending cell has no result to carry; export it as cancelled.
-      status: status === 'pending' ? 'cancelled' : status,
-      result,
-      dataName,
-      dataPayload,
-    })),
+    cells: nb.cells.map(
+      ({ kind, src, status, result, dataName, dataPayload }) => ({
+        kind,
+        src,
+        // A pending cell has no result to carry; export it as cancelled.
+        status: status === 'pending' ? 'cancelled' : status,
+        result,
+        dataName,
+        dataPayload,
+      }),
+    ),
   }
   return JSON.stringify(file, null, 2)
 }
@@ -67,14 +69,18 @@ export function downloadNotebook(nb: Notebook) {
 
 /** Parse an exported notebook. Throws with a user-facing message on any
  * shape problem — the caller surfaces it verbatim. */
-export function parseNotebookFile(text: string): { name: string; cells: Cell[] } {
+export function parseNotebookFile(text: string): {
+  name: string
+  cells: Cell[]
+} {
   let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
     throw new Error('not a JSON file')
   }
-  if (typeof data !== 'object' || data === null) throw new Error('not a notebook file')
+  if (typeof data !== 'object' || data === null)
+    throw new Error('not a notebook file')
   const f = data as Partial<NotebookFile>
   if (f.format !== FORMAT && f.format !== LEGACY_FORMAT) {
     throw new Error('not a surd notebook file')
@@ -101,7 +107,8 @@ export function parseNotebookFile(text: string): { name: string; cells: Cell[] }
       dataPayload: c.kind === 'data' ? c.dataPayload : undefined,
     }))
   return {
-    name: typeof f.name === 'string' && f.name.trim() ? f.name.trim() : 'Imported',
+    name:
+      typeof f.name === 'string' && f.name.trim() ? f.name.trim() : 'Imported',
     cells,
   }
 }

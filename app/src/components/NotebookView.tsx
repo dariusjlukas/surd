@@ -22,7 +22,10 @@ export function NotebookView() {
       className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6"
       onContextMenu={(e) =>
         openContextMenu(e, [
-          { label: 'Add text cell', onSelect: () => insertCell(null, 'markdown') },
+          {
+            label: 'Add text cell',
+            onSelect: () => insertCell(null, 'markdown'),
+          },
           'divider',
           {
             label: 'Clear notebook…',
@@ -31,7 +34,9 @@ export function NotebookView() {
             onSelect: () => {
               if (
                 !confirmDelete ||
-                window.confirm(`Clear "${notebook.name}" — its cells and workspace?`)
+                window.confirm(
+                  `Clear "${notebook.name}" — its cells and workspace?`,
+                )
               ) {
                 clearNotebook()
               }
@@ -65,8 +70,8 @@ function Welcome() {
     <div className="mx-auto mt-8 max-w-xl text-sm text-faint">
       <p className="mb-3">
         Exact by default: <code className="text-muted">1/3</code> stays a third,{' '}
-        <code className="text-muted">sqrt(2)</code> stays a radical. Floats only via{' '}
-        <code className="text-muted">N(x)</code>. Try one:
+        <code className="text-muted">sqrt(2)</code> stays a radical. Floats only
+        via <code className="text-muted">N(x)</code>. Try one:
       </p>
       <ul className="space-y-1 font-mono">
         {examples.map((e) => (
@@ -82,9 +87,10 @@ function Welcome() {
         ))}
       </ul>
       <p className="mt-4 text-xs text-faint">
-        <code>:=</code> assigns · <code>plot(f, x, a, b)</code> draws · ↑/↓ recalls
-        history · double-click a cell to edit it (everything below recomputes) ·{' '}
-        <em>+ note</em> adds markdown · notebooks save automatically
+        <code>:=</code> assigns · <code>plot(f, x, a, b)</code> draws · ↑/↓
+        recalls history · double-click a cell to edit it (everything below
+        recomputes) · <em>+ note</em> adds markdown · notebooks save
+        automatically
       </p>
     </div>
   )
