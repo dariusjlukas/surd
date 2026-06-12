@@ -16,6 +16,9 @@ export interface PlotSeries {
    * convergence test on this window — the curve may alias, and the UI says
    * so. Absent in pre-adaptive persisted notebooks (treat as false). */
   undersampled?: boolean
+  /** True for static data series (signals): every point is already present
+   * and `text` cannot be resampled — pan/zoom re-windows client-side. */
+  fixed?: boolean
   points: SamplePoint[]
 }
 
@@ -23,6 +26,10 @@ export interface PlotData {
   var: string
   a: number
   b: number
+  /** Session registry id for signal plots: zoom refinement re-decimates the
+   * window from the original data via `resampleSignal`. Absent for function
+   * plots (those resample by expression text). */
+  sig?: number
   /** One entry per curve, over the shared [a, b] window. */
   series: PlotSeries[]
 }
@@ -122,18 +129,44 @@ export interface ExportResult {
 // Worker protocol
 // ---------------------------------------------------------------------------
 
+/** How an import payload should be parsed. `auto` is the text sniffing path
+ * (surd-data JSON / generic JSON / CSV → exact values); the rest are bulk
+ * signal imports — `wav` and the `raw-*` formats carry base64-encoded bytes
+ * in `payload`. */
+export type ImportFormat =
+  | 'auto'
+  | 'wav'
+  | 'raw-f64'
+  | 'raw-f32'
+  | 'raw-i16'
+  | 'csv-packed'
+
 /** One replayable step of a notebook's engine history: an evaluated source
  * line, or a raw-data import bound to a workspace name. */
 export type ReplayEntry =
   | { type: 'eval'; src: string }
-  | { type: 'import'; name: string; payload: string }
+  | { type: 'import'; name: string; payload: string; format?: ImportFormat }
 
 export type ToWorker =
   | { type: 'init'; replay: ReplayEntry[] }
   | { type: 'eval'; id: number; src: string }
-  | { type: 'importData'; id: number; name: string; payload: string }
+  | {
+      type: 'importData'
+      id: number
+      name: string
+      payload: string
+      format?: ImportFormat
+    }
   | { type: 'exportData'; id: number; names: string[] }
   | { type: 'workspace'; id: number }
+  | {
+      type: 'resampleSignal'
+      id: number
+      sig: number
+      series: number
+      a: number
+      b: number
+    }
   | {
       type: 'resample'
       id: number

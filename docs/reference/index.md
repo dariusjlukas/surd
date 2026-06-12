@@ -56,6 +56,7 @@ entrywise to matrices automatically.
 | [`dot(a, b)`](data.md#dot) | Σ aᵢ·bᵢ |
 | [`vcat(a, ...)` / `hcat(a, ...)`](data.md#vcat-hcat) | Stack vertically / horizontally |
 | [`linspace(a, b, n)`](data.md#linspace) | n evenly spaced points, exact step |
+| [`slice(v, start, n)`](data.md#slice) | n elements from 1-based start (vectors and signals) |
 
 ## Signals (certified bulk data)
 

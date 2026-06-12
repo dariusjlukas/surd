@@ -489,10 +489,20 @@ impl Interpreter {
 
     /// `plot(f1, ..., fk, x, a, b)` — one or more curves over a shared
     /// window. Stays a symbolic value; the frontend samples and draws it.
+    /// `plot(s1, ..., sk)` over signals draws their samples directly.
     fn call_plot(&mut self, args: &[Node]) -> Result<Expr, String> {
+        if !args.is_empty() && args.len() < 4 {
+            let evaluated = args
+                .iter()
+                .map(|a| self.eval_node(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            if evaluated.iter().all(|e| matches!(e, Expr::Signal(_))) {
+                return Ok(Expr::Func("plotsignal".to_string(), evaluated));
+            }
+        }
         if args.len() < 4 {
             return Err(format!(
-                "plot expects plot(f1, ..., fk, x, a, b), got {} argument(s)",
+                "plot expects plot(f1, ..., fk, x, a, b) — or plot(s) for a signal — got {} argument(s)",
                 args.len()
             ));
         }
@@ -500,7 +510,13 @@ impl Interpreter {
         let var = self.var_name(&args[var_idx])?;
         let mut out = Vec::with_capacity(args.len());
         for f in &args[..var_idx] {
-            out.push(self.eval_shadowed(std::slice::from_ref(&var), f)?);
+            let curve = self.eval_shadowed(std::slice::from_ref(&var), f)?;
+            if matches!(curve, Expr::Signal(_)) {
+                return Err(
+                    "signals plot without a window — plot(s), not plot(s, x, a, b)".into(),
+                );
+            }
+            out.push(curve);
         }
         out.push(Expr::Symbol(var));
         out.push(self.eval_node(&args[var_idx + 1])?);
@@ -735,6 +751,27 @@ impl Interpreter {
                     .collect()))
             }
             "vcat" | "hcat" => concat(name, &args),
+            "slice" => {
+                arity(name, &args, 3)?;
+                let start = as_index(&args[1])?;
+                let n = as_usize(&args[2])?;
+                match &args[0] {
+                    Expr::Signal(s) => Ok(Expr::Signal(std::rc::Rc::new(signal::slice(
+                        s,
+                        start - 1,
+                        n,
+                    )?))),
+                    Expr::Matrix(rows) if rows.len() == 1 => {
+                        check_slice(start, n, rows[0].len())?;
+                        Ok(Expr::Matrix(vec![rows[0][start - 1..start - 1 + n].to_vec()]))
+                    }
+                    Expr::Matrix(rows) if rows.iter().all(|r| r.len() == 1) => {
+                        check_slice(start, n, rows.len())?;
+                        Ok(Expr::Matrix(rows[start - 1..start - 1 + n].to_vec()))
+                    }
+                    _ => Err("slice expects a vector or signal".into()),
+                }
+            }
             "linspace" => {
                 arity(name, &args, 3)?;
                 let n = as_usize(&args[2])?;
@@ -929,6 +966,19 @@ fn signal_arith(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
         }
         _ => unreachable!("signal_arith without a signal"),
     }
+}
+
+fn check_slice(start: usize, n: usize, len: usize) -> Result<(), String> {
+    if n == 0 {
+        return Err("slice needs at least 1 element".into());
+    }
+    if start.checked_add(n).is_none_or(|e| e - 1 > len) {
+        return Err(format!(
+            "slice of {} from position {} runs past the end (length {})",
+            n, start, len
+        ));
+    }
+    Ok(())
 }
 
 fn as_index(e: &Expr) -> Result<usize, String> {

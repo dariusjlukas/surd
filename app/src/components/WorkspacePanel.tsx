@@ -10,9 +10,13 @@
 // selection mode that saves any group of variables into one surd-data file.
 
 import { useRef, useState } from 'react'
-import { faDownload, faUpload } from '@fortawesome/free-solid-svg-icons'
+import {
+  faDownload,
+  faUpload,
+  faWaveSquare,
+} from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import type { WorkspaceEntry } from '../engine/types'
+import type { ImportFormat, WorkspaceEntry } from '../engine/types'
 import { useNotebook } from '../state/store'
 import { downloadDataFile } from '../state/dataFile'
 import { openContextMenu } from '../state/contextMenu'
@@ -22,12 +26,24 @@ const MAX_RENDERED_CHARS = 120
 
 const copy = (text: string) => void navigator.clipboard.writeText(text)
 
+/** Chunked base64 encode — String.fromCharCode(...) overflows the argument
+ * limit on multi-megabyte buffers. */
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(bin)
+}
+
 export function WorkspacePanel({ width }: { width: number }) {
   const workspace = useNotebook((s) => s.workspace)
   const importData = useNotebook((s) => s.importData)
   const exportData = useNotebook((s) => s.exportData)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
   const fileRef = useRef<HTMLInputElement>(null)
+  const signalFileRef = useRef<HTMLInputElement>(null)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
@@ -35,6 +51,41 @@ export function WorkspacePanel({ width }: { width: number }) {
   const onImportFile = async (file: File) => {
     try {
       await importData(file.name, await file.text())
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'import failed')
+    }
+  }
+
+  /** Bulk signal imports: the format follows the extension. Binary payloads
+   * ride the transcript as base64 (see ImportFormat). */
+  const onImportSignalFile = async (file: File) => {
+    const ext = (file.name.split('.').pop() ?? '').toLowerCase()
+    const format: ImportFormat | null =
+      ext === 'wav'
+        ? 'wav'
+        : ext === 'f64'
+          ? 'raw-f64'
+          : ext === 'f32'
+            ? 'raw-f32'
+            : ext === 'i16' || ext === 'pcm'
+              ? 'raw-i16'
+              : ext === 'csv' || ext === 'tsv' || ext === 'txt'
+                ? 'csv-packed'
+                : null
+    if (format === null) {
+      setError(
+        `cannot infer the sample format of '.${ext}' — use .wav, .csv, or ` +
+          'rename raw binary with its sample type: .f64 .f32 .i16',
+      )
+      return
+    }
+    try {
+      const payload =
+        format === 'csv-packed'
+          ? await file.text()
+          : bytesToBase64(new Uint8Array(await file.arrayBuffer()))
+      await importData(file.name, payload, format)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'import failed')
@@ -79,6 +130,14 @@ export function WorkspacePanel({ width }: { width: number }) {
             <FontAwesomeIcon icon={faUpload} className="h-3 w-3" />
           </button>
           <button
+            title="import a signal (WAV audio, raw .f64/.f32/.i16 binary, or large CSV) as certified bulk data"
+            disabled={!ready}
+            onClick={() => signalFileRef.current?.click()}
+            className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"
+          >
+            <FontAwesomeIcon icon={faWaveSquare} className="h-3 w-3" />
+          </button>
+          <button
             title="export variables to a data file"
             disabled={workspace.length === 0}
             onClick={() => {
@@ -101,6 +160,17 @@ export function WorkspacePanel({ width }: { width: number }) {
             const file = e.target.files?.[0]
             e.target.value = '' // allow re-importing the same file
             if (file) void onImportFile(file)
+          }}
+        />
+        <input
+          ref={signalFileRef}
+          type="file"
+          accept=".wav,.csv,.tsv,.txt,.f64,.f32,.i16,.pcm,audio/wav"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = ''
+            if (file) void onImportSignalFile(file)
           }}
         />
       </div>

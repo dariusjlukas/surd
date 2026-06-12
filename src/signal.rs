@@ -1014,3 +1014,200 @@ pub fn rms(s: &SignalData) -> Result<Expr, String> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slicing and plotting support
+// ---------------------------------------------------------------------------
+
+/// A contiguous sub-signal: `n` samples starting at 0-based `start`.
+pub fn slice(s: &SignalData, start: usize, n: usize) -> Result<SignalData, String> {
+    if n == 0 {
+        return Err("slice needs at least 1 sample".into());
+    }
+    let end = start.checked_add(n).filter(|e| *e <= s.len()).ok_or_else(|| {
+        format!(
+            "slice of {} samples from position {} runs past the end (the signal has {})",
+            n,
+            start + 1,
+            s.len()
+        )
+    })?;
+    Ok(match s {
+        SignalData::F64 { lo, hi } => SignalData::F64 {
+            lo: lo[start..end].to_vec(),
+            hi: hi[start..end].to_vec(),
+        },
+        SignalData::Big { lo, hi, digits } => SignalData::Big {
+            lo: lo[start..end].to_vec(),
+            hi: hi[start..end].to_vec(),
+            digits: *digits,
+        },
+    })
+}
+
+/// Midpoint of sample `i` as a display-grade f64 (plotting only — the
+/// rigorous readback is [`midpoint`]/[`half_width`]).
+fn mid_f64(s: &SignalData, i: usize) -> f64 {
+    match s {
+        SignalData::F64 { lo, hi } => lo[i] / 2.0 + hi[i] / 2.0,
+        SignalData::Big { lo, hi, digits } => {
+            let p = prec_bits(*digits);
+            let two = BigFloat::from_i64(2, p);
+            let m = lo[i]
+                .add(&hi[i], p, RoundingMode::ToEven)
+                .div(&two, p, RoundingMode::ToEven);
+            float_to_rational(&m).and_then(|r| r.to_f64()).unwrap_or(f64::NAN)
+        }
+    }
+}
+
+/// (x, y) plot points over the 1-based sample index. Signals longer than
+/// `max_points` decimate to a min/max *envelope* (two points per bucket, the
+/// audio-editor waveform display) — extremes are preserved, never aliased
+/// away; the caller should still flag the curve as decimated.
+pub fn plot_points(s: &SignalData, max_points: usize) -> Vec<(f64, Option<f64>)> {
+    plot_points_range(s, 0, s.len(), max_points)
+}
+
+/// Plot points for the 0-based sample range [from, to) — the zoom-refinement
+/// primitive: a narrower window over the same data redecimates at full
+/// resolution. The emitted x values stay global (1-based original indices).
+pub fn plot_points_range(
+    s: &SignalData,
+    from: usize,
+    to: usize,
+    max_points: usize,
+) -> Vec<(f64, Option<f64>)> {
+    let (from, to) = (from.min(s.len()), to.min(s.len()));
+    if from >= to {
+        return Vec::new();
+    }
+    let n = to - from;
+    let point = |i: usize| {
+        let y = mid_f64(s, i);
+        ((i + 1) as f64, y.is_finite().then_some(y))
+    };
+    if n <= max_points {
+        return (from..to).map(point).collect();
+    }
+    let buckets = (max_points / 2).max(1);
+    let mut out = Vec::with_capacity(buckets * 2);
+    for b in 0..buckets {
+        let lo_i = from + b * n / buckets;
+        let hi_i = (from + ((b + 1) * n / buckets).max(b * n / buckets + 1)).min(to);
+        let (mut min_i, mut max_i) = (lo_i, lo_i);
+        let (mut min_v, mut max_v) = (f64::INFINITY, f64::NEG_INFINITY);
+        for i in lo_i..hi_i {
+            let v = mid_f64(s, i);
+            if v < min_v {
+                min_v = v;
+                min_i = i;
+            }
+            if v > max_v {
+                max_v = v;
+                max_i = i;
+            }
+        }
+        // Emit the extremes in index order so the polyline sweeps left→right.
+        let (first, second) = if min_i <= max_i {
+            (min_i, max_i)
+        } else {
+            (max_i, min_i)
+        };
+        out.push(point(first));
+        if second != first {
+            out.push(point(second));
+        }
+    }
+    out
+}
+
+/// Whether plotting `[from, to)` at `max_points` will decimate.
+pub fn range_decimated(from: usize, to: usize, max_points: usize) -> bool {
+    to.saturating_sub(from) > max_points
+}
+
+/// Whether plotting at `max_points` will decimate.
+pub fn plot_decimated(s: &SignalData, max_points: usize) -> bool {
+    s.len() > max_points
+}
+
+// ---------------------------------------------------------------------------
+// Lossless serialization of arbitrary-precision signals
+// ---------------------------------------------------------------------------
+
+/// Exact decimal bounds of a Big signal, ready to serialize.
+pub struct DecimalBounds {
+    pub lo: Vec<String>,
+    pub hi: Vec<String>,
+    pub digits: usize,
+}
+
+/// The bounds of a Big signal as exact decimal strings (a binary float's
+/// decimal expansion terminates, so this is lossless). `None` for f64
+/// signals, which serialize as plain numbers.
+pub fn big_decimal_bounds(s: &SignalData) -> Option<Result<DecimalBounds, String>> {
+    let SignalData::Big { lo, hi, digits } = s else {
+        return None;
+    };
+    let dec = |bf: &BigFloat| -> Result<String, String> {
+        let r = float_to_rational(bf).ok_or("cannot export a non-finite bound")?;
+        crate::dataio::rat_to_decimal(&r)
+            .ok_or_else(|| "a binary float always terminates in decimal".to_string())
+    };
+    let run = || -> Result<_, String> {
+        Ok(DecimalBounds {
+            lo: lo.iter().map(dec).collect::<Result<Vec<_>, _>>()?,
+            hi: hi.iter().map(dec).collect::<Result<Vec<_>, _>>()?,
+            digits: *digits,
+        })
+    };
+    Some(run())
+}
+
+/// Rebuild a Big signal from exact decimal bounds. Parsing an exactly
+/// representable decimal at the signal's working precision is exact, so
+/// export → import is the identity.
+pub fn big_from_decimal_bounds(
+    lo: &[String],
+    hi: &[String],
+    digits: usize,
+) -> Result<SignalData, String> {
+    if lo.len() != hi.len() {
+        return Err("'signal' lo and hi must have the same length".into());
+    }
+    let digits = digits.clamp(1, 100_000);
+    let p = prec_bits(digits);
+    with_consts(|cc| -> Result<SignalData, String> {
+        // Decimal → exact rational → directed division. Never astro-float's
+        // string parse: it mispositions the decimal point of long fractional
+        // strings on wasm32. Going through the rational also keeps outward
+        // rounding per side, so even a hand-edited file can only *widen* the
+        // enclosure, never tighten it. An exported bound is representable at
+        // p bits, so both directions agree and the round trip is exact.
+        let mut conv = |s: &str, low_side: bool| -> Result<BigFloat, String> {
+            if s.len() > 1_000_000 {
+                return Err("'signal' bound is too long".into());
+            }
+            let r = crate::dataio::decimal_to_rat(s)
+                .map_err(|e| format!("bad signal bound: {}", e))?;
+            let (d, u) = rat_to_big_iv(&r, p, cc)?;
+            Ok(if low_side { d } else { u })
+        };
+        let mut lo_v = Vec::with_capacity(lo.len());
+        for s in lo {
+            lo_v.push(conv(s, true)?);
+        }
+        let mut hi_v = Vec::with_capacity(hi.len());
+        for s in hi {
+            hi_v.push(conv(s, false)?);
+        }
+        let (lo, hi) = (lo_v, hi_v);
+        for (l, h) in lo.iter().zip(&hi) {
+            if bf_lt(h, l) {
+                return Err("'signal' bounds must satisfy lo <= hi".into());
+            }
+        }
+        Ok(SignalData::Big { lo, hi, digits })
+    })?
+}

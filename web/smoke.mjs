@@ -64,6 +64,64 @@ expect('re-import ok', re.ok, true);
 expect('round-trip scalar', ev('saved.g + 1').text, '8');
 expect('round-trip matrix', ev('saved.sensor.t + saved.sensor.val').kind, 'matrix');
 
+// --- signals: certified bulk data ------------------------------------------
+const sig = ev('snd := signal([1/3; -2; 5/7; 1])');
+expect('signal kind', sig.kind, 'scalar'); // a plain value with a summary display
+expect('signal display', sig.text.startsWith('<signal: 4 samples, f64'), true);
+expect('signal certified bound', ev('bound(snd) < 1/10^15').text, 'true');
+const sigPlot = ev('plot(snd)');
+expect('signal plot kind', sigPlot.kind, 'plot');
+expect('signal plot fixed', sigPlot.plot.series[0].fixed, true);
+expect('signal plot points', sigPlot.plot.series[0].points.length, 4);
+const fftOk = ev('dsp.peak(dsp.ifft(dsp.fft(dsp.pad(snd, 4))).re - dsp.pad(snd, 4)) < 1/10^12');
+expect('signal fft roundtrip certified', fftOk.text, 'true');
+
+// Bulk imports: packed CSV and a constructed 16-bit PCM WAV.
+const csvBulk = JSON.parse(s.import_csv_packed_data('t, y\n0, 1.5\n1, 0.25\n', 'bulk'));
+expect('csv-packed import ok', csvBulk.ok, true);
+expect('csv-packed signal', ev('len(bulk.y)').text, '2');
+
+const wavSamples = new Int16Array([0, 16384, -16384, 32767]);
+const data = new Uint8Array(wavSamples.buffer);
+const header = new ArrayBuffer(44);
+const dv = new DataView(header);
+const tag = (off, s2) => { for (let i = 0; i < 4; i++) dv.setUint8(off + i, s2.charCodeAt(i)); };
+tag(0, 'RIFF'); dv.setUint32(4, 36 + data.length, true); tag(8, 'WAVE');
+tag(12, 'fmt '); dv.setUint32(16, 16, true);
+dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+dv.setUint32(24, 8000, true); dv.setUint32(28, 16000, true);
+dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+tag(36, 'data'); dv.setUint32(40, data.length, true);
+const wav = new Uint8Array(44 + data.length);
+wav.set(new Uint8Array(header), 0); wav.set(data, 44);
+const wavRes = JSON.parse(s.import_wav_data(wav, 'clip'));
+expect('wav import ok', wavRes.ok, true);
+expect('wav rate', ev('clip.rate').text, '8000');
+expect('wav normalized exactly', ev('clip.ch1[2]').text, '0.5');
+expect('wav import is exact', ev('bound(clip.ch1)').text, '0');
+expect('wav slice', ev('len(slice(clip.ch1, 2, 3))').text, '3');
+
+// Big-substrate signals export losslessly (decimal-string bounds) …
+ev('hp := signal([1/3; -2], 40)');
+const bigExp = JSON.parse(s.export_data(JSON.stringify(['hp'])));
+expect('big signal export ok', bigExp.ok, true);
+const bigRe = JSON.parse(s.import_data(bigExp.data, 'hp2'));
+expect('big signal re-import ok', bigRe.ok, true);
+expect('big signal bounds identical', ev('bound(hp2.hp) == bound(hp)').text, 'true');
+expect('big signal mids identical', ev('hp2.hp[1] == hp[1]').text, 'true');
+
+// … and decimated signal plots refine on zoom via the session registry.
+ev('ramp := dsp.pad(signal([1]), 60000)');
+const big = ev('plot(ramp)');
+expect('decimated plot flagged', big.plot.series[0].undersampled, true);
+expect('plot has registry id', typeof big.plot.sig, 'number');
+const zoom = JSON.parse(s.resample_signal(big.plot.sig, 0, 1, 100));
+expect('zoom refinement ok', zoom.ok, true);
+expect('zoomed window is exact-resolution', zoom.points.length, 100);
+expect('zoomed window not undersampled', zoom.undersampled, false);
+const gone = JSON.parse(s.resample_signal(9999, 0, 1, 100));
+expect('stale id refuses gracefully', gone.ok, false);
+
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);
 } else {

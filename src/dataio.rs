@@ -138,16 +138,20 @@ pub fn is_valid_var_name(s: &str) -> bool {
 fn encode(e: &Expr) -> Result<Value, String> {
     Ok(match e {
         // serde_json round-trips f64 exactly (shortest-representation), so
-        // the certified bounds survive export/import losslessly.
-        Expr::Signal(s) => match s.as_ref() {
-            crate::signal::SignalData::F64 { lo, hi } => {
-                json!({ "t": "signal", "lo": lo, "hi": hi })
+        // the certified bounds survive export/import losslessly. Big bounds
+        // write as exact decimal strings (a binary float terminates in
+        // decimal) — also lossless, just bulkier.
+        Expr::Signal(s) => match crate::signal::big_decimal_bounds(s) {
+            Some(bounds) => {
+                let b = bounds?;
+                json!({ "t": "signal", "digits": b.digits, "lo": b.lo, "hi": b.hi })
             }
-            crate::signal::SignalData::Big { .. } => {
-                return Err(
-                    "export of arbitrary-precision signals is not supported yet".to_string()
-                )
-            }
+            None => match s.as_ref() {
+                crate::signal::SignalData::F64 { lo, hi } => {
+                    json!({ "t": "signal", "lo": lo, "hi": hi })
+                }
+                crate::signal::SignalData::Big { .. } => unreachable!("covered above"),
+            },
         },
         Expr::Int(i) => number_from_text(&i.to_string()),
         Expr::Rat(r) => match rat_to_decimal(r) {
@@ -361,6 +365,21 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
         "complex" => Ok(complex(dec("re")?, dec("im")?)),
         "eq" => Ok(Expr::Equation(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
         "signal" => {
+            // Arbitrary precision (decimal-string bounds + digits)…
+            if let Some(d) = map.get("digits") {
+                let digits = d
+                    .as_u64()
+                    .ok_or("'signal' digits must be a positive integer")?
+                    as usize;
+                let lo: Vec<String> = serde_json::from_value(field("lo")?.clone())
+                    .map_err(|_| "'signal' lo must be an array of decimal strings".to_string())?;
+                let hi: Vec<String> = serde_json::from_value(field("hi")?.clone())
+                    .map_err(|_| "'signal' hi must be an array of decimal strings".to_string())?;
+                return Ok(Expr::Signal(Rc::new(
+                    crate::signal::big_from_decimal_bounds(&lo, &hi, digits)?,
+                )));
+            }
+            // …or f64 (plain JSON numbers).
             let lo: Vec<f64> = serde_json::from_value(field("lo")?.clone())
                 .map_err(|_| "'signal' lo must be an array of numbers".to_string())?;
             let hi: Vec<f64> = serde_json::from_value(field("hi")?.clone())
@@ -1115,5 +1134,37 @@ mod bulk_tests {
 
         assert!(import_wav(b"not a wav").is_err());
         assert!(import_raw(&[1, 2, 3], "f32").is_err());
+    }
+}
+
+#[cfg(test)]
+mod big_signal_tests {
+    use super::*;
+    use crate::expr::rat_to_expr;
+    use crate::signal::{pack, SignalData};
+
+    /// Export → import of an arbitrary-precision signal is the identity:
+    /// the decimal bounds are exact, and re-parsing them at the signal's
+    /// working precision recovers the same binary floats bit for bit.
+    #[test]
+    fn big_signal_export_roundtrips_losslessly() {
+        let entries: Vec<Expr> = [(1i64, 3i64), (-2, 1), (5, 7)]
+            .iter()
+            .map(|(n, d)| rat_to_expr(BigRational::new(BigInt::from(*n), BigInt::from(*d))))
+            .collect();
+        let original = pack(&entries, Some(40)).unwrap();
+        let sig = Expr::Signal(Rc::new(original.clone()));
+        let json = export_variables(&[("s", &sig)]).unwrap();
+        let back = import(&json).unwrap();
+        let Expr::Struct(fields) = &back else { panic!("import wraps in a struct") };
+        let Expr::Signal(restored) = &fields[0].1 else { panic!("field is a signal") };
+        let (SignalData::Big { lo: a, hi: b, digits: d1 }, SignalData::Big { lo: c, hi: e, digits: d2 }) =
+            (&original, restored.as_ref())
+        else {
+            panic!("both are Big")
+        };
+        assert_eq!(d1, d2);
+        assert_eq!(a, c, "lo bounds must round-trip bit-exactly");
+        assert_eq!(b, e, "hi bounds must round-trip bit-exactly");
     }
 }

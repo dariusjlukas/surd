@@ -84,6 +84,20 @@ property test convolves random rational vectors exactly (an independent
 oracle) and verifies every exact coefficient lies inside its certified
 enclosure, compared as exact rationals — in both substrates.
 
+## Plotting and slicing
+
+`plot(s)` (or `plot(s1, s2)` to overlay) draws a signal's samples over the
+1-based index. Signals longer than the point cap draw as a min/max
+*envelope* (extremes survive, never aliased away) and are flagged as
+decimated — and **zooming refines**: the session re-decimates the zoomed
+window from the full-resolution data, so detail appears as you go in. (If
+the session has restarted since the plot rendered, the shipped envelope
+stands.)
+
+`slice(s, start, n)` cuts `n` samples from 1-based `start` — handy for
+trimming to a power of two before `dsp.fft`. (`slice` works on exact vectors
+too.)
+
 ## Bulk imports
 
 | Source | Result |
@@ -95,6 +109,16 @@ enclosure, compared as exact rationals — in both substrates.
 Integer PCM and IEEE floats convert to f64 *exactly*, so imported data
 starts with certified error **zero**; CSV decimals start within ±1 ulp of
 their correctly-rounded parse. (Import caps: 2²⁴ samples per file.)
+
+In the web app, the waveform button in the workspace panel imports any of
+these — the format follows the file extension (`.wav`, `.csv`, and raw
+binary as `.f64`/`.f32`/`.i16`). Bulk imports replay with the notebook like
+any other data cell.
+
+Signals **export** through the normal workspace export, in both substrates:
+f64 bounds as plain numbers (serde round-trips them exactly), and
+arbitrary-precision bounds as exact decimal strings (a binary float's
+decimal expansion terminates) — re-import is bit-identical either way.
 
 ## Putting it together: model vs. data
 

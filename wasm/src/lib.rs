@@ -57,6 +57,10 @@ struct PlotData {
     var: String,
     a: f64,
     b: f64,
+    /// Registry id for signal plots (zoom refinement asks the session to
+    /// re-decimate); absent for function plots, which resample by text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sig: Option<u32>,
     /// One entry per curve, drawn over the shared [a, b] window.
     series: Vec<Series>,
 }
@@ -73,6 +77,9 @@ struct Series {
     /// True when even the finest sampling resolution failed its convergence
     /// test on this window — the curve may alias and the UI must say so.
     undersampled: bool,
+    /// True for static data series (signals): all points are already here,
+    /// and `text` cannot be resampled — the frontend re-windows client-side.
+    fixed: bool,
     /// Sampled (x, y) pairs; y is null at poles / domain gaps.
     points: Vec<(f64, Option<f64>)>,
 }
@@ -175,6 +182,7 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
             latex: latex::to_latex(expr),
             text: format!("{}", expr),
             undersampled: curve.undersampled,
+            fixed: false,
             points: curve.points,
         });
     }
@@ -182,8 +190,55 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
         var: var.to_string(),
         a,
         b,
+        sig: None,
         series,
     })
+}
+
+/// A `plot(s1, ..., sk)` over signals: the samples are the data — no
+/// resampling, no window arguments. Long signals decimate to a min/max
+/// envelope (extremes survive; the `undersampled` flag says so).
+fn plot_signal_data(e: &Expr, sig_id: u32) -> Option<Result<(PlotData, Vec<surd::signal::Signal>), String>> {
+    let Expr::Func(name, args) = e else {
+        return None;
+    };
+    if name != "plotsignal" || args.is_empty() {
+        return None;
+    }
+    if args.len() > MAX_SERIES {
+        return Some(Err(format!(
+            "plot: too many signals ({}, max {})",
+            args.len(),
+            MAX_SERIES
+        )));
+    }
+    let mut series = Vec::with_capacity(args.len());
+    let mut signals = Vec::with_capacity(args.len());
+    let mut maxlen = 0usize;
+    for (i, arg) in args.iter().enumerate() {
+        let Expr::Signal(s) = arg else {
+            return Some(Err("plot: signals and functions cannot mix in one plot".into()));
+        };
+        maxlen = maxlen.max(s.len());
+        signals.push(s.clone());
+        series.push(Series {
+            latex: format!(r"\mathrm{{signal}}_{{{}}}", i + 1),
+            text: format!("{}", arg),
+            undersampled: surd::signal::plot_decimated(s, PLOT_SAMPLES_MAX),
+            fixed: true,
+            points: surd::signal::plot_points(s, PLOT_SAMPLES_MAX),
+        });
+    }
+    Some(Ok((
+        PlotData {
+            var: "n".to_string(),
+            a: 1.0,
+            b: maxlen as f64,
+            sig: Some(sig_id),
+            series,
+        },
+        signals,
+    )))
 }
 
 /// A `plot3d(f, x, a, b, y, c, d)` value, sampled on a grid. `None` if `e`
@@ -244,7 +299,16 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
 #[wasm_bindgen]
 pub struct Session {
     interp: surd::Interpreter,
+    /// Signal-plot registry: zoom refinement re-decimates from the original
+    /// data, which only lives here. Ids are assigned in evaluation order, so
+    /// a deterministic transcript replay reproduces them. Bounded: old plots
+    /// evict and their zoom degrades gracefully to the shipped envelope.
+    signal_plots: std::collections::VecDeque<(u32, Vec<surd::signal::Signal>)>,
+    next_plot_id: u32,
 }
+
+/// Registry size cap (each entry pins its signals' Rc'd data in memory).
+const MAX_SIGNAL_PLOTS: usize = 64;
 
 impl Default for Session {
     fn default() -> Self {
@@ -257,6 +321,8 @@ impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Session {
         Session {
+            signal_plots: std::collections::VecDeque::new(),
+            next_plot_id: 0,
             interp: surd::Interpreter::new(),
         }
     }
@@ -355,6 +421,37 @@ impl Session {
         serde_json::to_string(&result).expect("EvalResult is always serializable")
     }
 
+    /// Re-decimate one series of a registered signal plot over the index
+    /// window [a, b] — the zoom-refinement path. The full-resolution data
+    /// lives in the session's registry; a narrower window means more detail
+    /// per pixel. Same response shape as the stateless `resample`:
+    /// `{ok, points, undersampled}`, or `{ok: false}` when the plot has
+    /// been evicted or the session restarted (the frontend keeps the
+    /// shipped envelope in that case).
+    pub fn resample_signal(&self, sig: u32, series: usize, a: f64, b: f64) -> String {
+        let Some((_, signals)) = self.signal_plots.iter().find(|(id, _)| *id == sig) else {
+            return serde_json::json!({"ok": false, "error": "plot no longer registered"})
+                .to_string();
+        };
+        let Some(s) = signals.get(series) else {
+            return serde_json::json!({"ok": false, "error": "no such series"}).to_string();
+        };
+        if !(a.is_finite() && b.is_finite() && a < b) {
+            return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b"})
+                .to_string();
+        }
+        // x values are 1-based sample indices; clamp the window to the data.
+        let from = (a.floor().max(1.0) as usize).saturating_sub(1);
+        let to = (b.ceil().max(1.0) as usize).min(s.len());
+        let points = surd::signal::plot_points_range(s, from, to, PLOT_SAMPLES_MAX);
+        serde_json::json!({
+            "ok": true,
+            "points": points,
+            "undersampled": surd::signal::range_decimated(from, to, PLOT_SAMPLES_MAX),
+        })
+        .to_string()
+    }
+
     /// Export the named workspace variables as one `surd-data` JSON file.
     /// Returns `{ok, data?, error?}`; `data` is the file's text.
     pub fn export_data(&self, names_json: &str) -> String {
@@ -394,9 +491,21 @@ impl Session {
                     plot3d,
                     error: None,
                 };
-                match (plot_data(&value), plot3d_data(&value)) {
+                let curve = plot_data(&value).map(|r| r.map(|p| (p, Vec::new()))).or_else(
+                    || plot_signal_data(&value, self.next_plot_id),
+                );
+                match (curve, plot3d_data(&value)) {
                     (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
-                    (Some(Ok(plot)), _) => ok("plot", Some(plot), None),
+                    (Some(Ok((plot, signals))), _) => {
+                        if !signals.is_empty() {
+                            self.signal_plots.push_back((self.next_plot_id, signals));
+                            self.next_plot_id += 1;
+                            if self.signal_plots.len() > MAX_SIGNAL_PLOTS {
+                                self.signal_plots.pop_front();
+                            }
+                        }
+                        ok("plot", Some(plot), None)
+                    }
                     (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface)),
                     (None, None) => ok(kind_of(&value), None, None),
                 }

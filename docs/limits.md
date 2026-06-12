@@ -82,9 +82,11 @@ Scoped out of the prototype on purpose — this is where an exact CAS balloons:
   and fixed-point quantization; FFT-speed transforms, equiripple (Remez)
   design, IIR design, and z-transforms are future work.
 - **Signal gaps** — [signals](reference/signals.md) cover the certified
-  bulk pipeline (FFT, convolution, reductions, WAV/raw/CSV import); still
-  missing: plotting signals, exporting arbitrary-precision signals, slicing,
-  and the frontend file-picker UI for the new import paths.
+  bulk pipeline end to end (FFT, convolution, reductions, import/export in
+  both substrates, plotting with zoom refinement, slicing); the substrates
+  still never convert into each other implicitly, and zoom refinement needs
+  a live session (a reloaded notebook's plots refine again after any
+  evaluation replays them).
 - **No indexed assignment** — `v[1] := 5` is not a thing; values are
   immutable. Build with `map`, `vcat`, `hcat`.
 - **More statistics** — the [`stats` namespace](reference/stats.md) covers

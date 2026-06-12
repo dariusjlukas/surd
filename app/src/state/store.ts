@@ -24,7 +24,12 @@ import {
   type SampledCurve,
 } from '../engine/client'
 import { initLexer } from '../engine/lexer'
-import type { EvalResult, ReplayEntry, WorkspaceEntry } from '../engine/types'
+import type {
+  EvalResult,
+  ImportFormat,
+  ReplayEntry,
+  WorkspaceEntry,
+} from '../engine/types'
 import { idbStorage, STORAGE_KEY } from './storage'
 
 export type EngineStatus = 'booting' | 'restoring' | 'ready' | 'busy' | 'failed'
@@ -41,8 +46,12 @@ export interface Cell {
   result?: EvalResult
   /** data cells: the workspace variable the import binds. */
   dataName?: string
-  /** data cells: the imported file's raw text (replayed on engine restart). */
+  /** data cells: the imported file's raw text — or base64 bytes for binary
+   * bulk formats (replayed on engine restart). */
   dataPayload?: string
+  /** data cells: how the payload is parsed (absent = 'auto', the original
+   * exact text-import path). */
+  dataFormat?: ImportFormat
 }
 
 export interface Notebook {
@@ -61,7 +70,14 @@ export function transcriptOf(cells: Cell[]): ReplayEntry[] {
     .flatMap((c): ReplayEntry[] => {
       if (c.kind === 'math') return [{ type: 'eval', src: c.src }]
       if (c.kind === 'data' && c.dataName && c.dataPayload) {
-        return [{ type: 'import', name: c.dataName, payload: c.dataPayload }]
+        return [
+          {
+            type: 'import',
+            name: c.dataName,
+            payload: c.dataPayload,
+            format: c.dataFormat,
+          },
+        ]
       }
       return []
     })
@@ -120,7 +136,11 @@ interface NotebookState {
   submit(src: string): Promise<void>
   /** Import a raw data file (surd-data/JSON/CSV) as a new data cell, bound
    * to a fresh workspace name derived from the file name. */
-  importData(fileName: string, text: string): Promise<void>
+  importData(
+    fileName: string,
+    payload: string,
+    format?: ImportFormat,
+  ): Promise<void>
   /** Serialize the named workspace variables into one surd-data file. */
   exportData(names: string[]): Promise<string>
   /** Re-evaluate a cell and everything below it (the cell's old effect on
@@ -137,6 +157,12 @@ interface NotebookState {
   resample(
     exprText: string,
     varName: string,
+    a: number,
+    b: number,
+  ): Promise<SampledCurve>
+  resampleSignal(
+    sig: number,
+    series: number,
     a: number,
     b: number,
   ): Promise<SampledCurve>
@@ -298,6 +324,7 @@ export const useNotebook = create<NotebookState>()(
                 ? await client.importData(
                     cell.dataName ?? '',
                     cell.dataPayload ?? '',
+                    cell.dataFormat,
                   )
                 : await client.eval(cell.src)
             patchCell(notebookId, cellId, { status: 'done', result })
@@ -349,7 +376,11 @@ export const useNotebook = create<NotebookState>()(
           await evalIntoCell(notebookId, cell.id, src)
         },
 
-        async importData(fileName: string, text: string) {
+        async importData(
+          fileName: string,
+          payload: string,
+          format?: ImportFormat,
+        ) {
           if (get().engineStatus !== 'ready') return
           const notebookId = get().activeId
           const name = importVarName(
@@ -362,12 +393,13 @@ export const useNotebook = create<NotebookState>()(
             src: `import "${fileName}" as ${name}`,
             status: 'pending',
             dataName: name,
-            dataPayload: text,
+            dataPayload: payload,
+            dataFormat: format,
           }
           patch(notebookId, (n) => ({ cells: [...n.cells, cell] }))
           set({ engineStatus: 'busy' })
           try {
-            const result = await client.importData(name, text)
+            const result = await client.importData(name, payload, format)
             set({ engineStatus: 'ready' })
             patchCell(notebookId, cell.id, { status: 'done', result })
             if (result.ok) refreshWorkspace()
@@ -452,6 +484,10 @@ export const useNotebook = create<NotebookState>()(
 
         resample(exprText, varName, a, b) {
           return client.resample(exprText, varName, a, b)
+        },
+
+        resampleSignal(sig, series, a, b) {
+          return client.resampleSignal(sig, series, a, b)
         },
 
         resample3d(exprText, xvar, yvar, a, b, c, d) {

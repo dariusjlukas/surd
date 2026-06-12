@@ -148,7 +148,7 @@ const BUILTINS: Builtin[] = [
   {
     name: 'plot',
     params: ['f', 'x', 'a', 'b'],
-    doc: 'Plot f over x in [a, b]; pass several functions before x to overlay curves.',
+    doc: 'Plot f over x in [a, b] (overlay: more functions before x) — or plot(s) for signals.',
     variadic: true,
   },
   {
@@ -176,6 +176,11 @@ const BUILTINS: Builtin[] = [
     name: 'size',
     params: ['m'],
     doc: 'Dimensions of a matrix → struct(rows, cols).',
+  },
+  {
+    name: 'slice',
+    params: ['v', 'start', 'n'],
+    doc: 'n consecutive elements from 1-based start (vectors and signals).',
   },
   {
     name: 'solve',

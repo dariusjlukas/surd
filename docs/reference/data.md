@@ -54,6 +54,20 @@ len(v)      # entries of a vector; rows of a matrix
 size(m)     # struct(rows, cols)
 ```
 
+## `slice`
+
+```
+slice(v, start, n)
+```
+
+`n` consecutive elements from 1-based `start` — vectors and
+[signals](signals.md) alike:
+
+```text
+>> slice([10, 20, 30, 40], 2, 2)
+[ 20  30 ]
+```
+
 ## `map`
 
 ```

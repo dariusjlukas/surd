@@ -16,6 +16,7 @@ import type {
   SamplePoint,
   ToWorker,
   WorkspaceEntry,
+  ImportFormat,
 } from './types'
 
 export class EngineCancelled extends Error {
@@ -84,13 +85,19 @@ export class EngineClient {
     return this.request<EvalResult>((id) => ({ type: 'eval', id, src }))
   }
 
-  /** Import a raw data file's text, binding it to `name` in the workspace. */
-  importData(name: string, payload: string): Promise<EvalResult> {
+  /** Import a data file, binding it to `name` in the workspace. `payload`
+   * is the file's text — or base64 bytes for the binary formats. */
+  importData(
+    name: string,
+    payload: string,
+    format: ImportFormat = 'auto',
+  ): Promise<EvalResult> {
     return this.request<EvalResult>((id) => ({
       type: 'importData',
       id,
       name,
       payload,
+      format,
     }))
   }
 
@@ -125,6 +132,27 @@ export class EngineClient {
       id,
       exprText,
       varName,
+      a,
+      b,
+    }))
+    if (!r.ok || !r.points) throw new Error(r.error ?? 'resample failed')
+    return { points: r.points, undersampled: r.undersampled ?? false }
+  }
+
+  /** Re-decimate one series of a registered signal plot over a new index
+   * window (pan/zoom). Throws when the plot is no longer registered (session
+   * restarted, registry evicted) — the caller keeps its shipped envelope. */
+  async resampleSignal(
+    sig: number,
+    series: number,
+    a: number,
+    b: number,
+  ): Promise<SampledCurve> {
+    const r = await this.request<ResampleResult>((id) => ({
+      type: 'resampleSignal',
+      id,
+      sig,
+      series,
       a,
       b,
     }))

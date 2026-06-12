@@ -1128,3 +1128,36 @@ fn high_precision_signals_tighten_bounds() {
         "true"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Slicing and signal plotting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn slice_vectors_and_signals() {
+    assert_eq!(norm("slice([10, 20, 30, 40], 2, 2)"), "[ 20 30 ]");
+    assert_eq!(norm("slice([10; 20; 30], 1, 2)"), "[ 10 ] [ 20 ]");
+    assert_eq!(
+        ev_all(&["s := signal([3; 1; 4; 1; 5])", "len(slice(s, 2, 3))"]),
+        "3"
+    );
+    assert_eq!(
+        ev_all(&["s := signal([3; 1; 4; 1; 5])", "slice(s, 2, 3)[1]"]),
+        "1"
+    );
+    assert!(ev("slice([1, 2], 2, 5)").starts_with("error: slice of 5 from position 2"));
+    assert!(ev_all(&["s := signal([1])", "slice(s, 1, 2)"])
+        .starts_with("error: slice of 2 samples"));
+    assert!(ev("slice(3, 1, 1)").starts_with("error: slice expects"));
+}
+
+#[test]
+fn plotting_signals() {
+    // plot over signals produces the static signal-plot value.
+    assert!(ev_all(&["s := signal([1; 2; 3])", "plot(s)"]).starts_with("plotsignal("));
+    assert!(ev_all(&["s := signal([1; 2])", "plot(s, 2 .* s)"]).starts_with("plotsignal("));
+    // Mixing a signal into a function plot still refuses.
+    assert!(ev_all(&["s := signal([1])", "plot(s, x, 0, 1)"]).starts_with("error:"));
+    // The non-signal short form keeps its error.
+    assert!(ev("plot(sin(x))").starts_with("error: plot expects"));
+}

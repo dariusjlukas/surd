@@ -29,6 +29,7 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   // Pre-multi-curve persisted results normalize to a one-series shape.
   const plot = useMemo(() => normalizePlotData(rawPlot), [rawPlot])
   const resample = useNotebook((s) => s.resample)
+  const resampleSignal = useNotebook((s) => s.resampleSignal)
   // The painter samples theme CSS variables when it (re)builds materials;
   // keying the draw effects on the theme makes a mode/accent switch repaint.
   const themeKey = useSettings((s) => `${s.resolvedMode}/${s.accent}`)
@@ -107,9 +108,17 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   // -- pan / zoom → debounced engine resample -------------------------------
   const requestResample = useCallback(
     (a: number, b: number) => {
+      const allFixed = plot.series.every((s) => s.fixed)
+      // Signal plots with a live registry id refine by re-decimating the
+      // zoomed window from the original data; without one (session restarted,
+      // registry evicted, old persisted plot) the shipped envelope stands.
+      if (allFixed && plot.sig == null) return
       window.clearTimeout(debounceRef.current)
       debounceRef.current = window.setTimeout(() => {
-        Promise.all(plot.series.map((s) => resample(s.text, plot.var, a, b)))
+        const sampled = allFixed
+          ? plot.series.map((_, i) => resampleSignal(plot.sig!, i, a, b))
+          : plot.series.map((s) => resample(s.text, plot.var, a, b))
+        Promise.all(sampled)
           .then((all) => {
             setPoints(all.map((r) => r.points))
             setUndersampled(all.map((r) => r.undersampled))
@@ -122,7 +131,7 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
           })
       }, RESAMPLE_DEBOUNCE_MS)
     },
-    [plot, resample],
+    [plot, resample, resampleSignal],
   )
 
   const onPointerDown = (e: React.PointerEvent) => {
