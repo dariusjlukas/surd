@@ -212,6 +212,50 @@ pub fn rank(m: &Expr) -> Expr {
     int(rk as i64)
 }
 
+/// A basis for the null space (kernel) of `m`, returned as the columns of a
+/// matrix. A trivial kernel is an error — there is no empty matrix to return,
+/// and "only the zero vector" deserves to be said in words anyway.
+pub fn nullspace(m: &Expr) -> Result<Expr, String> {
+    let cols = rows_of(m)[0].len();
+    let (reduced, _, pivots) = gauss_jordan(rows_of(m).clone());
+    let basis = kernel_basis(&reduced, &pivots, cols);
+    if basis.is_empty() {
+        return Err(format!(
+            "the null space is trivial: the matrix has full column rank ({}), so A·x = 0 only for x = 0",
+            cols
+        ));
+    }
+    Ok(columns_to_matrix(basis))
+}
+
+/// Read a kernel basis off a reduced row echelon form: for each non-pivot
+/// (free) column f, the vector with 1 in slot f and −R[k][f] in the slot of
+/// the k-th pivot column solves R·x = 0. Considers only the first `cols`
+/// columns, so it works on augmented matrices too.
+fn kernel_basis(reduced: &[Vec<Expr>], pivots: &[usize], cols: usize) -> Vec<Vec<Expr>> {
+    (0..cols)
+        .filter(|c| !pivots.contains(c))
+        .map(|f| {
+            let mut v = vec![int(0); cols];
+            v[f] = int(1);
+            for (k, &p) in pivots.iter().enumerate() {
+                v[p] = mul(vec![int(-1), reduced[k][f].clone()]);
+            }
+            v
+        })
+        .collect()
+}
+
+/// Assemble column vectors into a matrix (the columns become, well, columns).
+fn columns_to_matrix(cols: Vec<Vec<Expr>>) -> Expr {
+    let n = cols[0].len();
+    Expr::Matrix(
+        (0..n)
+            .map(|i| cols.iter().map(|c| c[i].clone()).collect())
+            .collect(),
+    )
+}
+
 pub fn inverse(m: &Expr) -> Result<Expr, String> {
     let (n, c) = dims(m);
     if n != c {
@@ -241,8 +285,10 @@ pub fn inverse(m: &Expr) -> Result<Expr, String> {
     Ok(Expr::Matrix(inv))
 }
 
-/// Solve `A x = b` for a column vector `b`. Reports inconsistent and
-/// underdetermined systems rather than guessing.
+/// Solve `A x = b` for a column vector `b`. Reports inconsistent systems; an
+/// underdetermined system returns the *general* solution as a struct — a
+/// particular solution plus a null-space basis (every solution is
+/// `particular + any combination of the nullspace columns`).
 pub fn solve(a: &Expr, b: &Expr) -> Result<Expr, String> {
     if !is_matrix(a) || !is_matrix(b) {
         return Err("solve expects two matrices: solve(A, b)".into());
@@ -275,17 +321,158 @@ pub fn solve(a: &Expr, b: &Expr) -> Result<Expr, String> {
         return Err("system is inconsistent (no solution)".into());
     }
     let var_pivots: Vec<usize> = pivots.iter().cloned().filter(|&c| c < vars).collect();
-    if var_pivots.len() < vars {
-        return Err("system is underdetermined (infinitely many solutions)".into());
-    }
 
-    // Unique solution: pivots are in row order, so row k solves variable
-    // var_pivots[k], and the value sits in the augmented column.
+    // Pivots are in row order, so row k solves variable var_pivots[k], and its
+    // value sits in the augmented column. Free variables are pinned to 0,
+    // making this the unique solution when there are no free variables and a
+    // particular solution otherwise.
     let mut sol = vec![int(0); vars];
     for (k, &col) in var_pivots.iter().enumerate() {
         sol[col] = reduced[k][vars].clone();
     }
-    Ok(Expr::Matrix(sol.into_iter().map(|e| vec![e]).collect()))
+    let particular = Expr::Matrix(sol.into_iter().map(|e| vec![e]).collect());
+    if var_pivots.len() == vars {
+        return Ok(particular);
+    }
+
+    // Underdetermined: the general solution is particular + span(nullspace).
+    let basis = columns_to_matrix(kernel_basis(&reduced, &var_pivots, vars));
+    structure(vec![
+        ("particular".to_string(), particular),
+        ("nullspace".to_string(), basis),
+    ])
+}
+
+// ---------------------------------------------------------------------------
+// Decompositions: LU (Doolittle with row pivoting) and QR (Gram-Schmidt)
+// ---------------------------------------------------------------------------
+
+/// LU decomposition with row pivoting: `struct(L, U, P)` with P·A = L·U,
+/// L unit lower triangular, U upper triangular. Exact; singular matrices
+/// work too (an all-zero pivot column is simply skipped past).
+pub fn lu(a: &Expr) -> Result<Expr, String> {
+    let (n, c) = dims(a);
+    if n != c {
+        return Err("lu needs a square matrix".into());
+    }
+    let mut u = rows_of(a).clone();
+    let mut l = rows_of(&identity(n)).clone();
+    let mut perm: Vec<usize> = (0..n).collect();
+
+    for k in 0..n {
+        // First usably-nonzero pivot at or below the diagonal.
+        let Some(sel) = (k..n).find(|&r| !is_known_zero(&u[r][k])) else {
+            continue; // column already eliminated — U[k][k] stays 0
+        };
+        if sel != k {
+            u.swap(k, sel);
+            perm.swap(k, sel);
+            // Already-computed multipliers travel with their rows.
+            for j in 0..k {
+                let tmp = l[k][j].clone();
+                l[k][j] = l[sel][j].clone();
+                l[sel][j] = tmp;
+            }
+        }
+        let inv_pivot = pow(u[k][k].clone(), int(-1));
+        for i in k + 1..n {
+            if is_known_zero(&u[i][k]) {
+                continue;
+            }
+            let factor = mul(vec![u[i][k].clone(), inv_pivot.clone()]);
+            l[i][k] = factor.clone();
+            // Zero by construction — set it outright so a symbolic entry
+            // can't leave behind an unsimplified residue.
+            u[i][k] = int(0);
+            for j in k + 1..n {
+                let scaled = mul(vec![factor.clone(), u[k][j].clone()]);
+                u[i][j] = add(vec![u[i][j].clone(), mul(vec![int(-1), scaled])]);
+            }
+        }
+    }
+
+    // P has a 1 at (i, perm[i]): row i of P·A is original row perm[i].
+    let p = Expr::Matrix(
+        (0..n)
+            .map(|i| (0..n).map(|j| int((j == perm[i]) as i64)).collect())
+            .collect(),
+    );
+    structure(vec![
+        ("L".to_string(), Expr::Matrix(l)),
+        ("U".to_string(), Expr::Matrix(u)),
+        ("P".to_string(), p),
+    ])
+}
+
+/// QR decomposition by exact Gram-Schmidt: `struct(Q, R)` with A = Q·R, the
+/// columns of Q orthonormal and R upper triangular. Column norms are square
+/// roots, so Q and R hold exact surds — Qᵀ·Q folds to the identity exactly.
+/// Projections happen on the *unnormalized* orthogonal columns, which stay in
+/// the base field, so radicals only ever enter at the final normalization.
+pub fn qr(a: &Expr) -> Result<Expr, String> {
+    let (m, n) = dims(a);
+    if m < n {
+        return Err(format!(
+            "qr needs at least as many rows as columns, got a {}×{} matrix",
+            m, n
+        ));
+    }
+    let rows = rows_of(a);
+    if rows
+        .iter()
+        .flatten()
+        .any(|e| matches!(e, Expr::Complex(..)))
+    {
+        return Err("qr of a complex matrix isn't implemented (needs the conjugate inner product)".into());
+    }
+    let column = |j: usize| -> Vec<Expr> { (0..m).map(|i| rows[i][j].clone()).collect() };
+    let dot = |x: &[Expr], y: &[Expr]| -> Expr {
+        add(x.iter()
+            .zip(y)
+            .map(|(p, q)| mul(vec![p.clone(), q.clone()]))
+            .collect())
+    };
+    let neg_half = Expr::Rat(BigRational::new(BigInt::from(-1), BigInt::from(2)));
+
+    let mut q_cols: Vec<Vec<Expr>> = Vec::with_capacity(n); // orthonormal
+    let mut u_cols: Vec<Vec<Expr>> = Vec::with_capacity(n); // orthogonal, unnormalized
+    let mut u_norms2: Vec<Expr> = Vec::with_capacity(n);
+    let mut r = vec![vec![int(0); n]; n];
+
+    for j in 0..n {
+        let aj = column(j);
+        let mut v = aj.clone();
+        for i in 0..j {
+            // v -= (uᵢ·aⱼ / uᵢ·uᵢ)·uᵢ
+            let coeff = mul(vec![
+                dot(&u_cols[i], &aj),
+                pow(u_norms2[i].clone(), int(-1)),
+            ]);
+            for k in 0..m {
+                let scaled = mul(vec![coeff.clone(), u_cols[i][k].clone()]);
+                v[k] = add(vec![v[k].clone(), mul(vec![int(-1), scaled])]);
+            }
+        }
+        let norm2 = dot(&v, &v);
+        if is_known_zero(&norm2) {
+            return Err(format!(
+                "qr needs linearly independent columns, but column {} is a combination of the ones before it",
+                j + 1
+            ));
+        }
+        let inv_norm = pow(norm2.clone(), neg_half.clone());
+        q_cols.push(v.iter().map(|e| mul(vec![inv_norm.clone(), e.clone()])).collect());
+        r[j][j] = pow(norm2.clone(), half()); // |vⱼ|
+        for i in 0..j {
+            r[i][j] = dot(&q_cols[i], &aj); // qᵢ·aⱼ
+        }
+        u_cols.push(v);
+        u_norms2.push(norm2);
+    }
+    structure(vec![
+        ("Q".to_string(), columns_to_matrix(q_cols)),
+        ("R".to_string(), Expr::Matrix(r)),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +633,9 @@ pub fn eigenvalues(a: &Expr) -> Result<Expr, String> {
     let coeffs = poly_coeffs(&cp, "lambda")
         .ok_or("eigenvalues are only supported for matrices with numeric entries")?;
     let roots = roots_of_poly(coeffs)?;
-    Ok(Expr::Matrix(roots.into_iter().map(|r| vec![r]).collect()))
+    Ok(Expr::Matrix(
+        roots.iter().map(|r| vec![root_to_expr(r)]).collect(),
+    ))
 }
 
 /// Coefficients [c0, c1, …, cn] of a univariate rational polynomial, or `None`
@@ -520,9 +709,55 @@ fn var_power(f: &Expr, var: &str) -> Option<usize> {
     }
 }
 
+/// A root of a rational polynomial that we can express exactly. Structured
+/// (rather than an `Expr`) so eigenvector elimination can compute with it in
+/// the field ℚ(√d) — see `root_to_quad` below.
+#[derive(Clone, PartialEq)]
+enum ExactRoot {
+    Rational(BigRational),
+    /// (−b ± √disc) / (2a). The discriminant is never a perfect square (those
+    /// roots fold to `Rational`); a negative one means a complex pair via
+    /// √(−disc)·i.
+    Quad {
+        a: BigRational,
+        b: BigRational,
+        disc: BigRational,
+        plus: bool,
+    },
+    /// An exact root that needs radicals beyond a single square root — cube
+    /// roots (Cardano) or nested square roots (biquadratic quartics). Kept as
+    /// the rendered expression; eigen*values* report these, but eigen*vector*
+    /// elimination (which needs field arithmetic with a decidable zero test)
+    /// doesn't reach into these fields yet.
+    Radical(Expr),
+}
+
+/// Render a root as a canonical expression.
+fn root_to_expr(r: &ExactRoot) -> Expr {
+    match r {
+        ExactRoot::Rational(q) => rat_to_expr(q.clone()),
+        ExactRoot::Quad { a, b, disc, plus } => {
+            let two = BigRational::from_integer(BigInt::from(2));
+            let two_a_inv = pow(rat_to_expr(two * a.clone()), int(-1));
+            let neg_b = rat_to_expr(-b.clone());
+            let sign = int(if *plus { 1 } else { -1 });
+            if *disc < BigRational::zero() {
+                // (−b ± i·√(−disc)) / (2a) — one of a complex-conjugate pair.
+                let real_term = mul(vec![neg_b, two_a_inv.clone()]);
+                let imag_term = mul(vec![sign, pow(rat_to_expr(-disc.clone()), half()), two_a_inv]);
+                complex(real_term, imag_term)
+            } else {
+                let signed_sqrt = mul(vec![sign, pow(rat_to_expr(disc.clone()), half())]);
+                mul(vec![add(vec![neg_b, signed_sqrt]), two_a_inv])
+            }
+        }
+        ExactRoot::Radical(e) => e.clone(),
+    }
+}
+
 /// Find every root we can express exactly, peeling off rational roots and
 /// finishing any final linear/quadratic factor.
-fn roots_of_poly(mut c: Vec<BigRational>) -> Result<Vec<Expr>, String> {
+fn roots_of_poly(mut c: Vec<BigRational>) -> Result<Vec<ExactRoot>, String> {
     trim_leading_zeros(&mut c);
     let mut roots = Vec::new();
     loop {
@@ -530,25 +765,38 @@ fn roots_of_poly(mut c: Vec<BigRational>) -> Result<Vec<Expr>, String> {
         match c.len() - 1 {
             0 => break,
             1 => {
-                roots.push(rat_to_expr(-c[0].clone() / c[1].clone()));
+                roots.push(ExactRoot::Rational(-c[0].clone() / c[1].clone()));
                 break;
             }
             2 => {
-                roots.append(&mut quad_roots(&c[2], &c[1], &c[0])?);
+                roots.append(&mut quad_roots(&c[2], &c[1], &c[0]));
                 break;
             }
             deg => match find_rational_root(&c) {
                 Some(r) => {
-                    roots.push(rat_to_expr(r.clone()));
+                    roots.push(ExactRoot::Rational(r.clone()));
                     c = synthetic_divide(&c, &r);
+                }
+                None if deg == 3 => {
+                    roots.append(&mut cubic_roots(&c)?);
+                    break;
+                }
+                None if deg == 4 && c[1].is_zero() && c[3].is_zero() => {
+                    roots.append(&mut biquadratic_roots(&c)?);
+                    break;
                 }
                 None => {
                     return Err(format!(
                         "could not find all eigenvalues exactly: after {} rational root(s), a \
-                         degree-{} factor remains with no rational roots (cubics/quartics and \
-                         the radical-free degree ≥ 5 case aren't implemented)",
+                         degree-{} factor remains with no rational roots ({})",
                         roots.len(),
-                        deg
+                        deg,
+                        if deg == 4 {
+                            "only biquadratic quartics — no odd-power terms — are implemented; \
+                             the general Ferrari reduction isn't"
+                        } else {
+                            "degree ≥ 5 has no radical formula at all — Abel–Ruffini"
+                        }
                     ));
                 }
             },
@@ -563,31 +811,221 @@ fn trim_leading_zeros(c: &mut Vec<BigRational>) {
     }
 }
 
-/// Roots of a·x² + b·x + c, exact: rational, real-irrational (via `sqrt`), or a
-/// complex-conjugate pair when the discriminant is negative.
-fn quad_roots(a: &BigRational, b: &BigRational, c: &BigRational) -> Result<Vec<Expr>, String> {
+/// Roots of a·x² + b·x + c, exact: rational when the discriminant is a perfect
+/// square, otherwise a quadratic-surd pair (complex-conjugate for a negative
+/// discriminant).
+fn quad_roots(a: &BigRational, b: &BigRational, c: &BigRational) -> Vec<ExactRoot> {
     let four = BigRational::from_integer(BigInt::from(4));
     let two = BigRational::from_integer(BigInt::from(2));
     let disc = b.clone() * b.clone() - four * a.clone() * c.clone();
-    let two_a_inv = pow(rat_to_expr(two * a.clone()), int(-1));
-    let neg_b = rat_to_expr(-b.clone());
+    if let Some(s) = exact_sqrt(&disc) {
+        let two_a = two * a.clone();
+        return vec![
+            ExactRoot::Rational((-b.clone() + s.clone()) / two_a.clone()),
+            ExactRoot::Rational((-b.clone() - s) / two_a),
+        ];
+    }
+    vec![
+        ExactRoot::Quad {
+            a: a.clone(),
+            b: b.clone(),
+            disc: disc.clone(),
+            plus: true,
+        },
+        ExactRoot::Quad {
+            a: a.clone(),
+            b: b.clone(),
+            disc,
+            plus: false,
+        },
+    ]
+}
 
-    if disc < BigRational::zero() {
-        // (−b ± i·sqrt(−disc)) / (2a) — a complex-conjugate pair.
-        let real_term = mul(vec![neg_b, two_a_inv.clone()]);
-        let imag_term = mul(vec![pow(rat_to_expr(-disc), half()), two_a_inv]);
+/// √r when r is the square of a rational (so 0, 4, 9/4, …), else `None`.
+fn exact_sqrt(r: &BigRational) -> Option<BigRational> {
+    if *r < BigRational::zero() {
+        return None;
+    }
+    let (ns, ds) = (r.numer().sqrt(), r.denom().sqrt());
+    (&ns * &ns == *r.numer() && &ds * &ds == *r.denom()).then(|| BigRational::new(ns, ds))
+}
+
+/// Exact sign (−1, 0, 1) of p + q·√d, for d > 0 and not a perfect square —
+/// one of the comparisons an exact representation makes decidable.
+fn quad_surd_sign(p: &BigRational, q: &BigRational, d: &BigRational) -> i32 {
+    let zero = BigRational::zero();
+    if *p >= zero && *q >= zero {
+        return if p.is_zero() && q.is_zero() { 0 } else { 1 };
+    }
+    if *p <= zero && *q <= zero {
+        return -1;
+    }
+    // Mixed signs: the part with the larger square wins.
+    let pp = p.clone() * p.clone();
+    let qq = q.clone() * q.clone() * d.clone();
+    if pp == qq {
+        return 0; // impossible for non-square d, but never guess
+    }
+    if (pp > qq) == (*p > zero) {
+        1
+    } else {
+        -1
+    }
+}
+
+fn third() -> Expr {
+    Expr::Rat(BigRational::new(BigInt::from(1), BigInt::from(3)))
+}
+
+/// Real cube root of a rational, sign-normalized so `pow` never sees a
+/// negative base with a fractional exponent (that would be the complex
+/// principal branch — not the real root Cardano needs).
+fn real_cbrt_rat(w: &BigRational) -> Expr {
+    if *w < BigRational::zero() {
+        mul(vec![int(-1), pow(rat_to_expr(-w.clone()), third())])
+    } else {
+        pow(rat_to_expr(w.clone()), third())
+    }
+}
+
+/// Real cube root of w = a + s·√Δ (s = ±1, Δ > 0 not a perfect square),
+/// sign-normalized like `real_cbrt_rat` using the exact sign of the surd.
+fn real_cbrt_surd(a: &BigRational, s: i64, delta: &BigRational) -> Expr {
+    let q = BigRational::from_integer(BigInt::from(s));
+    let sgn = quad_surd_sign(a, &q, delta);
+    let (aa, qq) = if sgn < 0 { (-a.clone(), -q) } else { (a.clone(), q) };
+    let inner = add(vec![
+        rat_to_expr(aa),
+        mul(vec![rat_to_expr(qq), pow(rat_to_expr(delta.clone()), half())]),
+    ]);
+    let root = pow(inner, third());
+    if sgn < 0 {
+        mul(vec![int(-1), root])
+    } else {
+        root
+    }
+}
+
+/// Cardano's formula, for a cubic with no rational roots (hence irreducible
+/// over ℚ, hence distinct roots). With Δ = (q/2)² + (p/3)³ of the depressed
+/// cubic t³ + pt + q: Δ > 0 gives one real root in real radicals plus a
+/// complex pair; Δ < 0 is the *casus irreducibilis* — three real roots that
+/// provably have no expression in real radicals — reported, not approximated.
+fn cubic_roots(c: &[BigRational]) -> Result<Vec<ExactRoot>, String> {
+    let n = |k: i64| BigRational::from_integer(BigInt::from(k));
+    // Monic x³ + Bx² + Cx + D, depressed with x = t − B/3.
+    let bb = c[2].clone() / c[3].clone();
+    let cc = c[1].clone() / c[3].clone();
+    let dd = c[0].clone() / c[3].clone();
+    let shift = -bb.clone() / n(3);
+    let p = cc.clone() - bb.clone() * bb.clone() / n(3);
+    let q =
+        n(2) * bb.clone() * bb.clone() * bb.clone() / n(27) - bb.clone() * cc / n(3) + dd;
+    let delta =
+        q.clone() * q.clone() / n(4) + p.clone() * p.clone() * p.clone() / n(27);
+
+    if delta < BigRational::zero() {
+        return Err(
+            "could not express the eigenvalues exactly: three real roots remain that have no \
+             expression in real radicals (casus irreducibilis); the trigonometric closed form \
+             isn't implemented"
+                .into(),
+        );
+    }
+    // Δ = 0 means repeated roots, which over ℚ are rational. They normally
+    // get peeled by the rational-root search, but its divisor scan is capped,
+    // so finish them here when they slip through.
+    if delta.is_zero() {
+        if p.is_zero() {
+            return Ok(vec![ExactRoot::Rational(shift); 3]);
+        }
+        let t1 = n(3) * q.clone() / p.clone();
+        let t2 = -n(3) * q / (n(2) * p);
         return Ok(vec![
-            complex(real_term.clone(), imag_term.clone()),
-            complex(real_term, mul(vec![int(-1), imag_term])),
+            ExactRoot::Rational(t1 + shift.clone()),
+            ExactRoot::Rational(t2.clone() + shift.clone()),
+            ExactRoot::Rational(t2 + shift),
         ]);
     }
 
-    // Real roots, kept in the compact (−b ± sqrt(disc))/(2a) factored form.
-    let sqrt_disc = pow(rat_to_expr(disc), half());
+    // Δ > 0: the real root is cbrt(u) + cbrt(v) with u, v = −q/2 ± √Δ; the
+    // complex pair is −(cbrt u + cbrt v)/2 ± i·(√3/2)(cbrt u − cbrt v).
+    // (Real cube roots, so cbrt(u)·cbrt(v) = −p/3 holds as required.)
+    let neg_half_q = -q / n(2);
+    let (cb_u, cb_v) = match exact_sqrt(&delta) {
+        Some(s) => (
+            real_cbrt_rat(&(neg_half_q.clone() + s.clone())),
+            real_cbrt_rat(&(neg_half_q - s)),
+        ),
+        None => (
+            real_cbrt_surd(&neg_half_q, 1, &delta),
+            real_cbrt_surd(&neg_half_q, -1, &delta),
+        ),
+    };
+    let shift_e = rat_to_expr(shift);
+    let real_root = add(vec![cb_u.clone(), cb_v.clone(), shift_e.clone()]);
+    let re = add(vec![
+        mul(vec![
+            Expr::Rat(BigRational::new(BigInt::from(-1), BigInt::from(2))),
+            add(vec![cb_u.clone(), cb_v.clone()]),
+        ]),
+        shift_e,
+    ]);
+    // u > v, so cbrt(u) − cbrt(v) > 0: this is the +i member of the pair.
+    let im = mul(vec![
+        half(),
+        pow(int(3), half()),
+        add(vec![cb_u, mul(vec![int(-1), cb_v])]),
+    ]);
     Ok(vec![
-        mul(vec![add(vec![neg_b.clone(), sqrt_disc.clone()]), two_a_inv.clone()]),
-        mul(vec![add(vec![neg_b, mul(vec![int(-1), sqrt_disc])]), two_a_inv]),
+        ExactRoot::Radical(real_root),
+        ExactRoot::Radical(complex(re.clone(), im.clone())),
+        ExactRoot::Radical(complex(re, mul(vec![int(-1), im]))),
     ])
+}
+
+/// Roots of a biquadratic c4·x⁴ + c2·x² + c0 (no odd powers, no rational
+/// roots) via the quadratic in y = x², then x = ±√y per branch.
+fn biquadratic_roots(c: &[BigRational]) -> Result<Vec<ExactRoot>, String> {
+    let one = BigRational::one();
+    let zero = BigRational::zero();
+    let mut out = Vec::with_capacity(4);
+    for y in quad_roots(&c[4], &c[2], &c[0]) {
+        match &y {
+            ExactRoot::Rational(r) => {
+                // x² = r: the quadratic machinery handles ±√r, including the
+                // imaginary case for negative r.
+                out.append(&mut quad_roots(&one, &zero, &(-r.clone())));
+            }
+            ExactRoot::Quad { disc, .. } if *disc < zero => {
+                return Err(
+                    "could not express the eigenvalues exactly: they are square roots of \
+                     complex numbers, and nested complex radicals aren't implemented"
+                        .into(),
+                );
+            }
+            ExactRoot::Quad { .. } => {
+                // y is a real quadratic surd with an exactly decidable sign:
+                // x = ±√y when positive, ±i·√(−y) when negative.
+                let (yq, d) = root_to_quad(&y);
+                if quad_surd_sign(&yq.re.a, &yq.re.b, &d) > 0 {
+                    let s = pow(quad_rat_to_expr(&yq.re, &d), half());
+                    out.push(ExactRoot::Radical(s.clone()));
+                    out.push(ExactRoot::Radical(mul(vec![int(-1), s])));
+                } else {
+                    let neg = QuadRat {
+                        a: -yq.re.a.clone(),
+                        b: -yq.re.b.clone(),
+                    };
+                    let s = pow(quad_rat_to_expr(&neg, &d), half());
+                    out.push(ExactRoot::Radical(complex(int(0), s.clone())));
+                    out.push(ExactRoot::Radical(complex(int(0), mul(vec![int(-1), s]))));
+                }
+            }
+            ExactRoot::Radical(_) => unreachable!("quad_roots never returns Radical"),
+        }
+    }
+    Ok(out)
 }
 
 fn eval_poly(c: &[BigRational], x: &BigRational) -> BigRational {
@@ -659,4 +1097,319 @@ fn synthetic_divide(c: &[BigRational], r: &BigRational) -> Vec<BigRational> {
     b.pop(); // drop the remainder
     b.reverse();
     b
+}
+
+// ---------------------------------------------------------------------------
+// Eigenvectors — exact elimination in ℚ(√d) and its complex extension
+// ---------------------------------------------------------------------------
+//
+// Every eigenvalue we produce is rational or a quadratic surd (that's all
+// `roots_of_poly` can express), so the entries of A − λI live in the field
+// ℚ(√d)(i). The general symbolic Gauss-Jordan can't decide whether an
+// expression like 1/(1 − φ) + φ is zero — `is_known_zero` only sees folded
+// rationals — so eigenvector elimination runs on an explicit representation
+// of that field, where arithmetic stays closed and the zero test is exact.
+
+/// An element a + b·√d of ℚ(√d). The d is fixed per computation and carried
+/// externally; when d = 0 the invariant b = 0 holds throughout, and d is
+/// never a perfect square (such roots fold to rationals at construction).
+#[derive(Clone, PartialEq)]
+struct QuadRat {
+    a: BigRational,
+    b: BigRational,
+}
+
+impl QuadRat {
+    fn from_rat(a: BigRational) -> Self {
+        QuadRat {
+            a,
+            b: BigRational::zero(),
+        }
+    }
+    fn is_zero(&self) -> bool {
+        self.a.is_zero() && self.b.is_zero()
+    }
+    fn add(&self, o: &Self) -> Self {
+        QuadRat {
+            a: self.a.clone() + o.a.clone(),
+            b: self.b.clone() + o.b.clone(),
+        }
+    }
+    fn neg(&self) -> Self {
+        QuadRat {
+            a: -self.a.clone(),
+            b: -self.b.clone(),
+        }
+    }
+    fn mul(&self, o: &Self, d: &BigRational) -> Self {
+        QuadRat {
+            a: self.a.clone() * o.a.clone() + self.b.clone() * o.b.clone() * d.clone(),
+            b: self.a.clone() * o.b.clone() + self.b.clone() * o.a.clone(),
+        }
+    }
+    /// 1/(a + b√d) = (a − b√d)/(a² − b²·d). The denominator is nonzero for a
+    /// nonzero element because √d is irrational.
+    fn inv(&self, d: &BigRational) -> Self {
+        let denom =
+            self.a.clone() * self.a.clone() - self.b.clone() * self.b.clone() * d.clone();
+        QuadRat {
+            a: self.a.clone() / denom.clone(),
+            b: -self.b.clone() / denom,
+        }
+    }
+}
+
+/// An element re + im·i of ℚ(√d)(i).
+#[derive(Clone, PartialEq)]
+struct QuadComplex {
+    re: QuadRat,
+    im: QuadRat,
+}
+
+impl QuadComplex {
+    fn from_rat(r: BigRational) -> Self {
+        QuadComplex {
+            re: QuadRat::from_rat(r),
+            im: QuadRat::from_rat(BigRational::zero()),
+        }
+    }
+    fn is_zero(&self) -> bool {
+        self.re.is_zero() && self.im.is_zero()
+    }
+    fn sub(&self, o: &Self) -> Self {
+        QuadComplex {
+            re: self.re.add(&o.re.neg()),
+            im: self.im.add(&o.im.neg()),
+        }
+    }
+    fn neg(&self) -> Self {
+        QuadComplex {
+            re: self.re.neg(),
+            im: self.im.neg(),
+        }
+    }
+    fn mul(&self, o: &Self, d: &BigRational) -> Self {
+        QuadComplex {
+            re: self.re.mul(&o.re, d).add(&self.im.mul(&o.im, d).neg()),
+            im: self.re.mul(&o.im, d).add(&self.im.mul(&o.re, d)),
+        }
+    }
+    /// conj(z) / |z|². The norm re² + im² lives in ℚ(√d) ⊂ ℝ, so it vanishes
+    /// only when z itself is zero.
+    fn inv(&self, d: &BigRational) -> Self {
+        let norm_inv = self.re.mul(&self.re, d).add(&self.im.mul(&self.im, d)).inv(d);
+        QuadComplex {
+            re: self.re.mul(&norm_inv, d),
+            im: self.im.neg().mul(&norm_inv, d),
+        }
+    }
+}
+
+/// Express a root as an element of ℚ(√d)(i), returning the d to compute in.
+/// Callers gate out `Radical` roots first — those live in degree-3+ fields
+/// this representation can't hold.
+fn root_to_quad(r: &ExactRoot) -> (QuadComplex, BigRational) {
+    match r {
+        ExactRoot::Radical(_) => {
+            unreachable!("Radical roots are gated out before field conversion")
+        }
+        ExactRoot::Rational(q) => (QuadComplex::from_rat(q.clone()), BigRational::zero()),
+        ExactRoot::Quad { a, b, disc, plus } => {
+            let two_a = BigRational::from_integer(BigInt::from(2)) * a.clone();
+            let rat_part = -b.clone() / two_a.clone();
+            let mut coeff = BigRational::one() / two_a; // the ±1/(2a) on the √
+            if !*plus {
+                coeff = -coeff;
+            }
+            if *disc > BigRational::zero() {
+                // Real surd: λ = −b/(2a) + (±1/(2a))·√disc.
+                let re = QuadRat { a: rat_part, b: coeff };
+                (
+                    QuadComplex {
+                        re,
+                        im: QuadRat::from_rat(BigRational::zero()),
+                    },
+                    disc.clone(),
+                )
+            } else {
+                // Complex pair: λ = −b/(2a) ± (1/(2a))·√(−disc)·i. When
+                // √(−disc) is rational the imaginary part folds and no
+                // irrationality remains (d = 0).
+                let neg_disc = -disc.clone();
+                let (im, d) = match exact_sqrt(&neg_disc) {
+                    Some(s) => (QuadRat::from_rat(coeff * s), BigRational::zero()),
+                    None => (
+                        QuadRat {
+                            a: BigRational::zero(),
+                            b: coeff,
+                        },
+                        neg_disc,
+                    ),
+                };
+                (
+                    QuadComplex {
+                        re: QuadRat::from_rat(rat_part),
+                        im,
+                    },
+                    d,
+                )
+            }
+        }
+    }
+}
+
+fn quad_rat_to_expr(q: &QuadRat, d: &BigRational) -> Expr {
+    if q.b.is_zero() {
+        rat_to_expr(q.a.clone())
+    } else {
+        add(vec![
+            rat_to_expr(q.a.clone()),
+            mul(vec![
+                rat_to_expr(q.b.clone()),
+                pow(rat_to_expr(d.clone()), half()),
+            ]),
+        ])
+    }
+}
+
+fn quad_complex_to_expr(z: &QuadComplex, d: &BigRational) -> Expr {
+    let re = quad_rat_to_expr(&z.re, d);
+    if z.im.is_zero() {
+        re
+    } else {
+        complex(re, quad_rat_to_expr(&z.im, d))
+    }
+}
+
+/// Kernel basis of a matrix over ℚ(√d)(i): Gauss-Jordan with the field's
+/// exact zero test, then the free-column construction (cf. `kernel_basis`).
+fn quad_kernel_basis(mut m: Vec<Vec<QuadComplex>>, d: &BigRational) -> Vec<Vec<QuadComplex>> {
+    let (rows, cols) = (m.len(), m[0].len());
+    let mut pivots = Vec::new();
+    let mut pivot_row = 0;
+    for col in 0..cols {
+        if pivot_row >= rows {
+            break;
+        }
+        let Some(sel) = (pivot_row..rows).find(|&r| !m[r][col].is_zero()) else {
+            continue;
+        };
+        m.swap(pivot_row, sel);
+        let inv_pivot = m[pivot_row][col].inv(d);
+        for j in 0..cols {
+            m[pivot_row][j] = m[pivot_row][j].mul(&inv_pivot, d);
+        }
+        for r in 0..rows {
+            if r == pivot_row || m[r][col].is_zero() {
+                continue;
+            }
+            let factor = m[r][col].clone();
+            for j in 0..cols {
+                m[r][j] = m[r][j].sub(&factor.mul(&m[pivot_row][j], d));
+            }
+        }
+        pivots.push(col);
+        pivot_row += 1;
+    }
+    (0..cols)
+        .filter(|c| !pivots.contains(c))
+        .map(|f| {
+            let mut v = vec![QuadComplex::from_rat(BigRational::zero()); cols];
+            v[f] = QuadComplex::from_rat(BigRational::one());
+            for (k, &p) in pivots.iter().enumerate() {
+                v[p] = m[k][f].neg();
+            }
+            v
+        })
+        .collect()
+}
+
+/// Exact eigenvectors of a numeric matrix, returned as the columns of a
+/// matrix V whose j-th column pairs with the j-th entry of `eigenvalues` —
+/// so A·V = V·diag(eigenvalues). Such a V exists only when the matrix is
+/// diagonalizable; a defective matrix is reported, never padded with zeros.
+pub fn eigenvectors(a: &Expr) -> Result<Expr, String> {
+    let (n, c) = dims(a);
+    if n != c {
+        return Err("eigenvectors need a square matrix".into());
+    }
+    let rows = rows_of(a);
+    if !is_numeric_matrix(rows) {
+        return Err("eigenvectors are only supported for matrices with numeric entries".into());
+    }
+    let num: Vec<Vec<BigRational>> = rows
+        .iter()
+        .map(|r| r.iter().map(|e| numeric_value(e).unwrap()).collect())
+        .collect();
+    let cp = char_poly(a, "lambda")?;
+    let coeffs = poly_coeffs(&cp, "lambda")
+        .ok_or("eigenvectors are only supported for matrices with numeric entries")?;
+    let roots = roots_of_poly(coeffs)?;
+    if roots.iter().any(|r| matches!(r, ExactRoot::Radical(_))) {
+        return Err(
+            "eigenvectors are implemented for rational and quadratic-surd eigenvalues; these \
+             eigenvalues need cubic or nested radicals (eigenvalues(A) still reports them \
+             exactly)"
+                .into(),
+        );
+    }
+
+    // One kernel computation per *distinct* eigenvalue; its basis vectors are
+    // then dealt out to that eigenvalue's occurrences in order.
+    let mut distinct: Vec<(ExactRoot, usize)> = Vec::new();
+    for r in &roots {
+        match distinct.iter_mut().find(|(root, _)| root == r) {
+            Some((_, count)) => *count += 1,
+            None => distinct.push((r.clone(), 1)),
+        }
+    }
+
+    let mut bases: Vec<Vec<Vec<Expr>>> = Vec::with_capacity(distinct.len());
+    for (root, mult) in &distinct {
+        let (lambda, d) = root_to_quad(root);
+        let shifted: Vec<Vec<QuadComplex>> = num
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(j, e)| {
+                        let entry = QuadComplex::from_rat(e.clone());
+                        if i == j {
+                            entry.sub(&lambda)
+                        } else {
+                            entry
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let basis = quad_kernel_basis(shifted, &d);
+        if basis.len() < *mult {
+            return Err(format!(
+                "matrix is defective: eigenvalue {} has algebraic multiplicity {} but only {} \
+                 independent eigenvector(s), so no eigenbasis exists",
+                root_to_expr(root),
+                mult,
+                basis.len()
+            ));
+        }
+        bases.push(
+            basis
+                .iter()
+                .map(|v| v.iter().map(|z| quad_complex_to_expr(z, &d)).collect())
+                .collect(),
+        );
+    }
+
+    // Columns in eigenvalue order: the k-th occurrence of a root takes the
+    // k-th vector of its basis.
+    let mut used = vec![0usize; distinct.len()];
+    let mut columns = Vec::with_capacity(n);
+    for r in &roots {
+        let idx = distinct.iter().position(|(root, _)| root == r).unwrap();
+        columns.push(bases[idx][used[idx]].clone());
+        used[idx] += 1;
+    }
+    Ok(columns_to_matrix(columns))
 }

@@ -541,6 +541,26 @@ impl Interpreter {
                 expect_matrix(name, &args[0])?;
                 matrix::eigenvalues(&args[0])
             }
+            "eigenvectors" => {
+                arity(name, &args, 1)?;
+                expect_matrix(name, &args[0])?;
+                matrix::eigenvectors(&args[0])
+            }
+            "nullspace" | "kernel" => {
+                arity(name, &args, 1)?;
+                expect_matrix(name, &args[0])?;
+                matrix::nullspace(&args[0])
+            }
+            "lu" => {
+                arity(name, &args, 1)?;
+                expect_matrix(name, &args[0])?;
+                matrix::lu(&args[0])
+            }
+            "qr" => {
+                arity(name, &args, 1)?;
+                expect_matrix(name, &args[0])?;
+                matrix::qr(&args[0])
+            }
             "eye" | "identity" => {
                 arity(name, &args, 1)?;
                 Ok(matrix::identity(as_usize(&args[0])?))

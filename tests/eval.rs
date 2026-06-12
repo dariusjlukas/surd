@@ -172,6 +172,73 @@ fn exact_eigenvalues() {
 }
 
 #[test]
+fn exact_eigenvectors() {
+    // Columns pair with eigenvalues(A) in order: λ = 3 → (1,1), λ = 1 → (−1,1).
+    assert_eq!(norm("eigenvectors([2,1;1,2])"), "[ 1 -1 ] [ 1 1 ]");
+    // Irrational eigenvalues: elimination runs exactly in ℚ(√5), so the
+    // golden-ratio eigenvector comes out symbolically, not as floats.
+    assert_eq!(
+        norm("eigenvectors([1,1;1,0])"),
+        "[ 1/2 + 1/2*sqrt(5) 1/2 - 1/2*sqrt(5) ] [ 1 1 ]"
+    );
+    // A·V stays exact: each column is the eigenvalue times the eigenvector.
+    assert_eq!(
+        norm("[1,1;1,0] * eigenvectors([1,1;1,0])"),
+        "[ 3/2 + 1/2*sqrt(5) 3/2 - 1/2*sqrt(5) ] [ 1/2 + 1/2*sqrt(5) 1/2 - 1/2*sqrt(5) ]"
+    );
+    // A repeated eigenvalue with full geometric multiplicity gets a whole basis.
+    assert_eq!(norm("eigenvectors([1,0;0,1])"), "[ 1 0 ] [ 0 1 ]");
+}
+
+#[test]
+fn complex_eigenvectors_diagonalize_exactly() {
+    // Rotation by 90°: eigenvectors over ℚ(i).
+    assert_eq!(norm("eigenvectors([0,-1;1,0])"), "[ I -I ] [ 1 1 ]");
+    // Complex arithmetic folds eagerly, so V⁻¹·B·V is exactly diag(1+i, 1−i).
+    assert_eq!(
+        norm(
+            "inv(eigenvectors([1,-1;1,1])) * [1,-1;1,1] * eigenvectors([1,-1;1,1])"
+        ),
+        "[ 1 + I 0 ] [ 0 1 - I ]"
+    );
+}
+
+#[test]
+fn defective_matrices_are_reported_not_padded() {
+    // The Jordan block [1,1;0,1] has one eigenvector for a double eigenvalue.
+    let msg = ev("eigenvectors([1,1;0,1])");
+    assert!(msg.starts_with("error:"), "got: {msg}");
+    assert!(msg.contains("defective"), "got: {msg}");
+}
+
+#[test]
+fn nullspace_basis() {
+    // Rank-1: kernel spanned by (−2, 1).
+    assert_eq!(norm("nullspace([1,2;2,4])"), "[ -2 ] [ 1 ]");
+    // Wide matrix: one free column.
+    assert_eq!(norm("nullspace([1,2,3;4,5,6])"), "[ 1 ] [ -2 ] [ 1 ]");
+    // Full column rank: the trivial kernel is said in words, not guessed at.
+    let msg = ev("nullspace([1,0;0,1])");
+    assert!(msg.starts_with("error:") && msg.contains("trivial"), "got: {msg}");
+    // `kernel` is an alias.
+    assert_eq!(norm("kernel([1,2;2,4])"), "[ -2 ] [ 1 ]");
+}
+
+#[test]
+fn underdetermined_solve_returns_general_solution() {
+    // x + y = 3 (twice): particular (3,0) plus the homogeneous span of (−1,1).
+    assert_eq!(
+        norm("solve([1,1;2,2], [3;6])"),
+        "struct(nullspace = [ -1 ] [ 1 ], particular = [ 3 ] [ 0 ])"
+    );
+    // The pieces are reachable as struct fields.
+    assert_eq!(
+        norm("solve([1,1;2,2], [3;6]).particular"),
+        "[ 3 ] [ 0 ]"
+    );
+}
+
+#[test]
 fn complex_arithmetic() {
     assert_eq!(ev("I^2"), "-1");
     assert_eq!(ev("(1 + I)*(1 - I)"), "2");
@@ -221,10 +288,68 @@ fn lowercase_i_stays_a_variable() {
 }
 
 #[test]
+fn cubic_and_biquadratic_eigenvalues_in_radicals() {
+    // Companion matrix of x³ − 2: the real cube root plus its complex pair,
+    // via Cardano. (This used to be the "honest error" example.)
+    assert_eq!(
+        norm("eigenvalues([0,0,2; 1,0,0; 0,1,0])"),
+        "[ 2^(1/3) ] [ -1/2*2^(1/3) + 1/2*2^(1/3)*sqrt(3)*I ] \
+         [ -1/2*2^(1/3) - 1/2*2^(1/3)*sqrt(3)*I ]"
+    );
+    // Cardano with a depression shift (char poly x³ + x² − 1), checked
+    // against the known real root 0.75487766…
+    assert!(norm("N(eigenvalues([0,0,1; 1,0,0; 0,1,-1]), 20)")
+        .starts_with("[ 0.75487766624669276005 ]"));
+    // Biquadratic quartic x⁴ − 2x² − 1: nested radicals ±√(1+√2), ±i·√(√2−1).
+    assert!(norm("N(eigenvalues([0,0,0,1; 1,0,0,0; 0,1,0,2; 0,0,1,0]), 20)")
+        .starts_with("[ 1.5537739740300373073 ] [ -1.5537739740300373073 ]"));
+    // Eigenvectors don't pretend to follow into cubic fields.
+    let msg = ev("eigenvectors([0,0,2; 1,0,0; 0,1,0])");
+    assert!(msg.starts_with("error:") && msg.contains("radical"), "got: {msg}");
+}
+
+#[test]
 fn eigenvalue_limits_are_honest() {
-    // Irreducible cubic (companion of x³ − 2): cube root of 2 has no rational
-    // or quadratic-factor form, so we say so rather than approximating.
-    assert!(ev("eigenvalues([0,0,2; 1,0,0; 0,1,0])").starts_with("error:"));
+    // Three real irrational roots (casus irreducibilis): provably not
+    // expressible in real radicals, so we say so rather than approximating.
+    assert!(ev("eigenvalues([0,0,-1; 1,0,3; 0,1,0])").contains("casus irreducibilis"));
+    // A quartic with odd-power terms needs the full Ferrari reduction.
+    assert!(ev("eigenvalues([0,0,0,1; 1,0,0,1; 0,1,0,0; 0,0,1,0])").starts_with("error:"));
+    // Degree ≥ 5 has no radical formula at all (Abel–Ruffini).
+    assert!(ev("eigenvalues([0,0,0,0,1; 1,0,0,0,1; 0,1,0,0,0; 0,0,1,0,0; 0,0,0,1,0])")
+        .starts_with("error:"));
+}
+
+#[test]
+fn lu_decomposition() {
+    // A zero pivot forces a row swap, recorded in P: P·A = L·U.
+    assert_eq!(
+        norm("lu([0,2;3,4])"),
+        "struct(L = [ 1 0 ] [ 0 1 ], P = [ 0 1 ] [ 1 0 ], U = [ 3 4 ] [ 0 2 ])"
+    );
+    // The factorization reassembles to A exactly.
+    assert_eq!(
+        norm("d := lu([2,1,1; 4,3,3; 8,7,9]); d.P * [2,1,1; 4,3,3; 8,7,9] - d.L * d.U"),
+        "[ 0 0 0 ] [ 0 0 0 ] [ 0 0 0 ]"
+    );
+    // Singular matrices factor too — U keeps the zero row.
+    assert_eq!(norm("lu([1,2;2,4]).U"), "[ 1 2 ] [ 0 0 ]");
+}
+
+#[test]
+fn qr_decomposition() {
+    // The classic integer example: all-rational Q and R.
+    assert_eq!(
+        norm("qr([3,0;4,5])"),
+        "struct(Q = [ 3/5 -4/5 ] [ 4/5 3/5 ], R = [ 5 4 ] [ 0 3 ])"
+    );
+    // Surd norms stay exact: QᵀQ folds to the identity and Q·R back to A —
+    // no float QR can do either.
+    assert_eq!(norm("f := qr([1,1;1,0]); T(f.Q) * f.Q"), "[ 1 0 ] [ 0 1 ]");
+    assert_eq!(norm("f := qr([1,1;1,0]); f.Q * f.R"), "[ 1 1 ] [ 1 0 ]");
+    // Dependent columns are refused, not silently degenerate.
+    let msg = ev("qr([1,2;2,4])");
+    assert!(msg.starts_with("error:") && msg.contains("independent"), "got: {msg}");
 }
 
 #[test]

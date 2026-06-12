@@ -11,6 +11,15 @@ cd "$(git rev-parse --show-toplevel)"
 echo "[pre-commit] backend: cargo test"
 cargo test --quiet
 
+echo "[pre-commit] frontend: prettier --check"
+npm --prefix app run format:check
+
+echo "[pre-commit] frontend: eslint"
+npm --prefix app run lint
+
+echo "[pre-commit] frontend: tsc -b"
+npm --prefix app run typecheck
+
 echo "[pre-commit] frontend: wasm-pack build wasm -> web/pkg"
 wasm-pack build wasm --target web --out-dir ../web/pkg
 

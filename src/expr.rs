@@ -1566,13 +1566,19 @@ impl Expr {
             Expr::Mul(fs) => {
                 let mut factors = fs.clone();
                 let mut negative = false;
-                if let Some(Expr::Int(i)) = factors.first() {
-                    if *i == BigInt::from(-1) {
+                let mut coeff = None;
+                match factors.first() {
+                    Some(Expr::Int(i)) if *i == BigInt::from(-1) => {
                         negative = true;
                         factors.remove(0);
                     }
+                    Some(first) if numeric_value(first).is_some() => {
+                        coeff = Some(first.render(PREC_MUL));
+                        factors.remove(0);
+                    }
+                    _ => {}
                 }
-                let body = if factors.is_empty() {
+                let mut body = if factors.is_empty() {
                     "1".to_string()
                 } else {
                     factors
@@ -1581,7 +1587,23 @@ impl Expr {
                         .collect::<Vec<_>>()
                         .join("*")
                 };
-                (PREC_MUL, if negative { format!("-{}", body) } else { body })
+                // A sign/coefficient printed directly before a parenthesized
+                // sum would re-parse bound to that factor alone and distribute
+                // into it (the parser is left-associative; `mul` folds c·(a+b)),
+                // flipping to a different canonical form. Group the factors so
+                // the display stays a re-parse fixed point.
+                if factors.len() >= 2
+                    && matches!(factors.first(), Some(Expr::Add(_)))
+                    && (negative || coeff.is_some())
+                {
+                    body = format!("({})", body);
+                }
+                let s = match coeff {
+                    Some(c) => format!("{}*{}", c, body),
+                    None if negative => format!("-{}", body),
+                    None => body,
+                };
+                (PREC_MUL, s)
             }
             Expr::Add(ts) => {
                 let mut out = String::new();

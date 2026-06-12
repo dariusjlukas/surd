@@ -180,3 +180,25 @@ fn diff_and_subs_see_through_workspace_bindings() {
     assert_eq!(ev_all(&["x := 3", "subs(x^2 + x, x, 10)"]), "110");
     assert_eq!(ev("diff(sin(y), y)"), "cos(y)"); // unbound is unchanged
 }
+
+#[test]
+fn negated_product_of_sums_display_is_a_fixed_point() {
+    // Was: `(z-z) - (x-1)*(1+x)` printed as `-(-1 + x)*(1 + x)`, which
+    // re-parses with the minus bound to the first factor alone; `mul` then
+    // distributes it into the sum, yielding the *different* canonical form
+    // `(1 + x)*(1 - x)` (found by the display round-trip property). A
+    // sign/coefficient before a leading parenthesized sum now groups the
+    // factors: `-((-1 + x)*(1 + x))`.
+    assert_eq!(
+        ev("(z - z) - (x + (-1))*(1 + x)"),
+        "-((-1 + x)*(1 + x))"
+    );
+    assert_eq!(ev("-((-1 + x)*(1 + x))"), "-((-1 + x)*(1 + x))");
+    // Same trap with a plain coefficient (built via a binding, since direct
+    // source distributes immediately under left-associative parsing).
+    assert_eq!(ev_all(&["b := (1+x)*(1+y)", "2*b"]), "2*((1 + x)*(1 + y))");
+    assert_eq!(ev("2*((1 + x)*(1 + y))"), "2*((1 + x)*(1 + y))");
+    // Unaffected shapes keep their plain rendering.
+    assert_eq!(ev("-x*(1 + y)"), "-x*(1 + y)");
+    assert_eq!(ev_all(&["c := x*(1+y)", "2*c"]), "2*x*(1 + y)");
+}

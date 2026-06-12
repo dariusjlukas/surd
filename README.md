@@ -184,18 +184,57 @@ exact — no rounding, ever:
 >> charpoly([2,1;1,2])             # det(A - λI), symbolically
 3 + lambda^2 - 4*lambda
 >> eigenvalues([1,1;1,0])          # exact — irrational roots kept as sqrt
-[ 1/2*(1 + sqrt(5)) ]
-[ 1/2*(1 - sqrt(5)) ]
+[ 1/2 + 1/2*sqrt(5) ]
+[ 1/2 - 1/2*sqrt(5) ]
 >> N(eigenvalues([1,1;1,0]), 30)   # ...or numeric, to any precision
 [   1.61803398874989484820458683437 ]
 [ -0.618033988749894848204586834366 ]
+>> eigenvectors([1,1;1,0])         # columns pair with eigenvalues(A), in order
+[ 1/2 + 1/2*sqrt(5)  1/2 - 1/2*sqrt(5) ]
+[                 1                  1 ]
+>> nullspace([1,2,3; 4,5,6])       # kernel basis, as columns
+[  1 ]
+[ -2 ]
+[  1 ]
+>> solve([1,1;2,2], [3;6])         # underdetermined: the *general* solution
+struct(nullspace = [ -1 ]
+[  1 ], particular = [ 3 ]
+[ 0 ])
+>> f := qr([1,1;1,0])              # exact Gram-Schmidt: A = Q·R
+>> T(f.Q) * f.Q                    # orthonormal *exactly*, surd norms and all
+[ 1  0 ]
+[ 0  1 ]
+>> eigenvalues([0,0,2; 1,0,0; 0,1,0])    # Cardano: exact cube roots
+[                              2^(1/3) ]
+[ -1/2*2^(1/3) + 1/2*2^(1/3)*sqrt(3)*I ]
+[ -1/2*2^(1/3) - 1/2*2^(1/3)*sqrt(3)*I ]
 ```
 
-Eigenvalues are roots of the characteristic polynomial, found exactly when it
-factors over ℚ into linear and quadratic pieces (rational-root search + the
-quadratic formula). Genuinely complex roots or irreducible factors of degree ≥ 3
-are *reported*, never approximated — `eigenvalues([0,-1;1,0])` says "complex
-eigenvalues (not yet supported)" rather than lying.
+Eigenvalues are exact wherever a radical form exists: rational-root peeling,
+the quadratic formula (complex pairs included), Cardano's formula for cubics,
+and biquadratic quartics with their nested radicals (`±sqrt(1 + sqrt(2))`).
+What provably has no such form is *reported*, never approximated: three real
+cubic roots need complex cube roots (casus irreducibilis — the trigonometric
+form isn't implemented), general quartics await the Ferrari reduction, and
+degree ≥ 5 has no radical formula at all (Abel–Ruffini).
+
+`lu(A)` returns `struct(L, U, P)` with P·A = L·U (Doolittle, row pivoting;
+exact, singular matrices included). `qr(A)` returns `struct(Q, R)` by exact
+Gram-Schmidt — projections run on the unnormalized orthogonal columns, so
+radicals only enter at normalization, and Qᵀ·Q folds to the identity *exactly*
+rather than to within 1e-16.
+
+Eigen*vectors* run Gauss-Jordan in the field the eigenvalue actually lives in —
+ℚ, ℚ(√d), or its complex extension — where the zero test is decidable, so
+`eigenvectors([1,1;1,0])` produces the golden-ratio eigenvector symbolically
+and `inv(V)·A·V` diagonalizes complex rotations *exactly*. The columns of
+`eigenvectors(A)` pair with the entries of `eigenvalues(A)`, so A·V = V·diag(λ);
+a defective matrix (fewer independent eigenvectors than the multiplicity) is
+reported in those words, never padded with zero columns. (Eigenvalues that
+need cubic or nested radicals are still exact via `eigenvalues`, but
+`eigenvectors` doesn't follow into those fields yet.) An underdetermined
+`solve` returns a struct: one particular solution plus a `nullspace` basis —
+every solution is `particular` + a combination of the basis columns.
 
 Determinants use **fraction-free Bareiss elimination** for numeric matrices (so
 integer intermediates don't blow up) and **cofactor expansion** for symbolic
@@ -204,8 +243,9 @@ exact Gauss-Jordan routine.
 
 Builtins: `sqrt`, `sin`, `cos`, `tan`, `exp`, `ln`, `diff`/`D`, `subs`, `expand`,
 `N`, `precision`, `conj`, `re`, `im`, `abs`, and matrix ops `det`, `inv`,
-`transpose`/`T`, `solve`, `rref`, `rank`, `eye`/`identity`, `charpoly`,
-`eigenvalues`/`eig`. Constants: `pi`, `e`, `I` (imaginary unit) — all three are
+`transpose`/`T`, `solve`, `rref`, `rank`, `nullspace`/`kernel`, `lu`, `qr`,
+`eye`/`identity`, `charpoly`, `eigenvalues`/`eig`, `eigenvectors`.
+Constants: `pi`, `e`, `I` (imaginary unit) — all three are
 ordinary names that user bindings shadow, so `e` and `i` stay free for loop
 counters and the like.
 
@@ -368,8 +408,8 @@ source ─▶ lexer ─▶ parser ─▶ ast ─▶ eval ─▶ Expr   (canonica
 
 ## Testing
 
-A pre-commit hook (`.githooks/pre-commit`) runs `cargo test` plus the wasm
-smoke test before every commit. Enable it once per clone with
+A pre-commit hook (`.githooks/pre-commit`) runs `cargo test`, the app's
+prettier/eslint/tsc checks, and the wasm smoke test before every commit. Enable it once per clone with
 `git config core.hooksPath .githooks` (bypass a single commit with
 `git commit --no-verify`).
 
@@ -436,10 +476,13 @@ These were scoped out on purpose; they're where an exact CAS balloons.
   an expression, so recursion needs no early return.)
 - **Deep simplification** via equality saturation (`egg`), **integration**
   (Risch), and **equation solving**.
-- **More linear algebra**: eigen*vectors*, cubic/quartic eigenvalues, LU/QR
-  decompositions, and a null-space basis for underdetermined `solve`.
-  (Eigen*values* via rational + quadratic factoring, including complex pairs,
-  are done.)
+- **More linear algebra**: the general (non-biquadratic) quartic eigenvalue
+  via Ferrari's resolvent, the trigonometric closed form for the casus
+  irreducibilis, and eigen*vectors* for eigenvalues beyond quadratic surds
+  (wants field arithmetic in ℚ(∛·)). (Done: eigenvalues through Cardano
+  cubics and biquadratic quartics, eigenvectors over ℚ(√d) and its complex
+  extension, `nullspace`, LU and QR, and the particular + null-space form of
+  underdetermined `solve`.)
 - **DSP, the original motivation**: a correct DFT/FFT now that `exp(I·θ)`
   evaluates numerically, plus FIR/IIR filter design. (Complex arithmetic, `sqrt`
   of negatives, conjugate/abs, and complex `exp`/`sin`/`cos`/`tan`/`ln`/powers
