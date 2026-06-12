@@ -10,13 +10,15 @@
 //! any precision on demand.
 
 use crate::expr::*;
+use crate::signal;
 use num_bigint::BigInt;
 use num_traits::{One, ToPrimitive};
+use std::rc::Rc;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "conv", "circconv", "dft", "dftmatrix", "idft", "freqz", "firlow", "hann", "hamming",
-    "blackman", "quantize",
+    "blackman", "quantize", "fft", "ifft", "pad", "peak", "rms",
 ];
 
 /// Cap on pairwise symbolic products per call (a DFT is n², a convolution
@@ -32,8 +34,47 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             arity("dsp.dftmatrix", &args, 1)?;
             dft_matrix(&args[0])
         }
-        "conv" => convolution("dsp.conv", args, false),
+        "conv" => {
+            // Packed signals get the certified bulk path; exact vectors keep
+            // the symbolic one. No implicit crossing between the two.
+            if args.iter().any(|a| matches!(a, Expr::Signal(_))) {
+                arity("dsp.conv", &args, 2)?;
+                return match (&args[0], &args[1]) {
+                    (Expr::Signal(a), Expr::Signal(b)) => {
+                        Ok(Expr::Signal(Rc::new(signal::conv(a, b)?)))
+                    }
+                    _ => Err("dsp.conv on bulk data needs both sides packed — wrap the \
+                              exact one in signal(...)"
+                        .into()),
+                };
+            }
+            convolution("dsp.conv", args, false)
+        }
         "circconv" => convolution("dsp.circconv", args, true),
+        "fft" => bulk_transform("dsp.fft", args, false),
+        "ifft" => bulk_transform("dsp.ifft", args, true),
+        "pad" => {
+            arity("dsp.pad", &args, 2)?;
+            let Expr::Signal(s) = &args[0] else {
+                return Err("dsp.pad expects a signal (exact vectors concatenate with vcat)".into());
+            };
+            let n = as_size("dsp.pad", &args[1])?;
+            Ok(Expr::Signal(Rc::new(signal::pad(s, n)?)))
+        }
+        "peak" => {
+            arity("dsp.peak", &args, 1)?;
+            let Expr::Signal(s) = &args[0] else {
+                return Err("dsp.peak expects a signal".into());
+            };
+            Ok(signal::peak(s))
+        }
+        "rms" => {
+            arity("dsp.rms", &args, 1)?;
+            let Expr::Signal(s) = &args[0] else {
+                return Err("dsp.rms expects a signal".into());
+            };
+            signal::rms(s)
+        }
         "freqz" => freqz(args),
         "firlow" => firlow(args),
         "hann" => window("dsp.hann", args, (1, 2), (1, 2), (0, 1)),
@@ -287,6 +328,39 @@ fn round_half_away(r: &BigRational) -> BigInt {
     } else {
         mag
     }
+}
+
+/// `dsp.fft(s)` / `dsp.ifft(f)`: the certified bulk transform. A real signal
+/// goes in; `struct(re, im)` of signals comes out (and goes back in for the
+/// inverse). For exact spectra use `dsp.dft`.
+fn bulk_transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, String> {
+    arity(name, &args, 1)?;
+    let (re, im) = match &args[0] {
+        Expr::Signal(s) => (s.clone(), None),
+        Expr::Struct(fields) => {
+            let get = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, v)| v);
+            match (get("re"), get("im")) {
+                (Some(Expr::Signal(r)), Some(Expr::Signal(i))) => (r.clone(), Some(i.clone())),
+                _ => {
+                    return Err(format!(
+                        "{} expects a signal or struct(re = signal, im = signal)",
+                        name
+                    ))
+                }
+            }
+        }
+        _ => {
+            return Err(format!(
+                "{} expects a signal (pack with signal(...)); exact spectra come from dsp.dft",
+                name
+            ))
+        }
+    };
+    let (r, i) = signal::fft(&re, im.as_deref(), inverse)?;
+    structure(vec![
+        ("re".to_string(), Expr::Signal(Rc::new(r))),
+        ("im".to_string(), Expr::Signal(Rc::new(i))),
+    ])
 }
 
 // -- argument plumbing -------------------------------------------------------

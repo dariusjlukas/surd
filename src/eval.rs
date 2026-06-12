@@ -5,6 +5,7 @@ use crate::ast::{Node, Op};
 use crate::dsp;
 use crate::expr::*;
 use crate::interval;
+use crate::signal;
 use crate::stats;
 use crate::lexer::lex;
 use crate::matrix;
@@ -159,6 +160,21 @@ impl Interpreter {
                 for ix in idxs {
                     indices.push(as_index(&self.eval_node(ix)?)?);
                 }
+                // Indexing a signal reads the midpoint of that sample; the
+                // certified half-width is bound(s, i).
+                if let Expr::Signal(s) = &value {
+                    let [i] = indices.as_slice() else {
+                        return Err("a signal takes a single index".into());
+                    };
+                    if !(1..=s.len()).contains(i) {
+                        return Err(format!(
+                            "index {} is out of range (the signal has {})",
+                            i,
+                            s.len()
+                        ));
+                    }
+                    return Ok(signal::midpoint(s, i - 1));
+                }
                 matrix::index(&value, &indices)
             }
             Node::Call(name, args) => {
@@ -266,6 +282,9 @@ impl Interpreter {
     fn eval_arith(&mut self, op: Op, x: Expr, y: Expr) -> Result<Expr, String> {
         if is_opaque_value(&x) || is_opaque_value(&y) {
             return Err("cannot do arithmetic on a boolean, function, or struct value".into());
+        }
+        if matches!(&x, Expr::Signal(_)) || matches!(&y, Expr::Signal(_)) {
+            return signal_arith(op, &x, &y);
         }
         if matches!(op, Op::ElemMul | Op::ElemDiv | Op::ElemPow) {
             return elementwise_binop(op, &x, &y);
@@ -589,12 +608,18 @@ impl Interpreter {
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(pow(e.clone(), half())));
                 }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::unary("sqrt", s)?)));
+                }
                 Ok(pow(args[0].clone(), half()))
             }
             "sin" | "cos" | "tan" | "exp" | "ln" => {
                 arity(name, &args, 1)?;
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(func(name, vec![e.clone()])));
+                }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::unary(name, s)?)));
                 }
                 Ok(func(name, args))
             }
@@ -624,7 +649,54 @@ impl Interpreter {
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(absolute_value(e)));
                 }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::unary("abs", s)?)));
+                }
                 Ok(absolute_value(&args[0]))
+            }
+            // -- the exact ↔ certified-bulk boundary ---------------------------
+            "signal" => {
+                let digits = match args.len() {
+                    1 => None,
+                    2 => Some(as_usize(&args[1])?),
+                    _ => {
+                        return Err(format!(
+                            "signal expects 1 or 2 arguments, got {}",
+                            args.len()
+                        ))
+                    }
+                };
+                let entries = vector_arg(name, &args[0])?;
+                Ok(Expr::Signal(std::rc::Rc::new(signal::pack(
+                    &entries, digits,
+                )?)))
+            }
+            "mid" => {
+                arity(name, &args, 1)?;
+                let Expr::Signal(s) = &args[0] else {
+                    return Err("mid expects a signal".into());
+                };
+                Ok(signal::mid_matrix(s))
+            }
+            "bound" => {
+                let Some(Expr::Signal(s)) = args.first() else {
+                    return Err("bound expects a signal".into());
+                };
+                match args.len() {
+                    1 => Ok(signal::half_width(s, None)),
+                    2 => {
+                        let i = as_usize(&args[1])?;
+                        if !(1..=s.len()).contains(&i) {
+                            return Err(format!(
+                                "index {} is out of range (the signal has {})",
+                                i,
+                                s.len()
+                            ));
+                        }
+                        Ok(signal::half_width(s, Some(i - 1)))
+                    }
+                    _ => Err(format!("bound expects 1 or 2 arguments, got {}", args.len())),
+                }
             }
             // -- data primitives ---------------------------------------------
             "len" => {
@@ -632,7 +704,8 @@ impl Interpreter {
                 match (matrix::vector_of(&args[0]), &args[0]) {
                     (Some(v), _) => Ok(int(v.len() as i64)),
                     (None, Expr::Matrix(rows)) => Ok(int(rows.len() as i64)),
-                    _ => Err("len expects a vector or matrix".into()),
+                    (None, Expr::Signal(s)) => Ok(int(s.len() as i64)),
+                    _ => Err("len expects a vector, matrix, or signal".into()),
                 }
             }
             "size" => {
@@ -809,6 +882,55 @@ fn elementwise_binop(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
     }
 }
 
+/// Arithmetic with a signal on either side. Signal⊕signal is elementwise
+/// for `+ −` (and the dotted operators); plain `*`/`/` between two signals
+/// refuse, pointing at `.*`/`./` — signals have no matrix product to be
+/// ambiguous with, but consistency with matrices keeps one mental model.
+/// Scalars broadcast; exact matrices must be packed explicitly.
+fn signal_arith(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
+    use crate::signal as sig;
+    use std::rc::Rc;
+    let wrap = |s: sig::SignalData| Ok(Expr::Signal(Rc::new(s)));
+    if matrix::is_matrix(x) || matrix::is_matrix(y) {
+        return Err(
+            "cannot mix an exact matrix with a signal — pack it first: signal([...])".into(),
+        );
+    }
+    let opstr = match op {
+        Op::Add => "+",
+        Op::Sub => "-",
+        Op::Mul | Op::ElemMul => "*",
+        Op::Div | Op::ElemDiv => "/",
+        Op::Pow | Op::ElemPow => "^",
+        _ => unreachable!("non-arithmetic op on a signal"),
+    };
+    match (x, y) {
+        (Expr::Signal(a), Expr::Signal(b)) => match (op, opstr) {
+            (Op::Mul, _) => Err("use .* for elementwise signal multiplication".into()),
+            (Op::Div, _) => Err("use ./ for elementwise signal division".into()),
+            (_, "^") => Err("signals only take integer scalar exponents (s .^ 2)".into()),
+            _ => wrap(sig::binop(opstr, a, b)?),
+        },
+        (Expr::Signal(s), scalar) => {
+            if opstr == "^" {
+                let n = numeric_value(scalar)
+                    .filter(|r| r.is_integer())
+                    .and_then(|r| r.to_integer().to_i64())
+                    .ok_or("signals only take integer scalar exponents (s .^ 2)")?;
+                return wrap(sig::powi(s, n)?);
+            }
+            wrap(sig::scalar_binop(opstr, s, scalar, false)?)
+        }
+        (scalar, Expr::Signal(s)) => {
+            if opstr == "^" {
+                return Err("cannot raise a scalar to a signal power".into());
+            }
+            wrap(sig::scalar_binop(opstr, s, scalar, true)?)
+        }
+        _ => unreachable!("signal_arith without a signal"),
+    }
+}
+
 fn as_index(e: &Expr) -> Result<usize, String> {
     match as_usize(e) {
         Ok(n) if n >= 1 => Ok(n),
@@ -910,7 +1032,9 @@ fn compare(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
     // Values arithmetic can't touch can't be ordered either — and must not
     // reach the difference construction below.
     let unorderable = |e: &Expr| {
-        is_opaque_value(e) || matrix::is_matrix(e) || matches!(e, Expr::Equation(..))
+        is_opaque_value(e)
+            || matrix::is_matrix(e)
+            || matches!(e, Expr::Equation(..) | Expr::Signal(_))
     };
     if unorderable(x) || unorderable(y) {
         return Err(format!("cannot order '{}' and '{}'", x, y));
@@ -922,17 +1046,32 @@ fn compare(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
     if let Some(r) = comparable_value(&d) {
         return decide(r.cmp(&BigRational::zero()));
     }
-    match interval::certified_sign(&d) {
-        interval::Sign::Negative => decide(Ordering::Less),
-        interval::Sign::Zero => decide(Ordering::Equal),
-        interval::Sign::Positive => decide(Ordering::Greater),
-        interval::Sign::Inseparable => Err(format!(
+    let inseparable = || {
+        Err(format!(
             "cannot order '{}' and '{}': they agree to at least {} significant digits — \
              the values may be equal",
             x,
             y,
             interval::max_digits()
-        )),
+        ))
+    };
+    match interval::certified_sign(&d) {
+        interval::Sign::Negative => decide(Ordering::Less),
+        interval::Sign::Zero => decide(Ordering::Equal),
+        interval::Sign::Positive => decide(Ordering::Greater),
+        // One-sided knowledge answers the operators it can and refuses the
+        // rest: x − y ≥ 0 settles `>=` and `<`, but not `>` or `<=`.
+        interval::Sign::NonNegative => match op {
+            Op::GreaterEq => Ok(Expr::Bool(true)),
+            Op::Less => Ok(Expr::Bool(false)),
+            _ => inseparable(),
+        },
+        interval::Sign::NonPositive => match op {
+            Op::LessEq => Ok(Expr::Bool(true)),
+            Op::Greater => Ok(Expr::Bool(false)),
+            _ => inseparable(),
+        },
+        interval::Sign::Inseparable => inseparable(),
         interval::Sign::Unsupported => Err(format!(
             "cannot order '{}' and '{}'; both must be constant real values \
              (a free symbol has no fixed value — try subs(...) or N(...))",

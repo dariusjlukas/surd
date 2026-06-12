@@ -60,6 +60,7 @@ nav:
       - Complex numbers: reference/complex.md
       - Linear algebra: reference/linear-algebra.md
       - Vectors and data: reference/data.md
+      - Signals (certified bulk data): reference/signals.md
       - DSP: reference/dsp.md
       - Statistics: reference/stats.md
       - Plotting: reference/plotting.md

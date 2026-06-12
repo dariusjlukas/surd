@@ -57,6 +57,20 @@ entrywise to matrices automatically.
 | [`vcat(a, ...)` / `hcat(a, ...)`](data.md#vcat-hcat) | Stack vertically / horizontally |
 | [`linspace(a, b, n)`](data.md#linspace) | n evenly spaced points, exact step |
 
+## Signals (certified bulk data)
+
+Packed data at scale, every sample carrying a certified error enclosure —
+see [Signals](signals.md).
+
+| Function | Description |
+| --- | --- |
+| [`signal(v, digits?)`](signals.md#two-substrates) | Pack a vector (f64, or arbitrary precision) |
+| [`mid(s)`](signals.md#the-boundary-is-explicit) | Midpoints, back to exact-land |
+| [`bound(s, i?)`](signals.md#the-boundary-is-explicit) | Certified max │true − mid│ |
+| [`dsp.fft(s)` / `dsp.ifft(f)`](signals.md#operations) | Certified radix-2 FFT |
+| [`dsp.pad(s, n)`](signals.md#operations) | Zero-pad to a power of two |
+| [`dsp.peak(s)` / `dsp.rms(s)`](signals.md#operations) | Certified reductions |
+
 ## Linear algebra
 
 | Function | Description |
@@ -100,6 +114,12 @@ entrywise to matrices automatically.
 | [`stats.cov(a, b)`](stats.md#statscov-statscor) | Sample covariance |
 | [`stats.cor(a, b)`](stats.md#statscov-statscor) | Pearson correlation (exactly ±1 for linear data) |
 | [`stats.linfit(x, y)`](stats.md#statslinfit) | Exact least-squares line → `struct(intercept, slope)` |
+| [`stats.quantile(v, q)`](stats.md#statsquantile) | q-th quantile, exact interpolation |
+| [`stats.rmse(a, b)`](stats.md#statsrmse-statsr2) | Root mean squared error (exact surd) |
+| [`stats.r2(y, yhat)`](stats.md#statsrmse-statsr2) | Coefficient of determination, exact |
+| [`stats.polyfit(x, y, deg)`](stats.md#statspolyfit-statspolyval) | Exact least-squares polynomial |
+| [`stats.polyval(c, t)`](stats.md#statspolyfit-statspolyval) | Evaluate a coefficient vector (scalar, symbol, or elementwise) |
+| [`stats.lsq(A, b)`](stats.md#statslsq) | General exact least squares |
 
 ## Plotting
 

@@ -137,6 +137,18 @@ pub fn is_valid_var_name(s: &str) -> bool {
 
 fn encode(e: &Expr) -> Result<Value, String> {
     Ok(match e {
+        // serde_json round-trips f64 exactly (shortest-representation), so
+        // the certified bounds survive export/import losslessly.
+        Expr::Signal(s) => match s.as_ref() {
+            crate::signal::SignalData::F64 { lo, hi } => {
+                json!({ "t": "signal", "lo": lo, "hi": hi })
+            }
+            crate::signal::SignalData::Big { .. } => {
+                return Err(
+                    "export of arbitrary-precision signals is not supported yet".to_string()
+                )
+            }
+        },
         Expr::Int(i) => number_from_text(&i.to_string()),
         Expr::Rat(r) => match rat_to_decimal(r) {
             // Decimal-friendly denominators (2^a·5^b) write as plain numbers.
@@ -348,6 +360,22 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
         "func" => Ok(func(text("name")?, dec_args("args")?)),
         "complex" => Ok(complex(dec("re")?, dec("im")?)),
         "eq" => Ok(Expr::Equation(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
+        "signal" => {
+            let lo: Vec<f64> = serde_json::from_value(field("lo")?.clone())
+                .map_err(|_| "'signal' lo must be an array of numbers".to_string())?;
+            let hi: Vec<f64> = serde_json::from_value(field("hi")?.clone())
+                .map_err(|_| "'signal' hi must be an array of numbers".to_string())?;
+            if lo.len() != hi.len() {
+                return Err("'signal' lo and hi must have the same length".into());
+            }
+            if lo.iter().zip(&hi).any(|(l, h)| !l.is_finite() || !h.is_finite() || l > h) {
+                return Err("'signal' bounds must be finite with lo <= hi".into());
+            }
+            Ok(Expr::Signal(Rc::new(crate::signal::SignalData::F64 {
+                lo,
+                hi,
+            })))
+        }
         "function" => {
             let params: Vec<String> = serde_json::from_value(field("params")?.clone())
                 .map_err(|_| "'function' params must be an array of strings".to_string())?;
@@ -793,5 +821,299 @@ mod tests {
             Expr::Struct(fields) => assert_eq!(fields[0].0, "x"),
             other => panic!("expected struct, got {}", other),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk imports: WAV audio, raw binary arrays, packed CSV — all land as
+// signals (certified point intervals; integer PCM and IEEE floats convert
+// to f64 exactly, so the initial error bound is exactly zero).
+// ---------------------------------------------------------------------------
+
+/// Decoded-sample cap across all channels (memory guard: each sample holds
+/// two f64 bounds). 2^24 ≈ 3 minutes of stereo 44.1 kHz audio.
+const MAX_BULK_SAMPLES: usize = 1 << 24;
+
+/// Parse a WAV file (PCM 16/24/32-bit int or IEEE float 32/64, any channel
+/// count) into `struct(rate, ch1[, ch2…])` of signals. Integer samples are
+/// normalized to [−1, 1) by the type's full scale — exactly, since dividing
+/// by a power of two is lossless in binary floating point.
+pub fn import_wav(bytes: &[u8]) -> Result<Expr, String> {
+    let u16le = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]);
+    let u32le = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("not a WAV file (missing RIFF/WAVE header)".into());
+    }
+    let mut fmt: Option<(u16, usize, u32, u16)> = None; // (format, channels, rate, bits)
+    let mut data: Option<&[u8]> = None;
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32le(&bytes[at + 4..at + 8]) as usize;
+        let body_end = (at + 8).saturating_add(size).min(bytes.len());
+        let body = &bytes[at + 8..body_end];
+        match id {
+            b"fmt " if body.len() >= 16 => {
+                fmt = Some((
+                    u16le(&body[0..2]),
+                    u16le(&body[2..4]) as usize,
+                    u32le(&body[4..8]),
+                    u16le(&body[14..16]),
+                ));
+            }
+            b"data" => data = Some(body),
+            _ => {}
+        }
+        at = body_end + (size & 1); // chunks are word-aligned
+    }
+    let (format, channels, rate, bits) = fmt.ok_or("WAV file has no fmt chunk")?;
+    let data = data.ok_or("WAV file has no data chunk")?;
+    if channels == 0 {
+        return Err("WAV file declares zero channels".into());
+    }
+    let bytes_per = (bits as usize) / 8;
+    if bytes_per == 0 || data.len() / bytes_per / channels == 0 {
+        return Err("WAV file has no samples".into());
+    }
+    let frames = data.len() / (bytes_per * channels);
+    if frames * channels > MAX_BULK_SAMPLES {
+        return Err(format!(
+            "WAV file too large ({} samples; the cap is {})",
+            frames * channels,
+            MAX_BULK_SAMPLES
+        ));
+    }
+    let decode = |frame: usize, ch: usize| -> Result<f64, String> {
+        let o = (frame * channels + ch) * bytes_per;
+        let s = &data[o..o + bytes_per];
+        Ok(match (format, bits) {
+            (1, 16) => i16::from_le_bytes([s[0], s[1]]) as f64 / 32768.0,
+            (1, 24) => {
+                let v = i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8; // sign-extend
+                v as f64 / 8388608.0
+            }
+            (1, 32) => i32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f64 / 2147483648.0,
+            (3, 32) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f64,
+            (3, 64) => f64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]),
+            _ => {
+                return Err(format!(
+                    "unsupported WAV encoding (format {}, {} bits) — PCM 16/24/32 and \
+                     IEEE float 32/64 are supported",
+                    format, bits
+                ))
+            }
+        })
+    };
+    let mut fields = vec![("rate".to_string(), Expr::Int(BigInt::from(rate)))];
+    for ch in 0..channels {
+        let mut lo = Vec::with_capacity(frames);
+        for f in 0..frames {
+            let v = decode(f, ch)?;
+            if !v.is_finite() {
+                return Err(format!("non-finite sample at frame {}", f + 1));
+            }
+            lo.push(v);
+        }
+        let hi = lo.clone(); // every decode above is exact: point intervals
+        fields.push((
+            format!("ch{}", ch + 1),
+            Expr::Signal(Rc::new(crate::signal::SignalData::F64 { lo, hi })),
+        ));
+    }
+    structure(fields)
+}
+
+/// Parse a headerless little-endian array of `f64`, `f32`, or `i16` into a
+/// signal. No normalization — raw captures keep their raw values (use
+/// arithmetic to scale; it's certified anyway).
+pub fn import_raw(bytes: &[u8], format: &str) -> Result<Expr, String> {
+    let width = match format {
+        "f64" => 8,
+        "f32" => 4,
+        "i16" => 2,
+        other => {
+            return Err(format!(
+                "unknown raw format '{}' (supported: f64, f32, i16; little-endian)",
+                other
+            ))
+        }
+    };
+    if bytes.is_empty() || !bytes.len().is_multiple_of(width) {
+        return Err(format!(
+            "raw data length {} is not a multiple of {} bytes",
+            bytes.len(),
+            width
+        ));
+    }
+    let n = bytes.len() / width;
+    if n > MAX_BULK_SAMPLES {
+        return Err(format!("raw data too large ({} samples; cap {})", n, MAX_BULK_SAMPLES));
+    }
+    let mut lo = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = &bytes[i * width..(i + 1) * width];
+        let v = match format {
+            "f64" => f64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]),
+            "f32" => f32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f64,
+            _ => i16::from_le_bytes([s[0], s[1]]) as f64,
+        };
+        if !v.is_finite() {
+            return Err(format!("non-finite value at sample {}", i + 1));
+        }
+        lo.push(v);
+    }
+    let hi = lo.clone(); // exact conversions: point intervals
+    Ok(Expr::Signal(Rc::new(crate::signal::SignalData::F64 {
+        lo,
+        hi,
+    })))
+}
+
+/// Parse CSV straight into packed signals (one per column) — the bulk path
+/// for files too large for exact rationals. Integers within ±2^53 pack as
+/// exact points; other decimals as certified ±1-ulp enclosures around the
+/// correctly-rounded parse (Rust's float parsing is correctly rounded).
+pub fn import_csv_packed(text: &str) -> Result<Expr, String> {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
+    let first = *lines.peek().ok_or("the CSV file is empty")?;
+    let cells = |l: &str| l.split(',').map(|c| c.trim().to_string()).collect::<Vec<_>>();
+    let head = cells(first);
+    let has_header = head.iter().any(|c| c.parse::<f64>().is_err());
+    let names: Vec<String> = if has_header {
+        lines.next();
+        head.iter()
+            .enumerate()
+            .map(|(i, c)| {
+                if is_valid_var_name(c) {
+                    c.clone()
+                } else {
+                    format!("col{}", i + 1)
+                }
+            })
+            .collect()
+    } else {
+        (1..=head.len()).map(|i| format!("col{}", i)).collect()
+    };
+    let mut lo: Vec<Vec<f64>> = vec![Vec::new(); names.len()];
+    let mut hi: Vec<Vec<f64>> = vec![Vec::new(); names.len()];
+    let mut total = 0usize;
+    for (row, line) in lines.enumerate() {
+        let row_cells = cells(line);
+        if row_cells.len() != names.len() {
+            return Err(format!(
+                "row {} has {} cells, expected {}",
+                row + 2,
+                row_cells.len(),
+                names.len()
+            ));
+        }
+        for (c, cell) in row_cells.iter().enumerate() {
+            let exact_int = cell
+                .parse::<i64>()
+                .ok()
+                .filter(|v| v.unsigned_abs() <= (1 << 53));
+            let (l, h) = match exact_int {
+                Some(v) => (v as f64, v as f64),
+                None => {
+                    let v: f64 = cell.parse().map_err(|_| {
+                        format!("row {}, column {}: '{}' is not a number", row + 2, c + 1, cell)
+                    })?;
+                    if !v.is_finite() {
+                        return Err(format!("row {}: non-finite value", row + 2));
+                    }
+                    (v.next_down(), v.next_up())
+                }
+            };
+            lo[c].push(l);
+            hi[c].push(h);
+        }
+        total += names.len();
+        if total > MAX_BULK_SAMPLES {
+            return Err(format!("CSV too large (cap {} values)", MAX_BULK_SAMPLES));
+        }
+    }
+    if lo[0].is_empty() {
+        return Err("the CSV file has no data rows".into());
+    }
+    structure(
+        names
+            .into_iter()
+            .zip(lo.into_iter().zip(hi))
+            .map(|(name, (lo, hi))| {
+                (
+                    name,
+                    Expr::Signal(Rc::new(crate::signal::SignalData::F64 { lo, hi })),
+                )
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+
+    /// A minimal 16-bit PCM WAV: mono, 4 samples.
+    fn tiny_wav() -> Vec<u8> {
+        let samples: [i16; 4] = [0, 16384, -16384, 32767];
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut w = Vec::new();
+        w.extend(b"RIFF");
+        w.extend(((36 + data.len()) as u32).to_le_bytes());
+        w.extend(b"WAVE");
+        w.extend(b"fmt ");
+        w.extend(16u32.to_le_bytes());
+        w.extend(1u16.to_le_bytes()); // PCM
+        w.extend(1u16.to_le_bytes()); // mono
+        w.extend(8000u32.to_le_bytes()); // rate
+        w.extend(16000u32.to_le_bytes()); // byte rate
+        w.extend(2u16.to_le_bytes()); // block align
+        w.extend(16u16.to_le_bytes()); // bits
+        w.extend(b"data");
+        w.extend((data.len() as u32).to_le_bytes());
+        w.extend(&data);
+        w
+    }
+
+    #[test]
+    fn wav_imports_exactly() {
+        let v = import_wav(&tiny_wav()).unwrap();
+        let Expr::Struct(fields) = &v else { panic!() };
+        assert_eq!(fields[1].0, "rate");
+        assert_eq!(fields[1].1, Expr::Int(BigInt::from(8000)));
+        let Expr::Signal(s) = &fields[0].1 else { panic!() };
+        let crate::signal::SignalData::F64 { lo, hi } = s.as_ref() else {
+            panic!()
+        };
+        // Integer PCM normalizes exactly: point intervals, error zero.
+        assert_eq!(lo, hi);
+        assert_eq!(lo[1], 0.5);
+        assert_eq!(lo[2], -0.5);
+    }
+
+    #[test]
+    fn raw_and_csv_imports() {
+        let bytes: Vec<u8> = [1.5f32, -2.25, 0.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let Expr::Signal(s) = import_raw(&bytes, "f32").unwrap() else {
+            panic!()
+        };
+        assert_eq!(s.len(), 3);
+
+        let v = import_csv_packed("t, y\n0, 1.5\n1, 0.1\n").unwrap();
+        let Expr::Struct(fields) = &v else { panic!() };
+        let Expr::Signal(y) = &fields[1].1 else { panic!() };
+        let crate::signal::SignalData::F64 { lo, hi } = y.as_ref() else {
+            panic!()
+        };
+        // 1.5 is dyadic → ±1 ulp around the parse still encloses it; 0.1 is
+        // not — either way lo ≤ value ≤ hi must hold.
+        assert!(lo[1] < 0.1 && 0.1 < hi[1]);
+        assert!(lo[0] <= 1.5 && 1.5 <= hi[0]);
+
+        assert!(import_wav(b"not a wav").is_err());
+        assert!(import_raw(&[1, 2, 3], "f32").is_err());
     }
 }

@@ -68,6 +68,10 @@ pub enum Expr {
     /// read with `.name`; data imports land in the workspace as structs so
     /// imported names can't collide with existing bindings.
     Struct(Vec<(String, Expr)>),
+    /// Packed bulk data with a certified per-sample error enclosure — the
+    /// explicit, opt-in exit from exact-land for data at scale (see
+    /// [`crate::signal`]). `Rc` keeps cloning cheap; the data is immutable.
+    Signal(std::rc::Rc<crate::signal::SignalData>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -597,6 +601,26 @@ fn surd_value(e: &Expr) -> Option<(BigRational, BigRational)> {
     None
 }
 
+/// a < b, decided by the sign of the difference. astro-float's `PartialOrd`
+/// is UNRELIABLE when an exact zero meets a small-magnitude value (it
+/// compares raw exponents, and zero carries exponent 0 — so 2.7e-20 < 0
+/// according to `<`). Subtraction normalizes and cannot round a nonzero
+/// difference to zero, so this ordering is exact. Never use `<`/`>` on
+/// BigFloats directly anywhere soundness matters.
+pub(crate) fn bf_lt(a: &BigFloat, b: &BigFloat) -> bool {
+    a.sub(b, 64, ROUND).is_negative()
+}
+
+/// Strictly positive / strictly negative, guarding astro-float's convention
+/// that an exact zero reports `is_positive() == true`.
+pub(crate) fn bf_strictly_pos(x: &BigFloat) -> bool {
+    x.is_positive() && !x.is_zero()
+}
+
+pub(crate) fn bf_strictly_neg(x: &BigFloat) -> bool {
+    x.is_negative() && !x.is_zero()
+}
+
 /// Exact number → BigFloat at precision `p` bits (the float-contagion bridge).
 fn rat_to_bigfloat(r: &BigRational, p: usize) -> BigFloat {
     with_consts(|cc| {
@@ -934,8 +958,8 @@ pub fn differentiate(e: &Expr, var: &str) -> Expr {
         Expr::Matrix(rows) => Expr::Matrix(map_entries(rows, |x| differentiate(x, var))),
         // Differentiation distributes over the real and imaginary parts.
         Expr::Complex(re, im) => complex(differentiate(re, var), differentiate(im, var)),
-        // Booleans, functions, and structs are opaque to differentiation.
-        Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_) => e.clone(),
+        // Booleans, functions, structs, and signals are opaque to differentiation.
+        Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_) | Expr::Signal(_) => e.clone(),
         Expr::Equation(l, r) => Expr::Equation(
             Box::new(differentiate(l, var)),
             Box::new(differentiate(r, var)),
@@ -959,6 +983,7 @@ pub fn substitute(e: &Expr, var: &str, val: &Expr) -> Expr {
         | Expr::Symbol(_)
         | Expr::Bool(_)
         | Expr::Function { .. } => e.clone(),
+        Expr::Signal(_) => e.clone(),
         Expr::Add(ts) => add(ts.iter().map(|t| substitute(t, var, val)).collect()),
         Expr::Mul(fs) => mul(fs.iter().map(|f| substitute(f, var, val)).collect()),
         Expr::Pow(b, ex) => pow(substitute(b, var, val), substitute(ex, var, val)),
@@ -1058,6 +1083,7 @@ pub fn contains_symbol(e: &Expr, var: &str) -> bool {
         | Expr::Float(..)
         | Expr::Const(_)
         | Expr::Bool(_)
+        | Expr::Signal(_)
         | Expr::Function { .. } => false,
         Expr::Add(ts) | Expr::Mul(ts) => ts.iter().any(|t| contains_symbol(t, var)),
         Expr::Pow(b, ex) => contains_symbol(b, var) || contains_symbol(ex, var),
@@ -1225,6 +1251,10 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
         Expr::Struct(..) => Err("cannot numerically evaluate a struct".to_string()),
+        Expr::Signal(_) => Err(
+            "cannot collapse a signal to one number (use mid, bound, dsp.peak, or dsp.rms)"
+                .to_string(),
+        ),
     }
 }
 
@@ -1464,6 +1494,10 @@ fn to_complex(e: &Expr, p: usize, cc: &mut Consts) -> Result<Cpx, String> {
         }
         Expr::Func(name, _) => Err(format!("cannot numerically evaluate '{}'", name)),
         Expr::Bool(_) => Err("cannot numerically evaluate a boolean".to_string()),
+        Expr::Signal(_) => Err(
+            "cannot collapse a signal to one number (use mid, bound, dsp.peak, or dsp.rms)"
+                .to_string(),
+        ),
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Matrix(..) => Err("cannot collapse a matrix to a single number".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
@@ -1779,6 +1813,7 @@ fn type_rank(e: &Expr) -> u8 {
         Expr::Matrix(_) => 7,
         Expr::Bool(_) => 8,
         Expr::Function { .. } => 9,
+        Expr::Signal(_) => 10,
         Expr::Equation(..) => 10,
         Expr::Struct(_) => 11,
     }
@@ -1902,6 +1937,7 @@ impl Expr {
             Expr::Matrix(rows) => (PREC_ATOM, render_matrix(rows)),
             Expr::Complex(re, im) => render_complex(re, im),
             Expr::Bool(b) => (PREC_ATOM, if *b { "true" } else { "false" }.to_string()),
+            Expr::Signal(s) => (PREC_ATOM, format!("{}", s)),
             Expr::Function { params, .. } => {
                 (PREC_ATOM, format!("<function({})>", params.join(", ")))
             }

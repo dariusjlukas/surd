@@ -70,6 +70,11 @@ const BUILTINS: Builtin[] = [
   { name: 'cos', params: ['x'], doc: 'Cosine.' },
   { name: 'det', params: ['M'], doc: 'Determinant of a matrix.' },
   {
+    name: 'bound',
+    params: ['s', 'i?'],
+    doc: 'Certified max |true − mid| of a signal (or one sample).',
+  },
+  {
     name: 'dot',
     params: ['a', 'b'],
     doc: 'Sum of elementwise products of two vectors.',
@@ -130,6 +135,11 @@ const BUILTINS: Builtin[] = [
     doc: 'Apply a function entrywise, preserving shape.',
   },
   {
+    name: 'mid',
+    params: ['s'],
+    doc: 'Midpoints of a signal, as a column matrix.',
+  },
+  {
     name: 'N',
     params: ['x', 'digits?'],
     doc: 'Numeric value of x, to digits (default set by precision).',
@@ -157,6 +167,11 @@ const BUILTINS: Builtin[] = [
   { name: 'real', params: ['z'], doc: 'Real part.' },
   { name: 'rref', params: ['M'], doc: 'Reduced row echelon form.' },
   { name: 'sin', params: ['x'], doc: 'Sine.' },
+  {
+    name: 'signal',
+    params: ['v', 'digits?'],
+    doc: 'Pack a vector as certified bulk data (f64, or arbitrary precision).',
+  },
   {
     name: 'size',
     params: ['m'],
@@ -221,6 +236,11 @@ const NAMESPACES: Namespace[] = [
       { name: 'dft', params: ['v'], doc: 'Discrete Fourier transform, exact.' },
       { name: 'dftmatrix', params: ['n'], doc: 'The n×n Fourier matrix.' },
       {
+        name: 'fft',
+        params: ['s'],
+        doc: 'Certified radix-2 FFT of a signal → struct(re, im).',
+      },
+      {
         name: 'firlow',
         params: ['n', 'wc'],
         doc: 'Windowed-sinc lowpass prototype, cutoff wc rad/sample.',
@@ -238,9 +258,29 @@ const NAMESPACES: Namespace[] = [
         doc: 'Inverse DFT; exactly inverts dsp.dft.',
       },
       {
+        name: 'ifft',
+        params: ['f'],
+        doc: 'Certified inverse FFT of struct(re, im).',
+      },
+      {
+        name: 'pad',
+        params: ['s', 'n'],
+        doc: 'Zero-pad a signal to length n (never truncates).',
+      },
+      {
+        name: 'peak',
+        params: ['s'],
+        doc: 'Certified upper bound on max |x| of a signal.',
+      },
+      {
         name: 'quantize',
         params: ['v', 'bits'],
         doc: 'Snap to a fixed-point grid (bits fractional bits), exactly.',
+      },
+      {
+        name: 'rms',
+        params: ['s'],
+        doc: 'Certified upper bound on the RMS of a signal.',
       },
     ],
   },
@@ -259,8 +299,38 @@ const NAMESPACES: Namespace[] = [
         params: ['x', 'y'],
         doc: 'Exact least-squares line → struct(intercept, slope).',
       },
+      {
+        name: 'lsq',
+        params: ['A', 'b'],
+        doc: 'General exact least squares: β minimizing ‖Aβ − b‖.',
+      },
       { name: 'mean', params: ['v'], doc: 'Mean, exact.' },
       { name: 'median', params: ['v'], doc: 'Median by exact ordering.' },
+      {
+        name: 'polyfit',
+        params: ['x', 'y', 'deg'],
+        doc: 'Exact least-squares polynomial; coefficients, constant first.',
+      },
+      {
+        name: 'polyval',
+        params: ['c', 't'],
+        doc: 'Evaluate a coefficient vector at t (scalar, symbol, or vector).',
+      },
+      {
+        name: 'quantile',
+        params: ['v', 'q'],
+        doc: 'q-th quantile by exact interpolation (0 ≤ q ≤ 1).',
+      },
+      {
+        name: 'r2',
+        params: ['y', 'yhat'],
+        doc: 'Coefficient of determination; exactly 1 for a perfect fit.',
+      },
+      {
+        name: 'rmse',
+        params: ['a', 'b'],
+        doc: 'Root mean squared error, as an exact surd.',
+      },
       {
         name: 'std',
         params: ['v'],

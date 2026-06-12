@@ -109,6 +109,10 @@ fn render_inner(e: &Expr) -> (u8, String) {
             PREC_ATOM,
             format!(r"\mathrm{{function}}({})", params.join(", ")),
         ),
+        Expr::Signal(s) => (
+            PREC_ATOM,
+            format!(r"\mathrm{{signal}}({}\ \mathrm{{samples}})", s.len()),
+        ),
         Expr::Equation(l, r) => (
             PREC_EQ,
             format!("{} = {}", render(l, PREC_ADD), render(r, PREC_ADD)),

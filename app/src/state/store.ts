@@ -24,11 +24,7 @@ import {
   type SampledCurve,
 } from '../engine/client'
 import { initLexer } from '../engine/lexer'
-import type {
-  EvalResult,
-  ReplayEntry,
-  WorkspaceEntry,
-} from '../engine/types'
+import type { EvalResult, ReplayEntry, WorkspaceEntry } from '../engine/types'
 import { idbStorage, STORAGE_KEY } from './storage'
 
 export type EngineStatus = 'booting' | 'restoring' | 'ready' | 'busy' | 'failed'

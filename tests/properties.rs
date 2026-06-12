@@ -6,6 +6,11 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 
+use num_bigint::BigInt;
+use num_traits::FromPrimitive;
+use surd::expr::{float_to_rational, rat_to_expr, BigRational, Expr};
+use surd::signal::{self, SignalData};
+
 // ---------------------------------------------------------------------------
 // A closed (variable-free) expression with a parallel f64 semantics, for the
 // differential numeric test.
@@ -232,6 +237,27 @@ proptest! {
         prop_assert_eq!(cascade, product);
     }
 
+    // Exact least squares recovers an exact polynomial *identically*:
+    // sample y = p(x) on deg+2 integer points, fit degree deg, and the
+    // coefficients must come back unchanged — Vandermonde conditioning is a
+    // float problem, and there are no floats here.
+    #[test]
+    fn polyfit_recovers_exact_polynomials(
+        c in prop::collection::vec((-9i64..10, 1i64..6), 1..5),
+    ) {
+        let deg = c.len() - 1;
+        let coeffs = {
+            let entries: Vec<String> = c.iter().map(|(n, d)| format!("({}/{})", n, d)).collect();
+            format!("[{}]", entries.join("; "))
+        };
+        let xs: Vec<String> = (0..=(deg as i64 + 1)).map(|x| x.to_string()).collect();
+        let grid = format!("[{}]", xs.join(", "));
+        let fitted = normalized(&format!(
+            "stats.polyfit({grid}, stats.polyval({coeffs}, {grid}), {deg})"
+        ));
+        prop_assert_eq!(fitted, normalized(&coeffs));
+    }
+
     // Linear convolution is commutative (it's polynomial multiplication).
     #[test]
     fn convolution_is_commutative(
@@ -242,6 +268,122 @@ proptest! {
             normalized(&format!("dsp.conv({}, {})", render_vector(&a), render_vector(&b))),
             normalized(&format!("dsp.conv({}, {})", render_vector(&b), render_vector(&a)))
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Signal soundness: certified enclosures must contain the exact result
+// ---------------------------------------------------------------------------
+
+/// Exact rational convolution — an oracle independent of both the symbolic
+/// dsp.conv and the interval kernel.
+fn exact_conv(a: &[BigRational], b: &[BigRational]) -> Vec<BigRational> {
+    let zero = BigRational::from_integer(BigInt::from(0));
+    let mut out = vec![zero; a.len() + b.len() - 1];
+    for (j, x) in a.iter().enumerate() {
+        for (k, y) in b.iter().enumerate() {
+            out[j + k] += x * y;
+        }
+    }
+    out
+}
+
+fn rats(v: &[(i64, i64)]) -> Vec<BigRational> {
+    v.iter()
+        .map(|(n, d)| BigRational::new(BigInt::from(*n), BigInt::from(*d)))
+        .collect()
+}
+
+fn exprs(v: &[BigRational]) -> Vec<Expr> {
+    v.iter().map(|r| rat_to_expr(r.clone())).collect()
+}
+
+/// The exact rational value of one enclosure endpoint.
+fn endpoint(s: &SignalData, i: usize, high: bool) -> BigRational {
+    match s {
+        SignalData::F64 { lo, hi } => {
+            BigRational::from_f64(if high { hi[i] } else { lo[i] }).expect("finite endpoint")
+        }
+        SignalData::Big { lo, hi, .. } => {
+            float_to_rational(if high { &hi[i] } else { &lo[i] }).expect("finite endpoint")
+        }
+    }
+}
+
+proptest! {
+    // THE signal soundness property: convolve exactly (independent oracle)
+    // and on packed signals, in both substrates; every exact coefficient
+    // must lie inside its certified enclosure — compared as exact rationals,
+    // no epsilons anywhere.
+    #[test]
+    fn signal_conv_encloses_the_exact_result(
+        pairs in prop::collection::vec(
+            ((-99i64..100, 1i64..10), (-99i64..100, 1i64..10)),
+            1..7,
+        ),
+    ) {
+        let (av, bv): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        let (ar, br) = (rats(&av), rats(&bv));
+        let exact = exact_conv(&ar, &br);
+        for digits in [None, Some(5)] {
+            let sa = signal::pack(&exprs(&ar), digits).unwrap();
+            let sb = signal::pack(&exprs(&br), digits).unwrap();
+            let sc = signal::conv(&sa, &sb).unwrap();
+            for (i, want) in exact.iter().enumerate() {
+                prop_assert!(
+                    endpoint(&sc, i, false) <= *want && *want <= endpoint(&sc, i, true),
+                    "sample {} of {:?}-digit conv: {} not in enclosure",
+                    i, digits, want
+                );
+            }
+        }
+    }
+
+    // Elementwise ops keep the same contract.
+    #[test]
+    fn signal_elementwise_encloses_the_exact_result(
+        pairs in prop::collection::vec(
+            ((-99i64..100, 1i64..10), (-99i64..100, 1i64..10)),
+            1..9,
+        ),
+    ) {
+        let (av, bv): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        let (ar, br) = (rats(&av), rats(&bv));
+        for digits in [None, Some(5)] {
+            let sa = signal::pack(&exprs(&ar), digits).unwrap();
+            let sb = signal::pack(&exprs(&br), digits).unwrap();
+            let prod = signal::binop("*", &sa, &sb).unwrap();
+            let sum = signal::binop("+", &sa, &sb).unwrap();
+            for i in 0..ar.len() {
+                let p = &ar[i] * &br[i];
+                let s = &ar[i] + &br[i];
+                prop_assert!(endpoint(&prod, i, false) <= p && p <= endpoint(&prod, i, true));
+                prop_assert!(endpoint(&sum, i, false) <= s && s <= endpoint(&sum, i, true));
+            }
+        }
+    }
+
+    // FFT round trip: ifft(fft(s)) must enclose the original exact samples.
+    #[test]
+    fn signal_fft_roundtrip_encloses_the_input(
+        v in prop::collection::vec((-99i64..100, 1i64..10), 1..5),
+    ) {
+        // Pad with zeros to the next power of two.
+        let mut vr = rats(&v);
+        while !vr.len().is_power_of_two() {
+            vr.push(BigRational::from_integer(BigInt::from(0)));
+        }
+        for digits in [None, Some(8)] {
+            let s = signal::pack(&exprs(&vr), digits).unwrap();
+            let (fre, fim) = signal::fft(&s, None, false).unwrap();
+            let (rre, _rim) = signal::fft(&fre, Some(&fim), true).unwrap();
+            for (i, want) in vr.iter().enumerate() {
+                prop_assert!(
+                    endpoint(&rre, i, false) <= *want && *want <= endpoint(&rre, i, true),
+                    "fft roundtrip sample {}: {} escaped its enclosure", i, want
+                );
+            }
+        }
     }
 }
 

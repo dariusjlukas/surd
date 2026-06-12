@@ -15,6 +15,9 @@ or adversarial input turns into a clean error, never a crash:
 | Exact exponent ceiling | `2^(10^15)` stays symbolic instead of building a gigabyte bignum |
 | `precision(d)` | clamped to 1…100,000 digits |
 | `dsp` pairwise products per call | 4,000,000 (a DFT of length n costs n²) |
+| Signal FFT length | 2²² samples (power of two) |
+| Signal convolution | 2²⁸ pairwise products |
+| Bulk import size | 2²⁴ samples per file |
 | Comparison interval refinement | 8,192 bits (≈ 2,466 digits), then "may be equal" |
 | `plot` sampling | adaptive 601 → 4,801 points per curve; windows the cap can't resolve are labeled "undersampled", never silently aliased |
 | `plot3d` sampling grid | adaptive 81×81 → 641×641, same undersampled labeling |
@@ -78,14 +81,16 @@ Scoped out of the prototype on purpose — this is where an exact CAS balloons:
   convolution, FIR design (windowed-sinc + windows), frequency response,
   and fixed-point quantization; FFT-speed transforms, equiripple (Remez)
   design, IIR design, and z-transforms are future work.
-- **Bulk-data scale** — exact arithmetic is per-element; signals beyond the
-  pairwise-product caps (real audio lengths) need a packed-array/certified-
-  float pipeline that doesn't exist yet. Design exactly, then export.
+- **Signal gaps** — [signals](reference/signals.md) cover the certified
+  bulk pipeline (FFT, convolution, reductions, WAV/raw/CSV import); still
+  missing: plotting signals, exporting arbitrary-precision signals, slicing,
+  and the frontend file-picker UI for the new import paths.
 - **No indexed assignment** — `v[1] := 5` is not a thing; values are
   immutable. Build with `map`, `vcat`, `hcat`.
 - **More statistics** — the [`stats` namespace](reference/stats.md) covers
-  the univariate basics and exact simple regression; quantiles, weighted
-  and multiple regression are future work.
+  the univariate basics, quantiles, fit metrics, and exact least squares
+  (`linfit`/`polyfit`/`lsq`); weighted regression and anything iterative
+  (logistic, optimizers) are future work.
 
 ## Testing philosophy
 

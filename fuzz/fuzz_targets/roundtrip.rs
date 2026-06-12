@@ -25,8 +25,8 @@ fuzz_target!(|data: &[u8]| {
             Ok(value) => format!("{}", value),
             Err(_) => return,
         };
-        // Matrices (multi-line) and function values don't re-parse.
-        if first.contains('\n') || first.contains("function") {
+        // Matrices (multi-line), function values, and signals don't re-parse.
+        if first.contains('\n') || first.contains("function") || first.contains("signal") {
             return;
         }
         // Re-evaluate on a fresh interpreter so definitions in `text` can't

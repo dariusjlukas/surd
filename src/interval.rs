@@ -15,7 +15,7 @@
 //! avoiding non-monotonic case analysis; tan goes through sin/cos with a
 //! zero-excluding interval division (so poles refuse rather than lie).
 
-use crate::expr::{numeric_value, with_consts, Constant, Expr};
+use crate::expr::{bf_lt, bf_strictly_neg, bf_strictly_pos, numeric_value, with_consts, Constant, Expr};
 use astro_float::{BigFloat, Consts, Radix, RoundingMode};
 use num_traits::ToPrimitive;
 
@@ -39,6 +39,11 @@ pub enum Sign {
     Negative,
     Zero,
     Positive,
+    /// An enclosure touched zero from above ([0, w]): the value is provably
+    /// ≥ 0, but may be exactly zero — `>= 0` is answerable, `> 0` is not.
+    NonNegative,
+    /// Mirror image: provably ≤ 0.
+    NonPositive,
     /// Constant, but the enclosure still straddled zero at `MAX_BITS` —
     /// the values may be equal.
     Inseparable,
@@ -50,26 +55,37 @@ pub enum Sign {
 pub fn certified_sign(e: &Expr) -> Sign {
     let mut p = 64;
     let mut evaluated = false;
+    // One-sided knowledge accumulates across refinements: any enclosure with
+    // lo ≥ 0 proves the value ≥ 0 forever (each enclosure is independently
+    // valid). Both sides together prove exact zero.
+    let mut known_nonneg = false;
+    let mut known_nonpos = false;
     while p <= MAX_BITS {
         let iv = with_consts(|cc| eval_iv(e, p, cc));
         if let Ok(Some(iv)) = iv {
             evaluated = true;
-            if iv.lo.is_positive() {
+            // Strictness matters: astro-float reports an exact zero as
+            // "positive", and an enclosure [0, w] does NOT prove > 0 (the
+            // value may be exactly zero — e.g. sqrt(exp(1) − e)).
+            if bf_strictly_pos(&iv.lo) {
                 return Sign::Positive;
             }
-            if iv.hi.is_negative() {
+            if bf_strictly_neg(&iv.hi) {
                 return Sign::Negative;
             }
-            if iv.lo.is_zero() && iv.hi.is_zero() {
+            known_nonneg |= !bf_strictly_neg(&iv.lo);
+            known_nonpos |= !bf_strictly_pos(&iv.hi);
+            if known_nonneg && known_nonpos {
                 return Sign::Zero;
             }
         }
         p *= 2;
     }
-    if evaluated {
-        Sign::Inseparable
-    } else {
-        Sign::Unsupported
+    match (evaluated, known_nonneg, known_nonpos) {
+        (false, ..) => Sign::Unsupported,
+        (true, true, false) => Sign::NonNegative,
+        (true, false, true) => Sign::NonPositive,
+        _ => Sign::Inseparable,
     }
 }
 
@@ -93,7 +109,7 @@ impl Iv {
     }
 
     fn contains_zero(&self) -> bool {
-        !self.lo.is_positive() && !self.hi.is_negative()
+        !bf_strictly_pos(&self.lo) && !bf_strictly_neg(&self.hi)
     }
 }
 
@@ -136,7 +152,7 @@ fn eval_iv(e: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
                 }
                 "exp" => Iv::new(x.lo.exp(p, DOWN, cc), x.hi.exp(p, UP, cc)),
                 "ln" => {
-                    if !x.lo.is_positive() {
+                    if !bf_strictly_pos(&x.lo) {
                         return None;
                     }
                     Iv::new(x.lo.ln(p, DOWN, cc), x.hi.ln(p, UP, cc))
@@ -186,11 +202,11 @@ fn mul_iv(a: &Iv, b: &Iv, p: usize) -> Option<Iv> {
             let down = x.mul(y, p, DOWN);
             let up = x.mul(y, p, UP);
             lo = Some(match lo {
-                Some(m) if m < down => m,
+                Some(m) if bf_lt(&m, &down) => m,
                 _ => down,
             });
             hi = Some(match hi {
-                Some(m) if m > up => m,
+                Some(m) if bf_lt(&up, &m) => m,
                 _ => up,
             });
         }
@@ -245,7 +261,7 @@ fn abs_iv(a: &Iv, p: usize) -> Option<Iv> {
     } else if a.hi.is_negative() {
         neg_iv(a)
     } else {
-        let mag = if a.lo.neg() > a.hi { a.lo.neg() } else { a.hi.clone() };
+        let mag = if bf_lt(&a.hi, &a.lo.neg()) { a.lo.neg() } else { a.hi.clone() };
         Iv::new(BigFloat::from_i64(0, p.max(64)), mag)
     }
 }
@@ -282,7 +298,7 @@ fn pow_iv(base: &Expr, exp: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
         }
     }
     // General real power: x^y = exp(y·ln x), defined for x > 0.
-    if !b.lo.is_positive() {
+    if !bf_strictly_pos(&b.lo) {
         return None;
     }
     let ln_b = Iv::new(b.lo.ln(p, DOWN, cc), b.hi.ln(p, UP, cc))?;

@@ -313,6 +313,48 @@ impl Session {
         serde_json::to_string(&result).expect("EvalResult is always serializable")
     }
 
+    /// Import a WAV file as `struct(rate, ch1[, ch2…])` of packed signals,
+    /// bound to `name`. Same result shape as [`Session::import_data`].
+    pub fn import_wav_data(&mut self, bytes: &[u8], name: &str) -> String {
+        self.bind_bulk(name, surd::dataio::import_wav(bytes))
+    }
+
+    /// Import a headerless little-endian binary array (`format` is one of
+    /// "f64", "f32", "i16") as a packed signal bound to `name`.
+    pub fn import_raw_data(&mut self, bytes: &[u8], format: &str, name: &str) -> String {
+        self.bind_bulk(name, surd::dataio::import_raw(bytes, format))
+    }
+
+    /// Import CSV straight into packed signals (one per column) — the bulk
+    /// path for files too large for exact rationals.
+    pub fn import_csv_packed_data(&mut self, payload: &str, name: &str) -> String {
+        self.bind_bulk(name, surd::dataio::import_csv_packed(payload))
+    }
+
+    fn bind_bulk(&mut self, name: &str, value: Result<Expr, String>) -> String {
+        let result = if !surd::dataio::is_valid_var_name(name) {
+            error_result(format!("'{}' is not a valid variable name", name))
+        } else {
+            match value {
+                Err(e) => error_result(e),
+                Ok(value) => {
+                    let summary = format!("{}: {}", name, surd::dataio::describe(&value));
+                    self.interp.set_global(name, value);
+                    EvalResult {
+                        ok: true,
+                        kind: "data",
+                        text: summary,
+                        latex: String::new(),
+                        plot: None,
+                        plot3d: None,
+                        error: None,
+                    }
+                }
+            }
+        };
+        serde_json::to_string(&result).expect("EvalResult is always serializable")
+    }
+
     /// Export the named workspace variables as one `surd-data` JSON file.
     /// Returns `{ok, data?, error?}`; `data` is the file's text.
     pub fn export_data(&self, names_json: &str) -> String {

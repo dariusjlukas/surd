@@ -279,8 +279,12 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     // data through the VIEW window, snap to the nearest node of the SAMPLE
     // grid, then map that node back through the view window for the marker
     const sw = surf.win
-    const i = Math.round(((dataX(hit.x) - sw.a) / (sw.b - sw.a)) * (surf.nx - 1))
-    const j = Math.round(((dataY(hit.z) - sw.c) / (sw.d - sw.c)) * (surf.ny - 1))
+    const i = Math.round(
+      ((dataX(hit.x) - sw.a) / (sw.b - sw.a)) * (surf.nx - 1),
+    )
+    const j = Math.round(
+      ((dataY(hit.z) - sw.c) / (sw.d - sw.c)) * (surf.ny - 1),
+    )
     const h =
       i >= 0 && i < surf.nx && j >= 0 && j < surf.ny
         ? surf.heights[j * surf.nx + i]

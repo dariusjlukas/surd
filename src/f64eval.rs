@@ -73,6 +73,7 @@ pub fn eval_f64(e: &Expr, vars: &[(&str, f64)]) -> Result<f64, String> {
         Expr::Function { .. } => Err("cannot evaluate a function value to a number".to_string()),
         Expr::Equation(..) => Err("cannot evaluate an equation to a number".to_string()),
         Expr::Struct(..) => Err("cannot evaluate a struct to a number".to_string()),
+        Expr::Signal(_) => Err("cannot evaluate a signal to a single number".to_string()),
     }
 }
 

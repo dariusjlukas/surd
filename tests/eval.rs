@@ -644,7 +644,8 @@ fn structs_of_functions_are_modules() {
 
 #[test]
 fn builtin_namespace_dispatch_and_shadowing() {
-    assert!(ev("dsp.fft([1; 2])").starts_with("error: unknown function 'dsp.fft' (available:"));
+    assert!(ev("dsp.fhqwhgads([1; 2])")
+        .starts_with("error: unknown function 'dsp.fhqwhgads' (available:"));
     // Reading a namespace function without calling it points at the syntax.
     assert!(ev("dsp.dft").starts_with("error: 'dsp.dft' names a function"));
     // A user binding shadows the namespace, like any other builtin.
@@ -961,4 +962,169 @@ fn quantize_snaps_to_the_fixed_point_grid() {
         "[ 1/24 ]" // 2·(1/3 − 5/16) = 1/24, exactly
     );
     assert!(ev("dsp.quantize([x], 4)").starts_with("error: dsp.quantize needs numeric"));
+}
+
+// ---------------------------------------------------------------------------
+// stats expansion: quantile, rmse, r2, polyfit/polyval, lsq
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quantiles_interpolate_exactly() {
+    assert_eq!(ev("stats.quantile([1; 2; 3; 4], 1/2)"), "5/2"); // == median
+    assert_eq!(ev("stats.quantile([0; 10], 1/4)"), "5/2"); // exact interpolation
+    assert_eq!(ev("stats.quantile([3; 1; 2], 0)"), "1"); // min
+    assert_eq!(ev("stats.quantile([3; 1; 2], 1)"), "3"); // max
+    assert!(ev("stats.quantile([1; 2], 2)").starts_with("error: stats.quantile expects"));
+    assert!(ev("stats.quantile([x; 1], 1/2)").starts_with("error: stats.quantile needs numeric"));
+}
+
+#[test]
+fn fit_metrics_are_exact() {
+    assert_eq!(ev("stats.rmse([1, 2, 3], [1, 2, 3])"), "0");
+    assert_eq!(ev("stats.rmse([1, 2], [2, 4])"), "sqrt(5/2)"); // an exact surd
+    assert_eq!(ev("stats.r2([1, 2, 3], [1, 2, 3])"), "1"); // perfect fit: exactly 1
+    assert_eq!(ev("stats.r2([1, 2, 3, 4], [1, 2, 3, 5])"), "4/5");
+    assert!(ev("stats.r2([2, 2], [1, 3])").starts_with("error: stats.r2 is undefined"));
+}
+
+#[test]
+fn polyfit_and_polyval() {
+    // y = x² on four points: recovered exactly, no residual.
+    assert_eq!(
+        norm("stats.polyfit([0, 1, 2, 3], [0, 1, 4, 9], 2)"),
+        "[ 0 ] [ 0 ] [ 1 ]"
+    );
+    // polyval renders a symbolic argument as the polynomial itself.
+    assert_eq!(ev("stats.polyval([1; 2; 3], t)"), "1 + 2*t + 3*t^2");
+    assert_eq!(norm("stats.polyval([0; 0; 1], [0, 1, 5])"), "[ 0 1 25 ]");
+    // Degree-1 polyfit agrees with linfit.
+    assert_eq!(
+        ev_all(&[
+            "f := stats.linfit([0; 1; 2], [1; 2; 4])",
+            "c := stats.polyfit([0; 1; 2], [1; 2; 4], 1)",
+            "c[1] == f.intercept and c[2] == f.slope",
+        ]),
+        "true"
+    );
+    assert!(ev("stats.polyfit([1, 1, 2], [1, 2, 3], 2)")
+        .starts_with("error: stats.polyfit needs at least 3 distinct"));
+}
+
+#[test]
+fn least_squares_is_exact() {
+    assert_eq!(norm("stats.lsq([1, 0; 0, 1; 1, 1], [1; 1; 2])"), "[ 1 ] [ 1 ]");
+    assert!(ev("stats.lsq([1, 2; 2, 4], [1; 2])")
+        .starts_with("error: stats.lsq: the regressors are linearly dependent"));
+    assert!(ev("stats.lsq([1, 0; 0, 1], [1; 2; 3])").starts_with("error: stats.lsq expects one"));
+}
+
+// ---------------------------------------------------------------------------
+// Signals: packed, certified bulk data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signals_pack_and_read_back() {
+    assert_eq!(
+        ev_all(&["s := signal([1; 2; 3])", "len(s)"]),
+        "3"
+    );
+    // Dyadic rationals pack exactly: a point interval, certified error 0.
+    assert!(ev("signal([1/2; 3; -5/8])").contains("exact"));
+    // 1/3 is not representable: the display owns up to the enclosure.
+    assert!(ev("signal([1/3])").contains("max error ±"));
+    // Indexing reads the midpoint; bound() is the certified deviation.
+    assert_eq!(ev_all(&["s := signal([1; 2])", "s[2]"]), "2");
+    assert_eq!(ev_all(&["s := signal([1; 2])", "bound(s)"]), "0");
+    // Symbolic entries refuse — the boundary is explicit.
+    assert!(ev("signal([x; 1])").starts_with("error: signal needs numeric"));
+}
+
+#[test]
+fn signal_arithmetic_and_boundary_rules() {
+    // peak is a certified *upper bound* — at or barely above the true 8.
+    assert_eq!(
+        ev_all(&[
+            "s := signal([3; 4])",
+            "p := dsp.peak(2 .* s)",
+            "p >= 8 and p < 8.000001",
+        ]),
+        "true"
+    );
+    // Plain * between signals refuses, pointing at .* (same rule as matrices).
+    assert!(ev_all(&["s := signal([1])", "s * s"]).starts_with("error: use .*"));
+    // Exact matrices never mix in silently.
+    assert!(ev_all(&["s := signal([1; 2])", "s + [1; 2]"])
+        .starts_with("error: cannot mix an exact matrix"));
+    // Substrates never mix silently either.
+    assert!(ev_all(&["a := signal([1])", "b := signal([1], 30)", "a + b"])
+        .starts_with("error: cannot mix f64 and arbitrary-precision"));
+    // Signals cannot be ordered (which sample would it mean?).
+    assert!(ev_all(&["s := signal([1])", "s < 2"]).starts_with("error: cannot order"));
+}
+
+#[test]
+fn signal_division_by_zero_sample_refuses() {
+    assert!(ev_all(&["a := signal([1; 1])", "b := signal([2; 0])", "a ./ b"])
+        .starts_with("error: division by an interval containing zero (a sample's divisor may be 0) (sample 2)"));
+}
+
+#[test]
+fn signal_fft_roundtrip_within_certified_bounds() {
+    // The certified peak of the round-trip error is provably tiny — this is
+    // a *decidable* comparison (Float vs rational).
+    assert_eq!(
+        ev_all(&[
+            "s := signal([1; 2; 3; 4; 5; 6; 7; 8])",
+            "r := dsp.ifft(dsp.fft(s)).re",
+            "dsp.peak(r - s) < 1/10^12",
+        ]),
+        "true"
+    );
+    // Non-power-of-two lengths refuse with a pointer at dsp.pad.
+    assert!(ev_all(&["s := signal([1; 2; 3])", "dsp.fft(s)"])
+        .starts_with("error: fft length must be a power of two"));
+    assert_eq!(
+        ev_all(&["s := signal([1; 2; 3])", "len(dsp.fft(dsp.pad(s, 4)).re)"]),
+        "4"
+    );
+}
+
+#[test]
+fn signal_conv_matches_exact_conv() {
+    // Bulk convolution agrees with the exact one to certified precision.
+    assert_eq!(
+        ev_all(&[
+            "a := [1, 2, 1]",
+            "b := [1, 3]",
+            "d := dsp.conv(signal(a), signal(b)) - signal(dsp.conv(a, b))",
+            "dsp.peak(d) < 1/10^14",
+        ]),
+        "true"
+    );
+}
+
+#[test]
+fn signal_reductions_are_certified() {
+    assert_eq!(ev("dsp.peak(signal([3; -4; 2]))"), "4");
+    // rms([3; 4]) = √(25/2): the certified upper bound brackets it tightly.
+    assert_eq!(
+        ev_all(&[
+            "r := dsp.rms(signal([3; 4]))",
+            "r >= sqrt(25/2) and r < 3.5356",
+        ]),
+        "true"
+    );
+}
+
+#[test]
+fn high_precision_signals_tighten_bounds() {
+    // The same data at 50 digits has a far smaller certified error than f64.
+    assert_eq!(
+        ev_all(&[
+            "lofi := signal([1/3; 2/7])",
+            "hifi := signal([1/3; 2/7], 50)",
+            "bound(hifi) < bound(lofi) ./ 10^50",
+        ]),
+        "true"
+    );
 }

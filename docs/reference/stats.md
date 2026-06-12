@@ -97,3 +97,80 @@ struct(intercept = 5/6, slope = 3/2)
 ```
 
 All x values equal is an error (the line is vertical).
+
+## `stats.quantile`
+
+```
+stats.quantile(v, q)
+```
+
+The q-th quantile (0 ≤ q ≤ 1), by exact linear interpolation between order
+statistics (the R type-7 / NumPy default — but with an exact weight, since
+(n−1)·q is a rational here, not a float).
+
+```text
+>> stats.quantile([0; 10], 1/4)
+5/2
+>> stats.quantile([1; 2; 3; 4], 1/2)     # == stats.median
+5/2
+```
+
+## `stats.rmse` / `stats.r2`
+
+```
+stats.rmse(a, b)
+stats.r2(y, yhat)
+```
+
+Root mean squared error (an exact surd), and the coefficient of
+determination R² = 1 − SSres/SStot. A perfect fit is *exactly* 1 — model
+quality is never hidden inside float noise:
+
+```text
+>> stats.rmse([1, 2], [2, 4])
+sqrt(5/2)
+>> stats.r2([1, 2, 3, 4], [1, 2, 3, 5])
+4/5
+```
+
+## `stats.polyfit` / `stats.polyval`
+
+```
+stats.polyfit(x, y, deg)
+stats.polyval(c, t)
+```
+
+Exact least-squares polynomial fit: Vandermonde + normal equations solved
+by exact elimination — Vandermonde *conditioning* is a float problem, and
+there are no floats here. Coefficients are a column vector, constant term
+first. `polyval` evaluates a coefficient vector at a scalar, a symbol (you
+get the polynomial as an expression), or elementwise over a vector:
+
+```text
+>> c := stats.polyfit([0, 1, 2, 3], [0, 1, 4, 9], 2)
+[ 0 ]
+[ 0 ]
+[ 1 ]
+>> stats.polyval(c, t)
+t^2
+>> stats.r2([0, 1, 4, 9], stats.polyval(c, [0, 1, 2, 3]))
+1
+```
+
+Too few distinct x values for the degree is an error.
+
+## `stats.lsq`
+
+```
+stats.lsq(A, b)
+```
+
+General exact least squares: the β minimizing ‖Aβ − b‖₂, via the normal
+equations. No automatic intercept — `hcat` a ones column for one. Linearly
+dependent regressors (a non-unique minimizer) are an error:
+
+```text
+>> stats.lsq([1, 0; 0, 1; 1, 1], [1; 1; 2])
+[ 1 ]
+[ 1 ]
+```
