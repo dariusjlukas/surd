@@ -48,3 +48,9 @@ imported names can never collide with existing bindings — a CSV with `temp`
 and `time` columns imported as `sensor` is read as `sensor.temp`,
 `sensor.time`. Numbers are read from their literal text — `0.1` in a sensor
 log becomes the exact rational 1/10, never an f64.
+
+## Structs as modules
+
+A struct field that holds a function can be called directly —
+`mylib.twice(3)` — which makes a struct of functions a module. See
+[Modules and namespaces](modules.md).

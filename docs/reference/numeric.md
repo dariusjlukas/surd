@@ -55,12 +55,14 @@ true
 false
 ```
 
-This is also the standard way to decide a symbolic comparison:
+Symbolic *constant* comparisons don't need `N(...)`: they're decided
+directly by certified interval refinement (see
+[Comparisons](../language/numbers.md#comparisons-are-decidable-or-they-are-errors)):
 
 ```text
 >> pi < 4
-error: cannot order 'π' and '4'; both must be numbers (try N(...))
->> N(pi) < 4
+true
+>> sqrt(2) + sqrt(3) > pi
 true
 ```
 

@@ -359,15 +359,24 @@ REPL keeps reading until a block closes.
 
 **The decidable-boolean rule.** Control-flow conditions must evaluate to a real
 `true`/`false`. A condition that can't be decided is an error, never a guess —
-this is the design's core honesty about undecidability (Richardson's theorem):
+this is the design's core honesty about undecidability (Richardson's theorem).
+*Constant* comparisons are decided by certified interval refinement (directed
+rounding, precision doubling until the enclosures provably separate), so the
+answer is exact knowledge, not a float guess:
 
 ```
+>> pi < 4
+true
+>> sqrt(2) + sqrt(3) > pi
+true
 >> if x then 1 else 2 end
 error: expected a true/false condition, got 'x'
->> pi < 4
-error: cannot order 'π' and '4'; both must be numbers (try N(...))
->> N(pi) < 4
-true
+>> x < 4
+error: cannot order 'x' and '4'; both must be constant real values (a free
+symbol has no fixed value — try subs(...) or N(...))
+>> (sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)     # exactly equal: refuses, never lies
+error: cannot order '(sqrt(2) + sqrt(3))^2' and '5 + 2*sqrt(6)': they agree
+to at least 2466 significant digits — the values may be equal
 ```
 
 Floats *do* compare, and exactly: a binary float is the rational m·2^k, so a

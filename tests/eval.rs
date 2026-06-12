@@ -425,8 +425,9 @@ fn function_scope_is_local() {
 fn control_flow_requires_decidable_booleans() {
     // The core design rule: undecidable/symbolic conditions error, not guess.
     assert!(ev("if x then 1 else 2 end").starts_with("error:"));
-    assert!(ev("pi < 4").starts_with("error:")); // ordering a symbolic constant
+    assert!(ev("x < 4").starts_with("error:")); // a free symbol has no order
     assert!(ev("2 + true").starts_with("error:")); // arithmetic on a boolean
+    // (`pi < 4` is fine — constants are decided by certified intervals.)
 }
 
 #[test]
@@ -538,4 +539,426 @@ fn struct_errors_are_graceful() {
     assert!(ev("struct(a = 1) + 1").starts_with("error: cannot do arithmetic"));
     // `.5` is still a numeric literal, not field access.
     assert_eq!(ev("[1, .5]"), "[ 1  1/2 ]");
+}
+
+// ---------------------------------------------------------------------------
+// Exact trig values and Euler's formula
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trig_folds_at_rational_multiples_of_pi() {
+    assert_eq!(ev("sin(pi/6)"), "1/2");
+    assert_eq!(ev("cos(pi/3)"), "1/2");
+    assert_eq!(ev("cos(pi/4)"), "1/2*sqrt(2)");
+    assert_eq!(ev("tan(pi/3)"), "sqrt(3)");
+    assert_eq!(ev("tan(0)"), "0");
+    assert_eq!(ev("sin(pi)"), "0");
+    assert_eq!(ev("cos(pi)"), "-1");
+    assert_eq!(ev("sin(2*pi)"), "0");
+    // The 15° grid and the 22.5° grid (nested radicals).
+    assert_eq!(ev("cos(pi/12)"), "1/4*sqrt(2) + 1/4*sqrt(6)");
+    assert_eq!(ev("sin(pi/8)"), "1/2*sqrt(2 - sqrt(2))");
+    // Quadrant symmetry: signs and reflections.
+    assert_eq!(ev("sin(-pi/6)"), "-1/2");
+    assert_eq!(ev("sin(7*pi/6)"), "-1/2");
+    assert_eq!(ev("cos(3*pi/4)"), "-1/2*sqrt(2)");
+    assert_eq!(ev("sin(13*pi/6)"), "1/2"); // periodicity past 2π
+    // The folded surd squares back to the exact value.
+    assert_eq!(ev("sin(pi/4)^2"), "1/2");
+}
+
+#[test]
+fn trig_stays_symbolic_outside_the_table() {
+    assert_eq!(ev("tan(pi/2)"), "tan(1/2*π)"); // a pole: no value invented
+    assert_eq!(ev("cos(pi/7)"), "cos(1/7*π)"); // no surd form exists (deg-3 minimal poly)
+    assert_eq!(ev("sin(x)"), "sin(x)");
+    assert_eq!(ev("sin(1)"), "sin(1)"); // 1 radian is not a multiple of π
+}
+
+#[test]
+fn pentagon_trig_folds_to_golden_ratio_surds() {
+    assert_eq!(ev("cos(pi/5)"), "1/4 + 1/4*sqrt(5)"); // φ/2
+    assert_eq!(ev("sin(pi/10)"), "-1/4 + 1/4*sqrt(5)");
+    assert_eq!(ev("sin(pi/5)"), "1/4*sqrt(10 - 2*sqrt(5))");
+    assert_eq!(ev("cos(2*pi/5)"), "-1/4 + 1/4*sqrt(5)");
+    // The classic identity: cos(π/5) − cos(2π/5) = 1/2, exactly.
+    assert_eq!(ev("cos(pi/5) - cos(2*pi/5)"), "1/2");
+    // sin²+cos² = 1 through the nested radicals.
+    assert_eq!(ev("expand(sin(pi/5)^2 + cos(pi/5)^2)"), "1");
+}
+
+#[test]
+fn square_factor_extraction_and_radical_combining() {
+    assert_eq!(ev("sqrt(8)"), "2*sqrt(2)");
+    assert_eq!(ev("sqrt(12)"), "2*sqrt(3)");
+    assert_eq!(ev("sqrt(8/9)"), "2/3*sqrt(2)");
+    assert_eq!(ev("sqrt(720)"), "12*sqrt(5)");
+    assert_eq!(ev("8^(-1/2)"), "1/2*2^(-1/2)");
+    // Provably nonnegative radicands combine; unknown signs stay apart.
+    assert_eq!(ev("sqrt(2)*sqrt(3)"), "sqrt(6)");
+    assert_eq!(ev("sqrt(2)*sqrt(6)"), "2*sqrt(3)");
+    assert_eq!(ev("sqrt(x)*sqrt(y)"), "sqrt(x)*sqrt(y)");
+    // Conjugate quadratic-surd radicands: (10−2√5)(10+2√5) = 80 = 16·5.
+    assert_eq!(ev("sqrt(10-2*sqrt(5))*sqrt(10+2*sqrt(5))"), "4*sqrt(5)");
+    // sqrt(x^2) still stays put — the |x| branch-cut trap is still refused.
+    assert_eq!(ev("sqrt(x^2)"), "sqrt(x^2)");
+}
+
+#[test]
+fn exp_of_complex_unfolds_by_euler() {
+    assert_eq!(ev("exp(I*pi)"), "-1");
+    assert_eq!(ev("exp(2*pi*I)"), "1");
+    assert_eq!(ev("exp(I*pi/2)"), "I");
+    assert_eq!(ev("exp(I*x)"), "cos(x) + sin(x)*I");
+    assert_eq!(ev("exp(1 + I*pi)"), "-exp(1)");
+}
+
+// ---------------------------------------------------------------------------
+// Namespaces and user modules
+// ---------------------------------------------------------------------------
+
+#[test]
+fn structs_of_functions_are_modules() {
+    assert_eq!(
+        ev_all(&[
+            "twice(x) := 2*x",
+            "inc(x) := x + 1",
+            "mylib := struct(twice = twice, inc = inc)",
+            "mylib.inc(mylib.twice(3))",
+        ]),
+        "7"
+    );
+    // Arity and error reporting go through the same machinery as plain calls.
+    assert!(ev_all(&["f(x) := x", "m := struct(f = f)", "m.f(1, 2)"])
+        .starts_with("error: f expects 1 argument(s)"));
+    assert_eq!(
+        ev_all(&["m := struct(a = 1)", "m.missing(1)"]),
+        "error: struct has no field 'missing' (fields: a)"
+    );
+    assert_eq!(
+        ev_all(&["m := struct(a = 5)", "m.a(3)"]),
+        "error: field 'a' holds '5', which is not a function"
+    );
+    assert!(ev("(1 + 2).f(3)").starts_with("error: cannot call"));
+}
+
+#[test]
+fn builtin_namespace_dispatch_and_shadowing() {
+    assert!(ev("dsp.fft([1; 2])").starts_with("error: unknown function 'dsp.fft' (available:"));
+    // Reading a namespace function without calling it points at the syntax.
+    assert!(ev("dsp.dft").starts_with("error: 'dsp.dft' names a function"));
+    // A user binding shadows the namespace, like any other builtin.
+    assert_eq!(
+        ev_all(&["inc(x) := x + 1", "dsp := struct(dft = inc)", "dsp.dft(5)"]),
+        "6"
+    );
+    // An unbound namespace name is still an ordinary symbol on its own.
+    assert_eq!(ev("dsp"), "dsp");
+}
+
+// ---------------------------------------------------------------------------
+// The dsp namespace
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dft_of_known_vectors() {
+    assert_eq!(norm("dsp.dft([1; 1; 1; 1])"), "[ 4 ] [ 0 ] [ 0 ] [ 0 ]");
+    assert_eq!(
+        norm("dsp.dft([1; 2; 3; 4])"),
+        "[ 10 ] [ -2 + 2*I ] [ -2 ] [ -2 - 2*I ]"
+    );
+    // An impulse transforms to all ones.
+    assert_eq!(norm("dsp.dft([1; 0; 0; 0])"), "[ 1 ] [ 1 ] [ 1 ] [ 1 ]");
+    // Size 8 needs the 45° grid: exact √2 surds, not floats.
+    // X_k = 1 + e^(−iπk/4).
+    assert_eq!(
+        norm("dsp.dft([1; 1; 0; 0; 0; 0; 0; 0])"),
+        "[ 2 ] [ 1 + 1/2*sqrt(2) - 1/2*sqrt(2)*I ] [ 1 - I ] \
+         [ 1 - 1/2*sqrt(2) - 1/2*sqrt(2)*I ] [ 0 ] \
+         [ 1 - 1/2*sqrt(2) + 1/2*sqrt(2)*I ] [ 1 + I ] \
+         [ 1 + 1/2*sqrt(2) + 1/2*sqrt(2)*I ]"
+    );
+}
+
+#[test]
+fn idft_inverts_dft_exactly() {
+    // Size 3 exercises the √3/2 twiddles; the round trip folds back to ℚ.
+    assert_eq!(norm("dsp.idft(dsp.dft([1/3; -2; 5/7]))"), "[ 1/3 ] [ -2 ] [ 5/7 ]");
+    // Complex entries round-trip too.
+    assert_eq!(norm("dsp.idft(dsp.dft([I; 1 + I]))"), "[ I ] [ 1 + I ]");
+}
+
+#[test]
+fn dftmatrix_matches_dft() {
+    assert_eq!(
+        norm("dsp.dftmatrix(4)"),
+        "[ 1 1 1 1 ] [ 1 -I -1 I ] [ 1 -1 1 -1 ] [ 1 I -1 -I ]"
+    );
+    assert_eq!(
+        norm("dsp.dftmatrix(4) * [1; 2; 3; 4] - dsp.dft([1; 2; 3; 4])"),
+        "[ 0 ] [ 0 ] [ 0 ] [ 0 ]"
+    );
+    assert!(ev("dsp.dftmatrix(0)").starts_with("error: dsp.dftmatrix expects a positive"));
+}
+
+#[test]
+fn convolution_known_results() {
+    // (1 + 2z)(1 + 3z) = 1 + 5z + 6z² — convolution is polynomial product.
+    assert_eq!(norm("dsp.conv([1, 2], [1, 3])"), "[ 1 5 6 ]");
+    // Orientation follows the first argument.
+    assert_eq!(norm("dsp.conv([1; 2; 1], [1; 1])"), "[ 1 ] [ 3 ] [ 3 ] [ 1 ]");
+    // Circular shift: convolving with a rotated impulse rotates the input.
+    assert_eq!(norm("dsp.circconv([1, 2, 3], [0, 1, 0])"), "[ 3 1 2 ]");
+    assert!(ev("dsp.circconv([1, 2], [1, 2, 3])")
+        .starts_with("error: dsp.circconv expects two vectors of the same length"));
+}
+
+#[test]
+fn dsp_argument_errors_are_graceful() {
+    assert!(ev("dsp.dft(3)").starts_with("error: dsp.dft expects a vector"));
+    assert!(ev("dsp.dft([1, 2; 3, 4])").starts_with("error: dsp.dft expects a vector"));
+    assert!(ev("dsp.dft([1; 2], [3; 4])").starts_with("error: dsp.dft expects 1 argument(s)"));
+    assert!(ev("dsp.conv([1, 2])").starts_with("error: dsp.conv expects 2 argument(s)"));
+}
+
+#[test]
+fn dft_of_symbolic_and_unfoldable_sizes_stays_exact() {
+    // Symbolic entries pass straight through the exact arithmetic.
+    assert_eq!(norm("dsp.dft([a; b])"), "[ a + b ] [ a - b ]");
+    // A size-7 transform has no surd form: entries stay as cos/sin of
+    // rational multiples of π — exact, and N(...) can evaluate them.
+    assert!(ev("dsp.dft([1; 0; 0; 0; 0; 0; 1])").contains("cos"));
+}
+
+#[test]
+fn pentagonal_dft_folds_and_round_trips() {
+    // Size 5 twiddles are golden-ratio surds; the spectrum is exact.
+    assert_eq!(
+        norm("dsp.dft([1; 0; 0; 0; 1])"),
+        "[ 2 ] [ 3/4 + 1/4*sqrt(5) + 1/4*sqrt(10 + 2*sqrt(5))*I ] \
+         [ 3/4 - 1/4*sqrt(5) + 1/4*sqrt(10 - 2*sqrt(5))*I ] \
+         [ 3/4 - 1/4*sqrt(5) - 1/4*sqrt(10 - 2*sqrt(5))*I ] \
+         [ 3/4 + 1/4*sqrt(5) - 1/4*sqrt(10 + 2*sqrt(5))*I ]"
+    );
+    // …and the round trip lands back on the input identically.
+    assert_eq!(
+        norm("dsp.idft(dsp.dft([1; 2; 3; 4; 5]))"),
+        "[ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]"
+    );
+    assert_eq!(
+        norm("dsp.idft(dsp.dft([1/3; -2; 0; 1; 22/7; 0; 0; 1; 0; 5]))"),
+        "[ 1/3 ] [ -2 ] [ 0 ] [ 1 ] [ 22/7 ] [ 0 ] [ 0 ] [ 1 ] [ 0 ] [ 5 ]"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The stats namespace
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stats_estimators_are_exact() {
+    assert_eq!(ev("stats.mean([1; 2; 3; 4])"), "5/2");
+    assert_eq!(ev("stats.var([1; 2; 3; 4])"), "5/3"); // sample variance, n−1
+    assert_eq!(ev("stats.std([1; 2; 3; 4])"), "sqrt(5/3)"); // an exact surd
+    assert_eq!(ev("stats.median([3; 1; 2])"), "2");
+    assert_eq!(ev("stats.median([1; 2; 3; 4])"), "5/2"); // mean of middle two
+    assert_eq!(ev("stats.median([1/2; 1/3; 1/4])"), "1/3"); // exact ordering
+    assert_eq!(ev("stats.cov([1; 2; 3], [2; 4; 6])"), "2");
+    // Symbolic entries flow through estimators that don't need ordering.
+    assert_eq!(ev("stats.mean([a; b])"), "1/2*a + 1/2*b");
+}
+
+#[test]
+fn correlation_of_linear_data_is_exactly_one() {
+    // No float tool gets ±1 exactly; the surds cancel by radical merging.
+    assert_eq!(ev("stats.cor([1; 2; 3], [2; 4; 6])"), "1");
+    assert_eq!(ev("stats.cor([1; 2; 3], [5; 3; 1])"), "-1");
+}
+
+#[test]
+fn linfit_is_exact_least_squares() {
+    assert_eq!(
+        ev("stats.linfit([1; 2; 3; 4], [3; 5; 7; 9])"),
+        "struct(intercept = 1, slope = 2)"
+    );
+    // Hand-checked OLS: x̄=1, ȳ=7/3, Sxx=2, Sxy=3.
+    assert_eq!(
+        ev("stats.linfit([0; 1; 2], [1; 2; 4])"),
+        "struct(intercept = 5/6, slope = 3/2)"
+    );
+}
+
+#[test]
+fn stats_errors_are_graceful() {
+    assert!(ev("stats.median([x; 1])").starts_with("error: stats.median needs numeric"));
+    assert!(ev("stats.var([1])").starts_with("error: stats.var expects at least 2"));
+    assert!(ev("stats.cor([1; 1; 1], [1; 2; 3])")
+        .starts_with("error: stats.cor is undefined for zero-variance"));
+    assert!(ev("stats.linfit([2; 2], [1; 5])")
+        .starts_with("error: stats.linfit needs at least two distinct x"));
+    assert!(ev("stats.cov([1; 2], [1; 2; 3])")
+        .starts_with("error: stats.cov expects two vectors of the same length"));
+    assert!(ev("stats.mean(3)").starts_with("error: stats.mean expects a vector"));
+    assert!(ev("stats.histogram([1])").starts_with("error: unknown function 'stats.histogram'"));
+}
+
+// ---------------------------------------------------------------------------
+// Certified interval comparisons
+// ---------------------------------------------------------------------------
+
+#[test]
+fn certified_constant_comparisons() {
+    assert_eq!(ev("pi < 4"), "true"); // used to error; now certified
+    assert_eq!(ev("pi > 3"), "true");
+    assert_eq!(ev("sqrt(2) + sqrt(3) > pi"), "true"); // 3.1462… vs 3.1415…
+    assert_eq!(ev("355/113 > pi"), "true"); // agree to 6 decimals, still separated
+    assert_eq!(ev("exp(pi) > pi^e"), "true"); // the classic
+    assert_eq!(ev("sin(1) < cos(1)"), "false");
+    assert_eq!(ev("tan(1) > 1"), "true");
+    assert_eq!(ev("2^(1/3) < 5^(1/4)"), "true");
+    assert_eq!(ev("pi <= pi"), "true");
+    // Comparisons feed control flow directly now.
+    assert_eq!(ev("if sqrt(2) < pi then 1 else 2 end"), "1");
+}
+
+#[test]
+fn symbol_comparisons_decide_only_what_holds_for_all_reals() {
+    // The difference canonicalizes to an exact rational: sound for every x.
+    assert_eq!(ev("x <= x"), "true");
+    assert_eq!(ev("x + 1 > x"), "true");
+    assert_eq!(ev("x < x"), "false");
+    // Anything genuinely value-dependent refuses.
+    assert!(ev("x < 1").starts_with("error: cannot order"));
+}
+
+#[test]
+fn equal_constants_refuse_rather_than_guess() {
+    // (√2+√3)² = 5+2√6 exactly, but not structurally: enclosures can never
+    // separate, so the comparison refuses instead of inventing an answer.
+    let msg = ev("(sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)");
+    assert!(msg.starts_with("error:") && msg.contains("may be equal"), "got: {msg}");
+    let msg = ev("exp(1) < e");
+    assert!(msg.contains("may be equal"), "got: {msg}");
+    // Non-real and opaque values still refuse outright.
+    assert!(ev("sqrt(2) < I").starts_with("error: cannot order"));
+    assert!(ev("[1] < [2]").starts_with("error: cannot order"));
+    assert!(ev("true < 2").starts_with("error: cannot order"));
+}
+
+// ---------------------------------------------------------------------------
+// Indexing, elementwise operations, and data primitives
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_based_indexing() {
+    assert_eq!(ev_all(&["v := [3; 1; 4]", "v[2]"]), "1");
+    assert_eq!(ev("[3, 1, 4][3]"), "4"); // row vectors index the same way
+    assert_eq!(ev("[1,2;3,4][2,1]"), "3");
+    assert_eq!(norm("[1,2;3,4][2]"), "[ 3 4 ]"); // one index on a matrix: the row
+    assert_eq!(ev_all(&["d := struct(s = [5; 6])", "d.s[2]"]), "6"); // chains
+    assert_eq!(
+        ev("[1; 2][3]"),
+        "error: index 3 is out of range (the vector has 2)"
+    );
+    assert!(ev("[1; 2][0]").starts_with("error: indices are 1-based"));
+    assert!(ev("(1 + 2)[1]").starts_with("error: cannot index"));
+}
+
+#[test]
+fn elementwise_operators() {
+    assert_eq!(norm("[1, 2, 3] .* [4, 5, 6]"), "[ 4 10 18 ]");
+    assert_eq!(norm("[1, 2, 3] ./ [2, 4, 8]"), "[ 1/2 1/2 3/8 ]");
+    assert_eq!(norm("[1, 2, 3] .^ 2"), "[ 1 4 9 ]");
+    assert_eq!(norm("2 .* [1, 2]"), "[ 2 4 ]"); // scalars broadcast
+    assert_eq!(ev("2 .* 3"), "6"); // …and degrade to plain arithmetic
+    assert!(ev("[1, 2] ./ [1, 0]").starts_with("error: division by zero"));
+    assert!(ev("[1, 2] .* [1; 2]").starts_with("error: elementwise operation needs"));
+}
+
+#[test]
+fn scalar_functions_map_over_matrices() {
+    assert_eq!(norm("sin([0; pi/6])"), "[ 0 ] [ 1/2 ]");
+    assert_eq!(norm("sqrt([4, 8])"), "[ 2 2*sqrt(2) ]");
+    assert_eq!(norm("abs([-1, 2; -3, 4])"), "[ 1 2 ] [ 3 4 ]");
+}
+
+#[test]
+fn data_primitives() {
+    assert_eq!(ev("len([3; 1; 4; 1; 5])"), "5");
+    assert_eq!(ev("len([1, 2; 3, 4])"), "2"); // rows, for non-vectors
+    assert_eq!(ev("size([1, 2; 3, 4])"), "struct(cols = 2, rows = 2)");
+    assert_eq!(ev("dot([1, 2, 3], [4, 5, 6])"), "32");
+    assert_eq!(norm("vcat([1; 2], 9)"), "[ 1 ] [ 2 ] [ 9 ]");
+    assert_eq!(norm("hcat([1; 2], [3; 4])"), "[ 1 3 ] [ 2 4 ]");
+    assert_eq!(norm("linspace(0, 1, 5)"), "[ 0 1/4 1/2 3/4 1 ]"); // exact steps
+    assert_eq!(norm("map(sin, [0, pi/2])"), "[ 0 1 ]");
+    assert_eq!(
+        ev_all(&["f(x) := x^2 + 1", "map(f, [1, 2])"]),
+        "[ 2  5 ]"
+    );
+    assert!(ev("map(3, [1])").starts_with("error: map expects a function"));
+    assert!(ev("vcat([1, 2], [1; 2])").starts_with("error: vcat needs"));
+}
+
+// ---------------------------------------------------------------------------
+// FIR design: freqz, windows, firlow, quantize
+// ---------------------------------------------------------------------------
+
+#[test]
+fn freqz_of_known_filters() {
+    // The 2-tap boxcar: H(0) = 2, H(π/2) = 1 − i, H(π) = 0 — all exact.
+    assert_eq!(norm("dsp.freqz([1, 1], [0, pi/2, pi])"), "[ 2 1 - I 0 ]");
+    // A pure delay has unit magnitude everywhere.
+    assert_eq!(
+        norm("map(abs, dsp.freqz([0, 1], [0, pi/3, pi/2]))"),
+        "[ 1 1 1 ]"
+    );
+}
+
+#[test]
+fn windows_are_exact() {
+    assert_eq!(norm("dsp.hann(4)"), "[ 0 3/4 3/4 0 ]");
+    assert_eq!(norm("dsp.hamming(3)"), "[ 2/25 1 2/25 ]");
+    // Exactly zero at the ends — float tools report ~−1.4e-17 here.
+    assert_eq!(norm("dsp.blackman(3)"), "[ 0 1 0 ]");
+    assert_eq!(ev("dsp.hann(1)"), "[ 1 ]");
+}
+
+#[test]
+fn windowed_sinc_design_is_exact() {
+    // 5 taps at wc = π/2, Hann-windowed: ends vanish, center is wc/π = 1/2.
+    assert_eq!(
+        norm("dsp.firlow(5, pi/2) .* dsp.hann(5)"),
+        "[ 0 1/2*π^(-1) 1/2 1/2*π^(-1) 0 ]"
+    );
+    // The cutoff response is −1/2 exactly: magnitude 1/2 carrying the
+    // linear-phase factor e^(−iωM) = e^(−iπ) = −1 of the M = 2 delay.
+    assert_eq!(
+        norm("dsp.freqz(dsp.firlow(5, pi/2) .* dsp.hann(5), [pi/2])"),
+        "[ -1/2 ]"
+    );
+    assert_eq!(
+        norm("map(abs, dsp.freqz(dsp.firlow(5, pi/2) .* dsp.hann(5), [pi/2]))"),
+        "[ 1/2 ]"
+    );
+}
+
+#[test]
+fn quantize_snaps_to_the_fixed_point_grid() {
+    assert_eq!(
+        norm("dsp.quantize([1/3; -1/3; 1/32], 4)"),
+        "[ 5/16 ] [ -5/16 ] [ 1/16 ]" // ties (1/32·16 = 1/2) round away from zero
+    );
+    // Floats quantize via their exact binary value.
+    assert_eq!(ev("dsp.quantize([N(1/3)], 8)"), "[ 85/256 ]");
+    // The quantization error is an exact object you can measure.
+    assert_eq!(
+        ev_all(&[
+            "h := [1/3, 1/3]",
+            "e := h - dsp.quantize(h, 4)",
+            "dsp.freqz(e, [0])",
+        ]),
+        "[ 1/24 ]" // 2·(1/3 − 5/16) = 1/24, exactly
+    );
+    assert!(ev("dsp.quantize([x], 4)").starts_with("error: dsp.quantize needs numeric"));
 }

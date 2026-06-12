@@ -17,12 +17,16 @@
 
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import { EngineCancelled, EngineClient } from '../engine/client'
+import {
+  EngineCancelled,
+  EngineClient,
+  type Sampled3d,
+  type SampledCurve,
+} from '../engine/client'
 import { initLexer } from '../engine/lexer'
 import type {
   EvalResult,
   ReplayEntry,
-  SamplePoint,
   WorkspaceEntry,
 } from '../engine/types'
 import { idbStorage, STORAGE_KEY } from './storage'
@@ -139,7 +143,7 @@ interface NotebookState {
     varName: string,
     a: number,
     b: number,
-  ): Promise<SamplePoint[]>
+  ): Promise<SampledCurve>
   resample3d(
     exprText: string,
     xvar: string,
@@ -148,8 +152,7 @@ interface NotebookState {
     b: number,
     c: number,
     d: number,
-    n: number,
-  ): Promise<(number | null)[]>
+  ): Promise<Sampled3d>
 
   createNotebook(): void
   selectNotebook(id: string): void
@@ -455,8 +458,8 @@ export const useNotebook = create<NotebookState>()(
           return client.resample(exprText, varName, a, b)
         },
 
-        resample3d(exprText, xvar, yvar, a, b, c, d, n) {
-          return client.resample3d(exprText, xvar, yvar, a, b, c, d, n)
+        resample3d(exprText, xvar, yvar, a, b, c, d) {
+          return client.resample3d(exprText, xvar, yvar, a, b, c, d)
         },
 
         createNotebook() {

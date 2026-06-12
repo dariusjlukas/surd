@@ -69,17 +69,39 @@ terms.)
 
 ## Comparisons are decidable, or they are errors
 
-Ordering (`<` `>` `<=` `>=`) requires both sides to be numbers. A comparison
-that can't be decided is an **error, never a guess**:
+Ordering (`<` `>` `<=` `>=`) works on numbers and on **constant** symbolic
+expressions — the latter decided by *certified interval refinement*: both
+sides are enclosed in intervals computed with directed rounding, and the
+precision doubles until the intervals provably separate. The answer is
+therefore never a float guess:
 
 ```text
->> pi < 4
-error: cannot order 'π' and '4'; both must be numbers (try N(...))
->> N(pi) < 4
-true
 >> 1/2 < 2/3
 true
+>> pi < 4
+true
+>> sqrt(2) + sqrt(3) > pi          # 3.1462… vs 3.1415…
+true
+>> exp(pi) > pi^e                  # the classic
+true
 ```
+
+A comparison that can't be decided is an **error, never a guess** — free
+symbols have no fixed value, and constants whose enclosures never separate
+(they may be equal) refuse at ~2,400 digits:
+
+```text
+>> x < 4
+error: cannot order 'x' and '4'; both must be constant real values (a free
+symbol has no fixed value — try subs(...) or N(...))
+>> (sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)    # the two sides are exactly equal
+error: cannot order '(sqrt(2) + sqrt(3))^2' and '5 + 2*sqrt(6)': they agree
+to at least 2466 significant digits — the values may be equal
+```
+
+One exception cuts through even free symbols: when the *difference*
+canonicalizes to an exact number, the answer holds for every real value —
+`x + 1 > x` is `true`, `x < x` is `false`.
 
 Floats *do* compare, and exactly: a binary float is the rational m·2^k, so a
 float-vs-exact comparison is decided losslessly on that value — never by

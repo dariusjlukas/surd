@@ -34,7 +34,8 @@ exact until *you* ask for a float.
   `==`.
 - **Honesty about undecidability.** Control-flow conditions must evaluate to a
   real `true`/`false`; a condition that can't be decided is an error, never a
-  guess. `pi < 4` is an error — `N(pi) < 4` is `true`.
+  guess. `pi < 4` is `true` — *certified* by interval refinement, answered
+  only when provable — while `x < 4` is an error: a free symbol has no order.
 - **Bounded auto-simplification.** Construction applies cheap, terminating
   canonicalization (fold rationals, `sqrt(2)^2 → 2`, combine like terms). Deep
   simplification is reserved for explicit operations like

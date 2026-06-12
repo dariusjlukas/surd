@@ -62,7 +62,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     }
     case 'resample': {
       const result = JSON.parse(
-        resample(msg.exprText, msg.varName, msg.a, msg.b, msg.n),
+        resample(msg.exprText, msg.varName, msg.a, msg.b),
       ) as ResampleResult
       post({ type: 'resampled', id: msg.id, result })
       break
@@ -77,7 +77,6 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
           msg.b,
           msg.c,
           msg.d,
-          msg.n,
         ),
       ) as Resample3dResult
       post({ type: 'resampled3d', id: msg.id, result })

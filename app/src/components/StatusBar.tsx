@@ -1,4 +1,9 @@
-import { faBars, faGear, faTableList } from '@fortawesome/free-solid-svg-icons'
+import {
+  faBars,
+  faCircleQuestion,
+  faGear,
+  faTableList,
+} from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useSettings } from '../state/settings'
 import {
@@ -14,6 +19,10 @@ const LABEL: Record<EngineStatus, string> = {
   busy: 'evaluating…',
   failed: 'engine failed to load — reload the page',
 }
+
+// The MkDocs site deployed alongside the app (absolute, so it also works
+// from a local dev server, where /docs/ isn't built).
+const DOCS_URL = 'https://dariusjlukas.github.io/surd/docs/'
 
 const DOT: Record<EngineStatus, string> = {
   booting: 'bg-warn',
@@ -120,6 +129,15 @@ export function StatusBar() {
       >
         <FontAwesomeIcon icon={faTableList} className="h-4 w-4" />
       </IconButton>
+      <a
+        href={DOCS_URL}
+        target="_blank"
+        rel="noreferrer"
+        title="documentation"
+        className="rounded-md p-1.5 text-muted transition-colors hover:bg-hover hover:text-ink"
+      >
+        <FontAwesomeIcon icon={faCircleQuestion} className="h-4 w-4" />
+      </a>
       <IconButton
         onClick={toggleSettings}
         title={showSettings ? 'back to notebook' : 'settings'}

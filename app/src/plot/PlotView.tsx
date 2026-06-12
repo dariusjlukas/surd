@@ -46,6 +46,11 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
 
   const initialPoints = useMemo(() => plot.series.map((s) => s.points), [plot])
   const [points, setPoints] = useState<SamplePoint[][]>(initialPoints)
+  /** Per-series honesty flags (see PlotSeries.undersampled), updated with
+   * every resample. */
+  const [undersampled, setUndersampled] = useState<boolean[]>(() =>
+    plot.series.map((s) => s.undersampled ?? false),
+  )
   const [win, setWin] = useState({ a: plot.a, b: plot.b })
   const [yWin, setYWin] = useState<[number, number]>(() =>
     quantileDomain(initialPoints.flat()),
@@ -106,8 +111,10 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
       debounceRef.current = window.setTimeout(() => {
         Promise.all(plot.series.map((s) => resample(s.text, plot.var, a, b)))
           .then((all) => {
-            setPoints(all)
-            if (!yManualRef.current) setYWin(quantileDomain(all.flat()))
+            setPoints(all.map((r) => r.points))
+            setUndersampled(all.map((r) => r.undersampled))
+            if (!yManualRef.current)
+              setYWin(quantileDomain(all.flatMap((r) => r.points)))
           })
           .catch(() => {
             // engine busy or restarted — stale samples stay visible, the next
@@ -233,6 +240,7 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
     setYManual(false)
     setWin({ a: plot.a, b: plot.b })
     setPoints(initialPoints)
+    setUndersampled(plot.series.map((s) => s.undersampled ?? false))
     setYWin(quantileDomain(initialPoints.flat()))
   }
 
@@ -264,6 +272,14 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
             <MathInline latex={s.latex} fallback={s.text} />
           </span>
         ))}
+        {undersampled.some(Boolean) && (
+          <span
+            className="text-xs text-warn"
+            title="parts of this window oscillate faster than the finest sampling resolution can resolve — fine structure may be aliased; zoom in for a faithful view"
+          >
+            ⚠ undersampled
+          </span>
+        )}
         <button
           onClick={savePng}
           title="download the plot as a PNG"

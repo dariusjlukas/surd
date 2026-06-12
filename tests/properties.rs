@@ -185,4 +185,95 @@ proptest! {
         let _ = ev(&render_s(&a));
         let _ = ev(&format!("N(diff(({}), x), 20)", render_s(&a)));
     }
+
+    // dsp.idft inverts dsp.dft *exactly* — not to within epsilon — for any
+    // rational vector whose size has surd-form twiddles. The round trip runs
+    // through complex surd arithmetic and must land back on the input.
+    #[test]
+    fn dft_idft_roundtrip_is_exact(v in arb_rational_vector()) {
+        let vec = render_vector(&v);
+        prop_assert_eq!(
+            normalized(&format!("dsp.idft(dsp.dft({}))", vec)),
+            normalized(&vec)
+        );
+    }
+
+    // Certified comparisons must agree with the f64 oracle whenever the gap
+    // is comfortably above f64 noise. The engine only answers when enclosures
+    // provably separate, so any disagreement here is a soundness bug in the
+    // interval evaluator — this is the differential test for src/interval.rs.
+    #[test]
+    fn certified_comparison_agrees_with_f64_oracle(a in arb_g(), b in arb_g()) {
+        let (va, vb) = (eval_f64(&a), eval_f64(&b));
+        prop_assume!(va.is_finite() && vb.is_finite());
+        prop_assume!((va - vb).abs() > 1e-6 * (1.0 + va.abs() + vb.abs()));
+        let out = ev(&format!("({}) < ({})", render_g(&a), render_g(&b)));
+        prop_assert_eq!(out, (va < vb).to_string());
+    }
+
+    // The convolution theorem, exactly: the frequency response of a cascade
+    // is the elementwise product of the responses. At surd-table frequencies
+    // everything folds to canonical exact complex numbers, so the two sides
+    // must be *structurally identical* — no epsilon anywhere.
+    #[test]
+    fn convolution_theorem_holds_exactly(
+        a in prop::collection::vec((-9i64..10, 1i64..6), 1..5),
+        b in prop::collection::vec((-9i64..10, 1i64..6), 1..5),
+    ) {
+        let grid = "[0, pi/2, pi]";
+        let cascade = normalized(&format!(
+            "dsp.freqz(dsp.conv({a}, {b}), {grid})",
+            a = render_vector(&a), b = render_vector(&b),
+        ));
+        let product = normalized(&format!(
+            "dsp.freqz({a}, {grid}) .* dsp.freqz({b}, {grid})",
+            a = render_vector(&a), b = render_vector(&b),
+        ));
+        prop_assert_eq!(cascade, product);
+    }
+
+    // Linear convolution is commutative (it's polynomial multiplication).
+    #[test]
+    fn convolution_is_commutative(
+        a in prop::collection::vec((-9i64..10, 1i64..6), 1..7),
+        b in prop::collection::vec((-9i64..10, 1i64..6), 1..7),
+    ) {
+        prop_assert_eq!(
+            normalized(&format!("dsp.conv({}, {})", render_vector(&a), render_vector(&b))),
+            normalized(&format!("dsp.conv({}, {})", render_vector(&b), render_vector(&a)))
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dsp helpers
+// ---------------------------------------------------------------------------
+
+/// A rational column vector whose length has exact (surd-form) DFT twiddles.
+/// Size 5 exercises the pentagonal (golden-ratio) grid and the radical
+/// merging + square-factor extraction the round trip depends on.
+fn arb_rational_vector() -> impl Strategy<Value = Vec<(i64, i64)>> {
+    prop_oneof![
+        Just(1usize),
+        Just(2),
+        Just(3),
+        Just(4),
+        Just(5),
+        Just(6),
+        Just(8)
+    ]
+    .prop_flat_map(|n| prop::collection::vec((-9i64..10, 1i64..6), n))
+}
+
+/// Rendered as a row vector: a 1-element vector is a 1×1 matrix, which the
+/// dsp functions classify as a row, and output orientation follows the first
+/// argument — rows keep the orientation uniform across operand orders.
+fn render_vector(v: &[(i64, i64)]) -> String {
+    let entries: Vec<String> = v.iter().map(|(n, d)| format!("({}/{})", n, d)).collect();
+    format!("[{}]", entries.join(", "))
+}
+
+/// Evaluate and collapse whitespace, so multi-line matrices compare cleanly.
+fn normalized(src: &str) -> String {
+    ev(src).split_whitespace().collect::<Vec<_>>().join(" ")
 }

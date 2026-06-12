@@ -14,15 +14,24 @@ or adversarial input turns into a clean error, never a crash:
 | `while` loop iterations | 10,000,000 |
 | Exact exponent ceiling | `2^(10^15)` stays symbolic instead of building a gigabyte bignum |
 | `precision(d)` | clamped to 1…100,000 digits |
+| `dsp` pairwise products per call | 4,000,000 (a DFT of length n costs n²) |
+| Comparison interval refinement | 8,192 bits (≈ 2,466 digits), then "may be equal" |
+| `plot` sampling | adaptive 601 → 4,801 points per curve; windows the cap can't resolve are labeled "undersampled", never silently aliased |
+| `plot3d` sampling grid | adaptive 81×81 → 641×641, same undersampled labeling |
 
 ## Things that error on purpose
 
 These are design decisions, not gaps:
 
 - **Symbolic conditions** — `if x then … end` errors; conditions must be a
-  real `true`/`false` (wrap comparisons in `N(...)`).
-- **Ordering symbols** — `pi < 4` errors; ordering arbitrary reals is
-  undecidable.
+  real `true`/`false`.
+- **Ordering free symbols** — `x < 4` errors; a free symbol has no fixed
+  value. Constant comparisons (`pi < 4`, `sqrt(2)+sqrt(3) > pi`) are decided
+  by certified interval refinement — answered only when the enclosures
+  provably separate, so never a guess. Equal-valued constants written
+  differently (`(sqrt(2)+sqrt(3))^2` vs `5+2*sqrt(6)`) refuse at the
+  refinement cap: *proving* equality needs real algebraic numbers
+  (deliberately deferred, below).
 - **`=` as a truth test** — `=` builds an equation; use `==` for decidable
   equality.
 - **Scientific notation** — `3e5` is rejected with a hint (`3*10^5`), rather
@@ -39,22 +48,44 @@ These are design decisions, not gaps:
 Scoped out of the prototype on purpose — this is where an exact CAS balloons:
 
 - **Real algebraic numbers** (polynomial + isolating interval) for exact
-  roots beyond perfect powers, and decidable comparison.
+  roots beyond perfect powers, and for *proving equality* of constants —
+  interval refinement (shipped) can certify any strict ordering, but can
+  never prove two different-looking constants equal.
 - **An assumptions system** (is `x > 0`? an integer?) — wants an SMT backend.
 - **Piecewise results / symbolic predicates** in conditionals.
 - **`return` / `break` / `continue`**, closures capturing locals, `print`.
 - **Deep simplification** (equality saturation), **integration** (Risch),
   **equation solving**.
-- **Square-factor extraction** — `sqrt(8)` stays `sqrt(8)`, not `2*sqrt(2)`.
-- **Symbolic complex simplification** — `exp(I*pi)` folds to −1 numerically
-  (under `N`), not symbolically.
+- **Exact trig beyond the surd table** — `sin(pi/6)` folds to `1/2` and
+  `cos(pi/5)` to the golden-ratio surd, but denominators outside
+  {1, 2, 3, 4, 5, 6, 8, 10, 12} stay symbolic (`cos(pi/7)` has no surd
+  form at all — its minimal polynomial is a cubic).
+- **Radical combining beyond provable signs** — `sqrt(x)*sqrt(y)` stays put;
+  `√a·√b → √(a·b)` fires only where nonnegativity is provable (numbers,
+  π/e, and quadratic-surd sums like `10 − 2*sqrt(5)`).
+- **Square-factor extraction is best-effort** — bounded trial division plus
+  a perfect-square check; a square of two huge primes stays under the
+  radical (never wrong, occasionally incomplete).
 - **Eigenvectors beyond quadratic surds** — eigen*values* are exact through
   Cardano cubics and biquadratic quartics, but eigen*vectors* don't follow
   into those fields yet.
 - **Float coefficients don't merge like terms** — `N(2.5)*x + x` stays two
   terms.
-- **DSP toolkit** (the original motivation): DFT/FFT, FIR/IIR filter design —
-  the complex groundwork is done.
+- **A module system for user code** — modules are
+  [structs of functions](language/modules.md); there is no file import or
+  package mechanism.
+- **More DSP** — the [`dsp` namespace](reference/dsp.md) covers DFT,
+  convolution, FIR design (windowed-sinc + windows), frequency response,
+  and fixed-point quantization; FFT-speed transforms, equiripple (Remez)
+  design, IIR design, and z-transforms are future work.
+- **Bulk-data scale** — exact arithmetic is per-element; signals beyond the
+  pairwise-product caps (real audio lengths) need a packed-array/certified-
+  float pipeline that doesn't exist yet. Design exactly, then export.
+- **No indexed assignment** — `v[1] := 5` is not a thing; values are
+  immutable. Build with `map`, `vcat`, `hcat`.
+- **More statistics** — the [`stats` namespace](reference/stats.md) covers
+  the univariate basics and exact simple regression; quantiles, weighted
+  and multiple regression are future work.
 
 ## Testing philosophy
 

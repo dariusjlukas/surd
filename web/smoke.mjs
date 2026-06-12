@@ -36,9 +36,13 @@ expect('workspace lists bindings', ws.some((e) => e.name === 'g' && e.text === '
 const plot = ev('plot(sin(y)/y, y, -10, 10)');
 expect('plot kind', plot.kind, 'plot');
 expect('plot series', plot.plot.series.length, 1);
-expect('plot samples', plot.plot.series[0].points.length, 600);
-const mid = plot.plot.series[0].points[300][1];
-expect('sinc near 1 at 0', Math.abs(mid - 1) < 0.01, true);
+expect('plot samples', plot.plot.series[0].points.length, 601);
+expect('plot not undersampled', plot.plot.series[0].undersampled, false);
+// the odd sample count lands exactly on the pole at 0: an honest gap…
+expect('sinc gap at the pole', plot.plot.series[0].points[300][1], null);
+// …with the curve approaching 1 on either side
+const mid = plot.plot.series[0].points[299][1];
+expect('sinc near 1 beside 0', Math.abs(mid - 1) < 0.01, true);
 
 const multi = ev('plot(sin(y), cos(y), y, 0, 1)');
 expect('multi-curve series', multi.plot.series.length, 2);

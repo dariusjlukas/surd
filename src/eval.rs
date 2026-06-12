@@ -2,7 +2,10 @@
 //! [`Expr`] within a scope, dispatches builtins, and runs control flow.
 
 use crate::ast::{Node, Op};
+use crate::dsp;
 use crate::expr::*;
+use crate::interval;
+use crate::stats;
 use crate::lexer::lex;
 use crate::matrix;
 use crate::parser::parse;
@@ -136,11 +139,27 @@ impl Interpreter {
                                 names.join(", ")
                             )
                         }),
+                    // An unbound namespace name evaluates to its symbol; point
+                    // at the call syntax instead of a baffling struct error.
+                    Expr::Symbol(s) if is_namespace(&s) => Err(format!(
+                        "'{}.{}' names a function in the built-in '{}' namespace — \
+                         call it with arguments: {}.{}(...)",
+                        s, field, s, s, field
+                    )),
                     other => Err(format!(
                         "cannot read field '.{}' of a non-struct value '{}'",
                         field, other
                     )),
                 }
+            }
+            Node::FieldCall(base, name, args) => self.eval_field_call(base, name, args),
+            Node::Index(base, idxs) => {
+                let value = self.eval_node(base)?;
+                let mut indices = Vec::with_capacity(idxs.len());
+                for ix in idxs {
+                    indices.push(as_index(&self.eval_node(ix)?)?);
+                }
+                matrix::index(&value, &indices)
             }
             Node::Call(name, args) => {
                 // diff/subs treat their variable argument as a *name*, not a
@@ -248,6 +267,9 @@ impl Interpreter {
         if is_opaque_value(&x) || is_opaque_value(&y) {
             return Err("cannot do arithmetic on a boolean, function, or struct value".into());
         }
+        if matches!(op, Op::ElemMul | Op::ElemDiv | Op::ElemPow) {
+            return elementwise_binop(op, &x, &y);
+        }
         if matrix::is_matrix(&x) || matrix::is_matrix(&y) {
             return matrix_binop(op, x, y);
         }
@@ -287,30 +309,126 @@ impl Interpreter {
     /// Call `name`: a user-defined function if one is bound, otherwise a builtin.
     fn call(&mut self, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         if let Some(Expr::Function { params, body }) = self.get_var(name) {
-            if params.len() != args.len() {
-                return Err(format!(
-                    "{} expects {} argument(s), got {}",
-                    name,
-                    params.len(),
-                    args.len()
-                ));
-            }
-            if self.frames.len() >= MAX_FRAMES {
-                return Err("maximum recursion depth exceeded".into());
-            }
-            let frame: HashMap<String, Expr> =
-                params.into_iter().zip(args).collect();
-            self.frames.push(frame);
-            let result = self.eval_node(&body);
-            self.frames.pop();
-            return result;
+            return self.call_function(name, params, body, args);
         }
-        // `precision` needs &mut self to change the default, so it lives here
-        // rather than among the (read-only) builtins.
+        // `precision` and `map` need &mut self (one mutates state, the other
+        // calls back into user functions), so they live here rather than
+        // among the (read-only) builtins.
         if name == "precision" {
             return self.set_precision(args);
         }
+        if name == "map" {
+            return self.call_map(args);
+        }
         self.call_builtin(name, args)
+    }
+
+    /// `map(f, m)` — apply a function entrywise, preserving shape. `f` is a
+    /// function value or a function's name (user-defined or built-in), so
+    /// both `map(sin, v)` and `map(myfunc, v)` work.
+    fn call_map(&mut self, args: Vec<Expr>) -> Result<Expr, String> {
+        arity("map", &args, 2)?;
+        let Expr::Matrix(rows) = &args[1] else {
+            return Err("map expects a vector or matrix as its second argument".into());
+        };
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut new_row = Vec::with_capacity(row.len());
+            for cell in row {
+                let v = match &args[0] {
+                    Expr::Function { params, body } => self.call_function(
+                        "the mapped function",
+                        params.clone(),
+                        body.clone(),
+                        vec![cell.clone()],
+                    )?,
+                    Expr::Symbol(s) => self.call(&s.clone(), vec![cell.clone()])?,
+                    other => {
+                        return Err(format!(
+                            "map expects a function as its first argument, got '{}'",
+                            other
+                        ))
+                    }
+                };
+                new_row.push(v);
+            }
+            out.push(new_row);
+        }
+        Ok(Expr::Matrix(out))
+    }
+
+    /// Invoke a function value: bind the arguments in a fresh frame, run the
+    /// body, pop the frame. `name` is only for error messages.
+    fn call_function(
+        &mut self,
+        name: &str,
+        params: Vec<String>,
+        body: Rc<Node>,
+        args: Vec<Expr>,
+    ) -> Result<Expr, String> {
+        if params.len() != args.len() {
+            return Err(format!(
+                "{} expects {} argument(s), got {}",
+                name,
+                params.len(),
+                args.len()
+            ));
+        }
+        if self.frames.len() >= MAX_FRAMES {
+            return Err("maximum recursion depth exceeded".into());
+        }
+        let frame: HashMap<String, Expr> = params.into_iter().zip(args).collect();
+        self.frames.push(frame);
+        let result = self.eval_node(&body);
+        self.frames.pop();
+        result
+    }
+
+    /// `base.name(args)`: a built-in namespace function (`dsp.dft(v)`), or a
+    /// user module — a struct whose `name` field holds a function. A user
+    /// binding of the namespace's name shadows it, the same rule as any
+    /// other builtin.
+    fn eval_field_call(
+        &mut self,
+        base: &Node,
+        name: &str,
+        args: &[Node],
+    ) -> Result<Expr, String> {
+        if let Node::Ident(ns) = base {
+            if self.get_var(ns).is_none() && is_namespace(ns) {
+                let evaluated = args
+                    .iter()
+                    .map(|a| self.eval_node(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return call_namespace(ns, name, evaluated);
+            }
+        }
+        let value = self.eval_node(base)?;
+        let Expr::Struct(fields) = value else {
+            return Err(format!(
+                "cannot call '.{}(...)' on a non-struct value '{}'",
+                name, value
+            ));
+        };
+        let Some((_, field)) = fields.iter().find(|(n, _)| n == name) else {
+            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            return Err(format!(
+                "struct has no field '{}' (fields: {})",
+                name,
+                names.join(", ")
+            ));
+        };
+        let Expr::Function { params, body } = field.clone() else {
+            return Err(format!(
+                "field '{}' holds '{}', which is not a function",
+                name, field
+            ));
+        };
+        let evaluated = args
+            .iter()
+            .map(|a| self.eval_node(a))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.call_function(name, params, body, evaluated)
     }
 
     /// `diff(expr, x)` / `D(expr, x)` / `subs(expr, x, val)` / `plot(expr, x,
@@ -465,29 +583,100 @@ impl Interpreter {
 
     fn call_builtin(&self, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         match name {
+            // Scalar functions apply entrywise to a matrix argument.
             "sqrt" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(pow(e.clone(), half())));
+                }
                 Ok(pow(args[0].clone(), half()))
             }
             "sin" | "cos" | "tan" | "exp" | "ln" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(func(name, vec![e.clone()])));
+                }
                 Ok(func(name, args))
             }
             "conj" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(conjugate(e)));
+                }
                 Ok(conjugate(&args[0]))
             }
             "re" | "real" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(real_part(e)));
+                }
                 Ok(real_part(&args[0]))
             }
             "im" | "imag" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(imag_part(e)));
+                }
                 Ok(imag_part(&args[0]))
             }
             "abs" => {
                 arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(absolute_value(e)));
+                }
                 Ok(absolute_value(&args[0]))
+            }
+            // -- data primitives ---------------------------------------------
+            "len" => {
+                arity(name, &args, 1)?;
+                match (matrix::vector_of(&args[0]), &args[0]) {
+                    (Some(v), _) => Ok(int(v.len() as i64)),
+                    (None, Expr::Matrix(rows)) => Ok(int(rows.len() as i64)),
+                    _ => Err("len expects a vector or matrix".into()),
+                }
+            }
+            "size" => {
+                arity(name, &args, 1)?;
+                expect_matrix(name, &args[0])?;
+                let Expr::Matrix(rows) = &args[0] else { unreachable!() };
+                structure(vec![
+                    ("rows".to_string(), int(rows.len() as i64)),
+                    ("cols".to_string(), int(rows[0].len() as i64)),
+                ])
+            }
+            "dot" => {
+                arity(name, &args, 2)?;
+                let (a, b) = (vector_arg(name, &args[0])?, vector_arg(name, &args[1])?);
+                if a.len() != b.len() {
+                    return Err(format!(
+                        "dot expects two vectors of the same length, got {} and {}",
+                        a.len(),
+                        b.len()
+                    ));
+                }
+                // Plain bilinear Σ aᵢ·bᵢ — no conjugation (use conj()).
+                Ok(add(a
+                    .into_iter()
+                    .zip(b)
+                    .map(|(x, y)| mul(vec![x, y]))
+                    .collect()))
+            }
+            "vcat" | "hcat" => concat(name, &args),
+            "linspace" => {
+                arity(name, &args, 3)?;
+                let n = as_usize(&args[2])?;
+                if n < 2 {
+                    return Err("linspace expects at least 2 points".into());
+                }
+                // a + k·(b−a)/(n−1): exact when the endpoints are.
+                let step = mul(vec![
+                    add(vec![args[1].clone(), mul(vec![int(-1), args[0].clone()])]),
+                    pow(int(n as i64 - 1), int(-1)),
+                ]);
+                let row = (0..n)
+                    .map(|k| add(vec![args[0].clone(), mul(vec![int(k as i64), step.clone()])]))
+                    .collect();
+                Ok(Expr::Matrix(vec![row]))
             }
             // ("diff"/"D"/"subs" never reach here — they're intercepted before
             // argument evaluation so the variable argument stays symbolic.)
@@ -580,6 +769,56 @@ impl Interpreter {
     }
 }
 
+/// The built-in namespaces. Each groups a domain toolkit behind one name so
+/// the global builtin set stays small; `ns.func(...)` dispatches here.
+fn is_namespace(name: &str) -> bool {
+    matches!(name, "dsp" | "stats")
+}
+
+fn call_namespace(ns: &str, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
+    match ns {
+        "dsp" => dsp::call(name, args),
+        "stats" => stats::call(name, args),
+        _ => unreachable!("call_namespace on a non-namespace"),
+    }
+}
+
+/// Elementwise `.*` `./` `.^`: entrywise when a matrix is involved (shapes
+/// must match when both sides are matrices, a scalar broadcasts), and the
+/// plain scalar operation otherwise — so `2 .* 3` is just `6`.
+fn elementwise_binop(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
+    let scalar = |p: &Expr, q: &Expr| -> Result<Expr, String> {
+        match op {
+            Op::ElemMul => Ok(mul(vec![p.clone(), q.clone()])),
+            Op::ElemDiv => {
+                if comparable_value(q).is_some_and(|r| r.is_zero()) {
+                    Err("division by zero".to_string())
+                } else {
+                    Ok(mul(vec![p.clone(), pow(q.clone(), int(-1))]))
+                }
+            }
+            Op::ElemPow => Ok(pow(p.clone(), q.clone())),
+            _ => unreachable!("non-elementwise op in elementwise_binop"),
+        }
+    };
+    match (matrix::is_matrix(x), matrix::is_matrix(y)) {
+        (true, true) => matrix::try_zip(x, y, scalar),
+        (true, false) => matrix::try_map(x, |p| scalar(p, y)),
+        (false, true) => matrix::try_map(y, |q| scalar(x, q)),
+        (false, false) => scalar(x, y),
+    }
+}
+
+fn as_index(e: &Expr) -> Result<usize, String> {
+    match as_usize(e) {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(format!(
+            "indices are 1-based positive integers, got '{}'",
+            e
+        )),
+    }
+}
+
 /// Linear-algebra dispatch for binary operators when a matrix is involved.
 fn matrix_binop(op: Op, x: Expr, y: Expr) -> Result<Expr, String> {
     let (xm, ym) = (matrix::is_matrix(&x), matrix::is_matrix(&y));
@@ -647,23 +886,56 @@ fn value_eq(x: &Expr, y: &Expr) -> bool {
     }
 }
 
-/// Ordering comparison. Requires both sides to be numbers (exact or float) —
-/// deciding the order of an arbitrary symbolic value is undecidable, so we
-/// refuse rather than guess (wrap in `N(...)` to compare numerically).
+/// Ordering comparison. Numbers compare by value. Constant symbolic
+/// expressions (`sqrt(2)+sqrt(3) > pi`) are decided by certified interval
+/// refinement: the answer is only given once enclosures provably separate,
+/// so it is never wrong — values that can't be separated (they may be
+/// equal) refuse, as do free symbols, whose order is genuinely undecidable.
 fn compare(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
-    match (comparable_value(x), comparable_value(y)) {
-        (Some(p), Some(q)) => {
-            let result = match op {
-                Op::Less => p < q,
-                Op::Greater => p > q,
-                Op::LessEq => p <= q,
-                Op::GreaterEq => p >= q,
-                _ => unreachable!(),
-            };
-            Ok(Expr::Bool(result))
-        }
-        _ => Err(format!(
-            "cannot order '{}' and '{}'; both must be numbers (try N(...))",
+    use std::cmp::Ordering;
+
+    let decide = |ord: Ordering| {
+        Ok(Expr::Bool(match op {
+            Op::Less => ord == Ordering::Less,
+            Op::Greater => ord == Ordering::Greater,
+            Op::LessEq => ord != Ordering::Greater,
+            Op::GreaterEq => ord != Ordering::Less,
+            _ => unreachable!(),
+        }))
+    };
+
+    if let (Some(p), Some(q)) = (comparable_value(x), comparable_value(y)) {
+        return decide(p.cmp(&q));
+    }
+    // Values arithmetic can't touch can't be ordered either — and must not
+    // reach the difference construction below.
+    let unorderable = |e: &Expr| {
+        is_opaque_value(e) || matrix::is_matrix(e) || matches!(e, Expr::Equation(..))
+    };
+    if unorderable(x) || unorderable(y) {
+        return Err(format!("cannot order '{}' and '{}'", x, y));
+    }
+    // Sign of the difference: exact canonicalization may settle it outright
+    // (x − x is 0, (x+1) − x is 1 — sound for every real x), and certified
+    // interval refinement handles the constant remainder.
+    let d = add(vec![x.clone(), mul(vec![int(-1), y.clone()])]);
+    if let Some(r) = comparable_value(&d) {
+        return decide(r.cmp(&BigRational::zero()));
+    }
+    match interval::certified_sign(&d) {
+        interval::Sign::Negative => decide(Ordering::Less),
+        interval::Sign::Zero => decide(Ordering::Equal),
+        interval::Sign::Positive => decide(Ordering::Greater),
+        interval::Sign::Inseparable => Err(format!(
+            "cannot order '{}' and '{}': they agree to at least {} significant digits — \
+             the values may be equal",
+            x,
+            y,
+            interval::max_digits()
+        )),
+        interval::Sign::Unsupported => Err(format!(
+            "cannot order '{}' and '{}'; both must be constant real values \
+             (a free symbol has no fixed value — try subs(...) or N(...))",
             x, y
         )),
     }
@@ -699,6 +971,48 @@ fn expect_matrix(name: &str, e: &Expr) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{} expects a matrix argument", name))
+    }
+}
+
+fn vector_arg(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
+    matrix::vector_of(e)
+        .ok_or_else(|| format!("{} expects a vector (a 1×n or n×1 matrix)", name))
+}
+
+/// `vcat`/`hcat`: stack matrices vertically/horizontally. Scalars join as
+/// 1×1 matrices, so `vcat(v, 5)` appends an element.
+fn concat(name: &str, args: &[Expr]) -> Result<Expr, String> {
+    if args.is_empty() {
+        return Err(format!("{} expects at least 1 argument", name));
+    }
+    let mut blocks: Vec<Vec<Vec<Expr>>> = Vec::with_capacity(args.len());
+    for a in args {
+        match a {
+            Expr::Matrix(rows) => blocks.push(rows.clone()),
+            e if is_opaque_value(e) => {
+                return Err(format!("{} cannot include '{}'", name, e))
+            }
+            scalar => blocks.push(vec![vec![scalar.clone()]]),
+        }
+    }
+    if name == "vcat" {
+        let cols = blocks[0][0].len();
+        if blocks.iter().any(|b| b[0].len() != cols) {
+            return Err("vcat needs the same number of columns in every piece".into());
+        }
+        Ok(Expr::Matrix(blocks.into_iter().flatten().collect()))
+    } else {
+        let rows = blocks[0].len();
+        if blocks.iter().any(|b| b.len() != rows) {
+            return Err("hcat needs the same number of rows in every piece".into());
+        }
+        let mut out: Vec<Vec<Expr>> = vec![Vec::new(); rows];
+        for block in blocks {
+            for (i, row) in block.into_iter().enumerate() {
+                out[i].extend(row);
+            }
+        }
+        Ok(Expr::Matrix(out))
     }
 }
 

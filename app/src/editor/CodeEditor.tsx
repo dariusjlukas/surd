@@ -5,7 +5,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { completionKeymap } from '@codemirror/autocomplete'
+import { closeCompletion, completionKeymap } from '@codemirror/autocomplete'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import {
   EditorView,
@@ -72,6 +72,23 @@ const baseTheme = EditorView.theme({
     maxWidth: '320px',
     padding: '4px 8px',
   },
+  '&:not(.cm-focused) .cm-tooltip.cm-surd-signature': { display: 'none' },
+  '.cm-tooltip.cm-surd-signature': {
+    fontFamily:
+      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    fontSize: '12px',
+    color: 'var(--muted)',
+    padding: '4px 8px',
+  },
+  '.cm-surd-signature-active': {
+    color: 'var(--accent)',
+    fontWeight: '600',
+  },
+  '.cm-surd-signature-doc': {
+    color: 'var(--faint)',
+    fontSize: '11px',
+    marginTop: '2px',
+  },
 })
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
@@ -110,6 +127,10 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
         state: EditorState.create({
           doc: initialDoc,
           extensions: [
+            // With the completion popup open, Escape dismisses it; only a
+            // second Escape reaches the parent bindings below (clear input /
+            // cancel cell edit). Must precede dynamicKeys to win the tie.
+            Prec.highest(keymap.of([{ key: 'Escape', run: closeCompletion }])),
             Prec.highest(keymap.of(dynamicKeys)),
             history(),
             keymap.of([

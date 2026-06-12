@@ -202,3 +202,17 @@ fn negated_product_of_sums_display_is_a_fixed_point() {
     assert_eq!(ev("-x*(1 + y)"), "-x*(1 + y)");
     assert_eq!(ev_all(&["c := x*(1+y)", "2*c"]), "2*x*(1 + y)");
 }
+
+#[test]
+fn low_precision_n_of_products_and_sums_works() {
+    // Was: `N(2*pi, 8)` (any Mul/Add at ≤ 9 digits) errored with "numeric
+    // result is undefined". The working precision for ≤ 9 digits came to
+    // under 64 bits, and astro-float's `from_i64` returns NaN(InvalidArgument)
+    // below one word — poisoning the Mul/Add accumulators, which start from
+    // `from_i64(1)` / `from_i64(0)`. Precision is now floored at 64 bits.
+    // (Found driving N(...) over symbolic dsp.dft entries at low digits.)
+    assert_eq!(ev("N(2*pi, 8)"), "6.2831853");
+    assert_eq!(ev("N(1 + pi, 8)"), "4.1415927");
+    assert_eq!(ev("N(2*sqrt(2), 1)"), "3");
+    assert_eq!(ev("N(cos(2/5*pi), 8)"), "0.30901699");
+}

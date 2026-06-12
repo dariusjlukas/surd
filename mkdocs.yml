@@ -51,6 +51,7 @@ nav:
       - Matrices: language/matrices.md
       - Complex numbers: language/complex.md
       - Structs: language/structs.md
+      - Modules and namespaces: language/modules.md
   - Built-in reference:
       - Overview: reference/index.md
       - Elementary functions: reference/elementary.md
@@ -58,6 +59,9 @@ nav:
       - Numeric evaluation: reference/numeric.md
       - Complex numbers: reference/complex.md
       - Linear algebra: reference/linear-algebra.md
+      - Vectors and data: reference/data.md
+      - DSP: reference/dsp.md
+      - Statistics: reference/stats.md
       - Plotting: reference/plotting.md
       - Structs: reference/structs.md
       - Constants: reference/constants.md

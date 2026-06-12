@@ -18,6 +18,13 @@ pub enum Node {
     Call(String, Vec<Node>),
     /// Struct field access: `base.name`.
     Field(Box<Node>, String),
+    /// A namespaced call: `base.name(args)`. `base` evaluates to a struct
+    /// whose `name` field is a function (a user module), or names a built-in
+    /// namespace like `dsp`.
+    FieldCall(Box<Node>, String, Vec<Node>),
+    /// Indexing, 1-based: `v[i]` (vector element or matrix row), `m[i, j]`
+    /// (matrix element).
+    Index(Box<Node>, Vec<Node>),
     /// A matrix literal, rows of cells: `[1, 2; 3, 4]`.
     Matrix(Vec<Vec<Node>>),
     /// `name := rhs`
@@ -42,6 +49,11 @@ pub enum Op {
     Mul,
     Div,
     Pow,
+    // Elementwise (`.*`, `./`, `.^`): entrywise on matrices, and the plain
+    // operation on scalars.
+    ElemMul,
+    ElemDiv,
+    ElemPow,
     // Comparisons and logic produce boolean values.
     Equal,
     NotEqual,

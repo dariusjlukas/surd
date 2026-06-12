@@ -325,7 +325,30 @@ fn mul_real(factors: Vec<Expr>) -> Expr {
         }
     }
 
+    // √a·√b → √(a·b) for provably nonnegative a, b sharing the same rational
+    // non-integer exponent — sound on the nonnegative reals, refused anywhere
+    // a sign is unknown (√x·√y stays put). The merged radicand is expanded so
+    // conjugates fold: √(10−2√5)·√(10+2√5) → √80 → (extraction) 4·√5. The
+    // pentagonal twiddles in dsp.dft cancel through exactly this rule.
+    let mut i = 0;
+    while i < parts.len() {
+        let ei = numeric_value(&parts[i].1);
+        if ei.as_ref().is_some_and(|e| !e.is_integer()) && known_nonneg(&parts[i].0) {
+            let mut j = i + 1;
+            while j < parts.len() {
+                if numeric_value(&parts[j].1) == ei && known_nonneg(&parts[j].0) {
+                    let other = parts.remove(j);
+                    parts[i].0 = expand(&mul(vec![parts[i].0.clone(), other.0]));
+                } else {
+                    j += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+
     let mut result: Vec<Expr> = Vec::new();
+    let mut rerun = false;
     for (base, exp) in parts {
         let p = pow(base, exp);
         // Combining exponents can produce a number again (e.g. 2^(1/2+1/2)=2);
@@ -336,8 +359,23 @@ fn mul_real(factors: Vec<Expr>) -> Expr {
             }
             coeff *= r;
         } else {
+            // Merging and square-factor extraction can hand back a *product*
+            // (√80 → 4·√5), which must not nest inside the Mul we're
+            // building — flag it and re-canonicalize the whole factor list.
+            rerun |= matches!(p, Expr::Mul(_));
             result.push(p);
         }
+    }
+    if rerun {
+        if !coeff.is_one() {
+            result.push(rat_to_expr(coeff));
+        }
+        if let Some((fc, d)) = float_coeff {
+            result.push(Expr::Float(fc, d));
+        }
+        // Terminates: extraction strictly shrinks the product of all
+        // radicands, so the rerun count is logarithmically bounded.
+        return mul_real(result);
     }
 
     sort_operands(&mut result);
@@ -478,6 +516,25 @@ pub fn pow(base: Expr, exp: Expr) -> Expr {
             if let Some(v) = exact_rational_root(&b, &e) {
                 return rat_to_expr(v);
             }
+            // Square-factor extraction: sqrt(8) → 2*sqrt(2). For a half-odd
+            // exponent k/2, pull the largest findable square s² out of the
+            // base: (s²·f)^(k/2) = s^k · f^(k/2). `f` has no square factor we
+            // can find, so the inner pow can't extract again (no recursion).
+            if *e.denom() == BigInt::from(2) {
+                if let Some(k) = e.numer().to_i64() {
+                    let (s, f) = extract_square_rational(&b);
+                    let s_bits = s.numer().bits().max(s.denom().bits()).max(1) as u128;
+                    if !s.is_one()
+                        && s_bits.saturating_mul(k.unsigned_abs() as u128)
+                            <= MAX_POW_RESULT_BITS
+                    {
+                        return mul(vec![
+                            rat_to_expr(rat_pow(&s, &BigInt::from(k))),
+                            Expr::Pow(Box::new(rat_to_expr(f)), Box::new(exp)),
+                        ]);
+                    }
+                }
+            }
         }
         // Principal square root of a negative real is imaginary:
         // sqrt(−a) = sqrt(a)·i.
@@ -487,6 +544,57 @@ pub fn pow(base: Expr, exp: Expr) -> Expr {
     }
 
     Expr::Pow(Box::new(base), Box::new(exp))
+}
+
+/// Conservative nonnegativity: true only when e ≥ 0 is *provable*. Licenses
+/// the √a·√b → √(a·b) merge in `mul_real`; anything unprovable returns false
+/// and the radicals stay separate (accuracy over convenience).
+fn known_nonneg(e: &Expr) -> bool {
+    match e {
+        Expr::Int(i) => !i.is_negative(),
+        Expr::Rat(r) => !r.is_negative(),
+        Expr::Const(_) => true, // π and e are positive
+        Expr::Pow(b, _) => known_nonneg(b),
+        Expr::Mul(fs) => fs.iter().all(known_nonneg),
+        Expr::Add(ts) => {
+            if ts.iter().all(known_nonneg) {
+                return true;
+            }
+            // r + c·√m with exactly one negative side: decidable exactly by
+            // comparing r² against c²·m (e.g. 10 − 2·√5 ≥ 0 since 100 ≥ 20).
+            if let [a, b] = ts.as_slice() {
+                let (num, surd) = if numeric_value(a).is_some() { (a, b) } else { (b, a) };
+                if let (Some(r), Some((c, m))) = (numeric_value(num), surd_value(surd)) {
+                    let r2 = &r * &r;
+                    let c2m = &c * &c * &m;
+                    return match (r.is_negative(), c.is_negative()) {
+                        (false, true) => r2 >= c2m,
+                        (true, false) => c2m >= r2,
+                        _ => false,
+                    };
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Decompose `c·√m` (or bare `√m`) with rational c and positive rational m.
+fn surd_value(e: &Expr) -> Option<(BigRational, BigRational)> {
+    let (c, radical) = match e {
+        Expr::Mul(fs) if fs.len() == 2 => (numeric_value(&fs[0])?, &fs[1]),
+        other => (BigRational::one(), other),
+    };
+    if let Expr::Pow(b, ex) = radical {
+        if numeric_value(ex)? == BigRational::new(BigInt::from(1), BigInt::from(2)) {
+            let m = numeric_value(b)?;
+            if m > BigRational::zero() {
+                return Some((c, m));
+            }
+        }
+    }
+    None
 }
 
 /// Exact number → BigFloat at precision `p` bits (the float-contagion bridge).
@@ -611,6 +719,7 @@ pub fn absolute_value(e: &Expr) -> Expr {
             ]);
             pow(sum, half())
         }
+        Expr::Float(bf, d) => Expr::Float(bf.abs(), *d),
         _ => match numeric_value(e) {
             Some(r) => rat_to_expr(r.abs()),
             None => Expr::Func("abs".to_string(), vec![e.clone()]),
@@ -618,19 +727,140 @@ pub fn absolute_value(e: &Expr) -> Expr {
     }
 }
 
-/// Build an applied function, with a few zero-cost identities.
+/// Build an applied function, with exact-value identities: trig folds at
+/// rational multiples of π where a surd form exists, and `exp` of a complex
+/// argument unfolds by Euler's formula into the canonical re + im·i form
+/// (so `exp(I*pi)` is exactly −1, and `exp(I*x)` is `cos(x) + sin(x)*I`).
 pub fn func(name: &str, args: Vec<Expr>) -> Expr {
     if args.len() == 1 {
         let a = &args[0];
         match name {
-            "sin" if is_zero(a) => return int(0),
-            "cos" if is_zero(a) => return int(1),
+            "sin" | "cos" | "tan" => {
+                if let Some(v) = trig_exact(name, a) {
+                    return v;
+                }
+            }
             "exp" if is_zero(a) => return int(1),
+            "exp" => {
+                if let Expr::Complex(re, im) = a {
+                    return mul(vec![
+                        func("exp", vec![(**re).clone()]),
+                        complex(
+                            func("cos", vec![(**im).clone()]),
+                            func("sin", vec![(**im).clone()]),
+                        ),
+                    ]);
+                }
+            }
             "ln" if is_one(a) => return int(0),
             _ => {}
         }
     }
     Expr::Func(name.to_string(), args)
+}
+
+/// Exact trig at `r·π` (and at zero): `sin(pi/6)` is 1/2, not an opaque
+/// application. Tan folds only where the cosine is nonzero — `tan(pi/2)`
+/// stays symbolic rather than inventing a value at a pole.
+fn trig_exact(name: &str, arg: &Expr) -> Option<Expr> {
+    let r = pi_multiple(arg)?;
+    let (s, c) = sin_cos_pi(&r)?;
+    match name {
+        "sin" => Some(s),
+        "cos" => Some(c),
+        _ if is_zero(&c) => None,
+        _ => Some(mul(vec![s, pow(c, int(-1))])),
+    }
+}
+
+/// If `e` is `r·π` for an exact rational `r` (including `π` itself and `0`),
+/// return `r`. Relies on canonical form: a product holds its numeric
+/// coefficient first, so `r·π` is exactly `Mul([r, π])`.
+fn pi_multiple(e: &Expr) -> Option<BigRational> {
+    match e {
+        Expr::Const(Constant::Pi) => Some(BigRational::one()),
+        Expr::Int(i) if i.is_zero() => Some(BigRational::zero()),
+        Expr::Mul(fs) if fs.len() == 2 && fs[1] == Expr::Const(Constant::Pi) => {
+            numeric_value(&fs[0])
+        }
+        _ => None,
+    }
+}
+
+/// sin(r·π) and cos(r·π) as exact values, where the (reduced) denominator of
+/// `r` admits a surd form: 1, 2, 3, 4, 5, 6, 8, 10, or 12. `None` otherwise.
+fn sin_cos_pi(r: &BigRational) -> Option<(Expr, Expr)> {
+    let one = BigRational::one();
+    let two = &one + &one;
+    let half_turn = BigRational::new(BigInt::from(1), BigInt::from(2));
+    // Periodicity: shift into [0, 2).
+    let mut r = r - (r / &two).floor() * &two;
+    // Antipode: across π both sin and cos negate.
+    let mut sign = 1;
+    if r >= one {
+        r -= &one;
+        sign = -1;
+    }
+    // Reflection across π/2: sin is unchanged, cos negates.
+    let mut cos_sign = sign;
+    if r > half_turn {
+        r = &one - &r;
+        cos_sign = -sign;
+    }
+    let (s, c) = first_quadrant_sin_cos(&r)?;
+    Some((mul(vec![int(sign), s]), mul(vec![int(cos_sign), c])))
+}
+
+/// The table itself: sin and cos of (p/q)·π for p/q in [0, 1/2] — the
+/// quadrantal angles, 30°/45°/60°, the 15° grid (√6 ± √2)/4, the 22.5° grid
+/// √(2 ± √2)/2, and the pentagonal 18°/36° grid (√5 ± 1)/4 and
+/// √(10 ± 2√5)/4 (golden-ratio surds).
+fn first_quadrant_sin_cos(r: &BigRational) -> Option<(Expr, Expr)> {
+    let rat = |n: i64, d: i64| rat_to_expr(BigRational::new(BigInt::from(n), BigInt::from(d)));
+    let sqrt = |n: i64| pow(int(n), half());
+    // √n / 2
+    let half_sqrt = |n: i64| mul(vec![rat(1, 2), sqrt(n)]);
+    // (√6 ± √2) / 4
+    let fifteen = |s: i64| {
+        mul(vec![
+            rat(1, 4),
+            add(vec![sqrt(6), mul(vec![int(s), sqrt(2)])]),
+        ])
+    };
+    // √(2 ± √2) / 2
+    let octant = |s: i64| {
+        mul(vec![
+            rat(1, 2),
+            pow(add(vec![int(2), mul(vec![int(s), sqrt(2)])]), half()),
+        ])
+    };
+    // (√5 ± 1) / 4
+    let pent_lin = |s: i64| mul(vec![rat(1, 4), add(vec![sqrt(5), int(s)])]);
+    // √(10 ± 2√5) / 4
+    let pent_rad = |s: i64| {
+        mul(vec![
+            rat(1, 4),
+            pow(add(vec![int(10), mul(vec![int(2 * s), sqrt(5)])]), half()),
+        ])
+    };
+
+    let (p, q) = (r.numer().to_i64()?, r.denom().to_i64()?);
+    Some(match (p, q) {
+        (0, 1) => (int(0), int(1)),
+        (1, 2) => (int(1), int(0)),
+        (1, 6) => (rat(1, 2), half_sqrt(3)),
+        (1, 4) => (half_sqrt(2), half_sqrt(2)),
+        (1, 3) => (half_sqrt(3), rat(1, 2)),
+        (1, 12) => (fifteen(-1), fifteen(1)),
+        (5, 12) => (fifteen(1), fifteen(-1)),
+        (1, 8) => (octant(-1), octant(1)),
+        (3, 8) => (octant(1), octant(-1)),
+        (1, 10) => (pent_lin(-1), pent_rad(1)),
+        (1, 5) => (pent_rad(-1), pent_lin(1)),
+        (3, 10) => (pent_lin(1), pent_rad(-1)),
+        (2, 5) => (pent_rad(1), pent_lin(-1)),
+        _ => return None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -896,9 +1126,11 @@ pub fn numeric_eval(e: &Expr, digits: usize) -> Result<Expr, String> {
 }
 
 /// Working precision in bits for `digits` significant decimal digits, with
-/// guard bits beyond what's displayed.
+/// guard bits beyond what's displayed. Floored at one 64-bit word:
+/// astro-float's `from_i64` returns NaN(InvalidArgument) below that, which
+/// used to poison every `Mul`/`Add` accumulator for `N(..., d)` with d ≤ 9.
 fn prec_bits_for(digits: usize) -> usize {
-    ((digits as f64) * std::f64::consts::LOG2_10).ceil() as usize + 32
+    (((digits as f64) * std::f64::consts::LOG2_10).ceil() as usize + 32).max(64)
 }
 
 thread_local! {
@@ -911,8 +1143,9 @@ thread_local! {
 
 /// Run `f` with the thread's cached `Consts`. Closures must be pure BigFloat
 /// math: building `Expr`s through the smart constructors inside `f` could
-/// re-enter this cell and panic on the double borrow.
-fn with_consts<T>(f: impl FnOnce(&mut Consts) -> T) -> Result<T, String> {
+/// re-enter this cell and panic on the double borrow. (Shared with the
+/// certified interval evaluator in `crate::interval`.)
+pub(crate) fn with_consts<T>(f: impl FnOnce(&mut Consts) -> T) -> Result<T, String> {
     CONSTS.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -977,6 +1210,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
                 "tan" => Ok(x.tan(p, ROUND, cc)),
                 "exp" => Ok(x.exp(p, ROUND, cc)),
                 "ln" => Ok(x.ln(p, ROUND, cc)),
+                "abs" => Ok(x.abs()),
                 _ => Err(format!("cannot numerically evaluate '{}'", name)),
             }
         }
@@ -1475,6 +1709,51 @@ fn exact_rational_root(b: &BigRational, e: &BigRational) -> Option<BigRational> 
         return None;
     }
     Some(rat_pow(&root, e.numer()))
+}
+
+/// Largest square divisor we can find by bounded trial division: n = s²·f.
+/// Primes up to `TRIAL_BOUND`, then a perfect-square check on the unfactored
+/// cofactor. Best effort, never wrong — a square of two huge primes just
+/// stays under the radical.
+fn extract_square_int(n: &BigInt) -> (BigInt, BigInt) {
+    const TRIAL_BOUND: u64 = 1_000;
+    let mut s = BigInt::one();
+    let mut f = BigInt::one();
+    let mut m = n.clone();
+    let mut p: u64 = 2;
+    while p <= TRIAL_BOUND {
+        let pb = BigInt::from(p);
+        if &pb * &pb > m {
+            break;
+        }
+        let mut e: u32 = 0;
+        while (&m % &pb).is_zero() {
+            m /= &pb;
+            e += 1;
+        }
+        if e > 0 {
+            s *= pb.pow(e / 2);
+            if e % 2 == 1 {
+                f *= pb;
+            }
+        }
+        p = if p == 2 { 3 } else { p + 2 };
+    }
+    let r = m.sqrt();
+    if &r * &r == m {
+        s *= r;
+    } else {
+        f *= m;
+    }
+    (s, f)
+}
+
+/// `b = s²·f` for positive rational `b`, extracting from the numerator and
+/// denominator independently.
+fn extract_square_rational(b: &BigRational) -> (BigRational, BigRational) {
+    let (sn, fnum) = extract_square_int(b.numer());
+    let (sd, fden) = extract_square_int(b.denom());
+    (BigRational::new(sn, sd), BigRational::new(fnum, fden))
 }
 
 /// Deterministic total order for canonical operand sorting. The key is

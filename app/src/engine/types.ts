@@ -12,6 +12,10 @@ export interface PlotSeries {
   /** Re-parseable plain text of the expression (closed except `var`) — what
    * `resample` re-evaluates when the user pans/zooms. */
   text: string
+  /** True when even the engine's finest adaptive resolution failed its
+   * convergence test on this window — the curve may alias, and the UI says
+   * so. Absent in pre-adaptive persisted notebooks (treat as false). */
+  undersampled?: boolean
   points: SamplePoint[]
 }
 
@@ -35,6 +39,10 @@ export interface Plot3dData {
   d: number
   nx: number
   ny: number
+  /** True when even the engine's finest adaptive grid failed its convergence
+   * test on this window — the surface may alias, and the UI says so. Absent
+   * in pre-adaptive persisted notebooks (treat as false). */
+  undersampled?: boolean
   /** Row-major heights (y outer, x inner); null at poles / domain gaps. */
   heights: (number | null)[]
 }
@@ -82,12 +90,16 @@ export function normalizePlotData(plot: PlotData | LegacyPlotData): PlotData {
 export interface ResampleResult {
   ok: boolean
   points?: SamplePoint[]
+  undersampled?: boolean
   error?: string
 }
 
 export interface Resample3dResult {
   ok: boolean
   heights?: (number | null)[]
+  /** Grid resolution per axis the adaptive sampler settled on. */
+  n?: number
+  undersampled?: boolean
   error?: string
 }
 
@@ -129,7 +141,6 @@ export type ToWorker =
       varName: string
       a: number
       b: number
-      n: number
     }
   | {
       type: 'resample3d'
@@ -141,7 +152,6 @@ export type ToWorker =
       b: number
       c: number
       d: number
-      n: number
     }
 
 export type FromWorker =

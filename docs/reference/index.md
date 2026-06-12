@@ -2,7 +2,9 @@
 
 Every built-in function, grouped by area. A user-defined function with the
 same name shadows the built-in; a call to a name that is neither stays a
-symbolic, unevaluated application.
+symbolic, unevaluated application. Domain toolkits live behind
+[namespaces](../language/modules.md) (`dsp.dft(v)`), so they don't claim
+bare names.
 
 ## Elementary functions
 
@@ -40,6 +42,21 @@ symbolic, unevaluated application.
 | [`im(z)` / `imag(z)`](complex.md#im-imag) | Imaginary part |
 | [`abs(z)`](complex.md#abs) | Modulus |
 
+## Vectors and data
+
+Indexing `v[i]` / `m[i, j]` (1-based) and the elementwise operators
+`.*` `./` `.^` are part of the [syntax](data.md); scalar functions apply
+entrywise to matrices automatically.
+
+| Function | Description |
+| --- | --- |
+| [`len(v)`](data.md#len-size) | Entries of a vector (rows of a matrix) |
+| [`size(m)`](data.md#len-size) | Dimensions, as `struct(rows, cols)` |
+| [`map(f, m)`](data.md#map) | Apply a function entrywise |
+| [`dot(a, b)`](data.md#dot) | Σ aᵢ·bᵢ |
+| [`vcat(a, ...)` / `hcat(a, ...)`](data.md#vcat-hcat) | Stack vertically / horizontally |
+| [`linspace(a, b, n)`](data.md#linspace) | n evenly spaced points, exact step |
+
 ## Linear algebra
 
 | Function | Description |
@@ -57,6 +74,32 @@ symbolic, unevaluated application.
 | [`charpoly(M, var?)`](linear-algebra.md#charpoly) | Characteristic polynomial |
 | [`eigenvalues(M)` / `eig(M)`](linear-algebra.md#eigenvalues-eig) | Eigenvalues, exact |
 | [`eigenvectors(M)`](linear-algebra.md#eigenvectors) | Eigenvectors, paired with `eigenvalues(M)` |
+
+## DSP (the `dsp` namespace)
+
+| Function | Description |
+| --- | --- |
+| [`dsp.dft(v)`](dsp.md#dspdft) | Discrete Fourier transform, exact |
+| [`dsp.idft(v)`](dsp.md#dspidft) | Inverse DFT (exactly inverts `dsp.dft`) |
+| [`dsp.dftmatrix(n)`](dsp.md#dspdftmatrix) | The n×n Fourier matrix |
+| [`dsp.conv(a, b)`](dsp.md#dspconv) | Linear convolution |
+| [`dsp.circconv(a, b)`](dsp.md#dspcircconv) | Circular convolution |
+| [`dsp.freqz(h, w)`](dsp.md#dspfreqz) | FIR frequency response at frequencies `w` |
+| [`dsp.firlow(n, wc)`](dsp.md#dspfirlow) | Windowed-sinc lowpass prototype |
+| [`dsp.hann(n)` / `dsp.hamming(n)` / `dsp.blackman(n)`](dsp.md#dsphann-dsphamming-dspblackman) | Cosine-sum windows, exact |
+| [`dsp.quantize(v, bits)`](dsp.md#dspquantize) | Snap to a fixed-point grid (exact rationals) |
+
+## Statistics (the `stats` namespace)
+
+| Function | Description |
+| --- | --- |
+| [`stats.mean(v)`](stats.md#statsmean) | Mean, exact |
+| [`stats.median(v)`](stats.md#statsmedian) | Median by exact ordering |
+| [`stats.var(v)`](stats.md#statsvar-statsstd) | Sample variance |
+| [`stats.std(v)`](stats.md#statsvar-statsstd) | Sample standard deviation (an exact surd) |
+| [`stats.cov(a, b)`](stats.md#statscov-statscor) | Sample covariance |
+| [`stats.cor(a, b)`](stats.md#statscov-statscor) | Pearson correlation (exactly ±1 for linear data) |
+| [`stats.linfit(x, y)`](stats.md#statslinfit) | Exact least-squares line → `struct(intercept, slope)` |
 
 ## Plotting
 

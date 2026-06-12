@@ -112,6 +112,92 @@ pub fn mat_mul(a: &Expr, b: &Expr) -> Result<Expr, String> {
     Ok(Expr::Matrix(rows))
 }
 
+/// 1-based indexing. One index reads a vector element — or a whole row of a
+/// general matrix; two indices read an element as (row, column).
+pub fn index(m: &Expr, idxs: &[usize]) -> Result<Expr, String> {
+    let Expr::Matrix(rows) = m else {
+        return Err(format!("cannot index into '{}' (not a matrix)", m));
+    };
+    let (nr, nc) = (rows.len(), rows[0].len());
+    let check = |i: usize, n: usize, what: &str| {
+        if (1..=n).contains(&i) {
+            Ok(())
+        } else {
+            Err(format!("index {} is out of range ({} has {})", i, what, n))
+        }
+    };
+    match idxs {
+        [i] if nr == 1 => {
+            check(*i, nc, "the vector")?;
+            Ok(rows[0][i - 1].clone())
+        }
+        [i] if nc == 1 => {
+            check(*i, nr, "the vector")?;
+            Ok(rows[i - 1][0].clone())
+        }
+        [i] => {
+            check(*i, nr, "the matrix")?;
+            Ok(Expr::Matrix(vec![rows[i - 1].clone()]))
+        }
+        [i, j] => {
+            check(*i, nr, "the matrix's rows")?;
+            check(*j, nc, "the matrix's columns")?;
+            Ok(rows[i - 1][j - 1].clone())
+        }
+        _ => Err("indexing takes 1 index (vector element / matrix row) or 2 (row, column)".into()),
+    }
+}
+
+/// The entries of a 1×n or n×1 matrix, in order. `None` for anything else.
+pub fn vector_of(e: &Expr) -> Option<Vec<Expr>> {
+    let Expr::Matrix(rows) = e else { return None };
+    if rows.len() == 1 {
+        Some(rows[0].clone())
+    } else if rows.iter().all(|r| r.len() == 1) {
+        Some(rows.iter().map(|r| r[0].clone()).collect())
+    } else {
+        None
+    }
+}
+
+/// Apply a fallible scalar function entrywise, preserving shape.
+pub fn try_map(m: &Expr, mut f: impl FnMut(&Expr) -> Result<Expr, String>) -> Result<Expr, String> {
+    let rows = rows_of(m);
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut new_row = Vec::with_capacity(row.len());
+        for cell in row {
+            new_row.push(f(cell)?);
+        }
+        out.push(new_row);
+    }
+    Ok(Expr::Matrix(out))
+}
+
+/// Zip two same-shape matrices entrywise through a fallible scalar function.
+pub fn try_zip(
+    a: &Expr,
+    b: &Expr,
+    mut f: impl FnMut(&Expr, &Expr) -> Result<Expr, String>,
+) -> Result<Expr, String> {
+    if dims(a) != dims(b) {
+        let ((ar, ac), (br, bc)) = (dims(a), dims(b));
+        return Err(format!(
+            "elementwise operation needs matching shapes, got {}×{} and {}×{}",
+            ar, ac, br, bc
+        ));
+    }
+    let mut out = Vec::new();
+    for (ra, rb) in rows_of(a).iter().zip(rows_of(b)) {
+        let mut row = Vec::with_capacity(ra.len());
+        for (x, y) in ra.iter().zip(rb) {
+            row.push(f(x, y)?);
+        }
+        out.push(row);
+    }
+    Ok(Expr::Matrix(out))
+}
+
 pub fn transpose(m: &Expr) -> Expr {
     let r = rows_of(m);
     let (rn, cn) = (r.len(), r[0].len());

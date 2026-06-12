@@ -315,6 +315,8 @@ impl Parser {
             let op = match self.peek() {
                 Token::Star => Op::Mul,
                 Token::Slash => Op::Div,
+                Token::DotStar => Op::ElemMul,
+                Token::DotSlash => Op::ElemDiv,
                 _ => break,
             };
             self.pos += 1;
@@ -334,23 +336,55 @@ impl Parser {
 
     fn parse_power(&mut self) -> Result<Node, String> {
         let base = self.parse_postfix()?;
-        if self.eat(&Token::Caret) {
-            let exp = self.parse_unary()?; // right-assoc; exponent may be negative
-            Ok(Node::BinOp(Op::Pow, Box::new(base), Box::new(exp)))
-        } else {
-            Ok(base)
+        let op = match self.peek() {
+            Token::Caret => Op::Pow,
+            Token::DotCaret => Op::ElemPow,
+            _ => return Ok(base),
+        };
+        self.pos += 1;
+        let exp = self.parse_unary()?; // right-assoc; exponent may be negative
+        Ok(Node::BinOp(op, Box::new(base), Box::new(exp)))
+    }
+
+    /// Postfix operators bind tighter than `^`: `s.a^2` is `(s.a)^2`,
+    /// `v[1]^2` is `(v[1])^2`. Chains freely: `data.samples[3]`. A field
+    /// followed by `(` is a namespaced call: `dsp.dft(v)`, `mylib.f(x)`.
+    fn parse_postfix(&mut self) -> Result<Node, String> {
+        let mut node = self.parse_atom()?;
+        loop {
+            if self.eat(&Token::Dot) {
+                let name = self.expect_ident()?;
+                node = if self.eat(&Token::LParen) {
+                    Node::FieldCall(Box::new(node), name, self.parse_args()?)
+                } else {
+                    Node::Field(Box::new(node), name)
+                };
+            } else if self.eat(&Token::LBracket) {
+                let mut idxs = vec![self.parse_expr()?];
+                while self.eat(&Token::Comma) {
+                    idxs.push(self.parse_expr()?);
+                }
+                self.expect(Token::RBracket)?;
+                node = Node::Index(Box::new(node), idxs);
+            } else {
+                return Ok(node);
+            }
         }
     }
 
-    /// Struct field access binds tighter than `^`: `s.a^2` is `(s.a)^2`.
-    /// Chains: `s.a.b`.
-    fn parse_postfix(&mut self) -> Result<Node, String> {
-        let mut node = self.parse_atom()?;
-        while self.eat(&Token::Dot) {
-            let name = self.expect_ident()?;
-            node = Node::Field(Box::new(node), name);
+    /// A call's argument list; the opening `(` was consumed.
+    fn parse_args(&mut self) -> Result<Vec<Node>, String> {
+        let mut args = Vec::new();
+        if self.peek() != &Token::RParen {
+            loop {
+                args.push(self.parse_expr()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
         }
-        Ok(node)
+        self.expect(Token::RParen)?;
+        Ok(args)
     }
 
     fn parse_atom(&mut self) -> Result<Node, String> {
@@ -366,17 +400,7 @@ impl Parser {
             Token::Num(s) => Ok(Node::Num(s)),
             Token::Ident(name) => {
                 if self.eat(&Token::LParen) {
-                    let mut args = Vec::new();
-                    if self.peek() != &Token::RParen {
-                        loop {
-                            args.push(self.parse_expr()?);
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Token::RParen)?;
-                    Ok(Node::Call(name, args))
+                    Ok(Node::Call(name, self.parse_args()?))
                 } else {
                     Ok(Node::Ident(name))
                 }

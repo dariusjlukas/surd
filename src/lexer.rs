@@ -24,6 +24,12 @@ pub enum Token {
     /// `.` — struct field access. Only when not starting a number: `.5` stays
     /// a numeric literal, `s.a` is field access.
     Dot,
+    /// `.*` — elementwise multiplication.
+    DotStar,
+    /// `./` — elementwise division.
+    DotSlash,
+    /// `.^` — elementwise power.
+    DotCaret,
     /// `;` — statement separator, or matrix row separator inside `[...]`.
     Semicolon,
     /// A significant newline (statement separator).
@@ -95,8 +101,19 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 push(&mut tokens, Token::RBracket, &mut i);
             }
             ',' => push(&mut tokens, Token::Comma, &mut i),
-            // `.` not followed by a digit is field access; `.5` falls through
-            // to the numeric-literal arm below.
+            // `.` followed by an operator is elementwise (`.*`, `./`, `.^`);
+            // not followed by a digit it's field access; `.5` falls through
+            // to the numeric-literal arm below. (`2.*x` lexes as the number
+            // `2.` times `x` — harmless, since scalars multiply elementwise
+            // and plainly the same way.)
+            '.' if matches!(chars.get(i + 1), Some('*' | '/' | '^')) => {
+                tokens.push(match chars[i + 1] {
+                    '*' => Token::DotStar,
+                    '/' => Token::DotSlash,
+                    _ => Token::DotCaret,
+                });
+                i += 2;
+            }
             '.' if !matches!(chars.get(i + 1), Some(c) if c.is_ascii_digit()) => {
                 push(&mut tokens, Token::Dot, &mut i)
             }

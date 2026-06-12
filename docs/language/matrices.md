@@ -126,3 +126,9 @@ Full signatures and examples for every matrix built-in — `det`, `inv`,
 `transpose`/`T`, `solve`, `rref`, `rank`, `nullspace`/`kernel`, `lu`, `qr`,
 `eye`/`identity`, `charpoly`, `eigenvalues`/`eig`, `eigenvectors` — are in
 the [linear-algebra reference](../reference/linear-algebra.md).
+
+## Indexing and elementwise operations
+
+`m[i, j]` reads an element (1-based), `v[i]` a vector element, `m[i]` a whole
+row; `.*` `./` `.^` operate entrywise; scalar functions map over entries
+automatically. See [Vectors and data](../reference/data.md).

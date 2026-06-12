@@ -106,6 +106,28 @@ function axisLabels(
   return out
 }
 
+/** The surface currently drawn: heights + the grid they index by + the
+ * window they were sampled over, updated atomically (a resample may come
+ * back at a different adaptive resolution, and heights from one grid must
+ * never be indexed by another's nx — nor placed by another's window). The
+ * sample window lags the view window while a resample is in flight; the
+ * painter's setView bridges the gap. */
+interface Sampled {
+  heights: (number | null)[]
+  nx: number
+  ny: number
+  undersampled: boolean
+  win: Win
+}
+
+const sampledOf = (p: Plot3dData): Sampled => ({
+  heights: p.heights,
+  nx: p.nx,
+  ny: p.ny,
+  undersampled: p.undersampled ?? false,
+  win: { a: p.a, b: p.b, c: p.c, d: p.d },
+})
+
 type Drag =
   | { mode: 'rotate'; pointerId: number; lastX: number; lastY: number }
   /** Domain pan holds the grabbed data point — each move shifts the window
@@ -131,8 +153,8 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     c: plot.c,
     d: plot.d,
   })
-  const [heights, setHeights] = useState(plot.heights)
-  const [zlo, zhi] = useMemo(() => zRange(heights), [heights])
+  const [surf, setSurf] = useState<Sampled>(() => sampledOf(plot))
+  const [zlo, zhi] = useMemo(() => zRange(surf.heights), [surf.heights])
   /** Measurement cursor: the grid node under the pointer. `z` is the true
    * sampled height (the mesh clamps spikes to the box; the readout doesn't);
    * `scene` is where the marker sits, on the (clamped) mesh. */
@@ -149,7 +171,7 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   if (plot !== prevPlot) {
     setPrevPlot(plot)
     setWin({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
-    setHeights(plot.heights)
+    setSurf(sampledOf(plot))
   }
 
   const labels = useMemo(
@@ -186,11 +208,18 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
         inFlightRef.current = false
         return
       }
-      resample3d(plot.text, plot.xvar, plot.yvar, w.a, w.b, w.c, w.d, plot.nx)
-        .then((h) => {
+      resample3d(plot.text, plot.xvar, plot.yvar, w.a, w.b, w.c, w.d)
+        .then((r) => {
           // apply only the latest request — a response that was superseded
           // (or belongs to a re-evaluated cell's old plot) is dropped
-          if (latestWinRef.current === w) setHeights(h)
+          if (latestWinRef.current === w)
+            setSurf({
+              heights: r.heights,
+              nx: r.n,
+              ny: r.n,
+              undersampled: r.undersampled,
+              win: w,
+            })
         })
         .catch(() => {
           // engine busy or restarted — stale heights stay visible, the next
@@ -246,24 +275,31 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
       setProbe(null)
       return
     }
-    // invert the scene mapping (see SurfacePlot.setData): scene x = xn,
-    // scene z = -yn, scene y = clamped height band
-    const i = Math.round(((hit.x + 1) / 2) * (plot.nx - 1))
-    const j = Math.round(((1 - hit.z) / 2) * (plot.ny - 1))
-    const h = heights[j * plot.nx + i]
+    // the hit is on the (possibly stale, view-transformed) mesh: scene →
+    // data through the VIEW window, snap to the nearest node of the SAMPLE
+    // grid, then map that node back through the view window for the marker
+    const sw = surf.win
+    const i = Math.round(((dataX(hit.x) - sw.a) / (sw.b - sw.a)) * (surf.nx - 1))
+    const j = Math.round(((dataY(hit.z) - sw.c) / (sw.d - sw.c)) * (surf.ny - 1))
+    const h =
+      i >= 0 && i < surf.nx && j >= 0 && j < surf.ny
+        ? surf.heights[j * surf.nx + i]
+        : null
     if (h === null || h === undefined) {
       setProbe(null)
       return
     }
     const t = Math.min(1, Math.max(0, (h - zlo) / (zhi - zlo)))
+    const px = sw.a + (i / (surf.nx - 1)) * (sw.b - sw.a)
+    const py = sw.c + (j / (surf.ny - 1)) * (sw.d - sw.c)
     setProbe({
-      x: win.a + (i / (plot.nx - 1)) * (win.b - win.a),
-      y: win.c + (j / (plot.ny - 1)) * (win.d - win.c),
+      x: px,
+      y: py,
       z: h,
       scene: [
-        -1 + (2 * i) / (plot.nx - 1),
+        -1 + (2 * (px - win.a)) / (win.b - win.a),
         (2 * t - 1) * Z_SCALE,
-        1 - (2 * j) / (plot.ny - 1),
+        1 - (2 * (py - win.c)) / (win.d - win.c),
       ],
     })
   }
@@ -368,8 +404,23 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   }, [])
 
   useEffect(() => {
-    painterRef.current?.setData(heights, plot.nx, plot.ny, zlo, zhi)
-  }, [heights, plot.nx, plot.ny, zlo, zhi, themeKey])
+    painterRef.current?.setData(surf.heights, surf.nx, surf.ny, zlo, zhi)
+  }, [surf, zlo, zhi, themeKey])
+
+  // Pan/zoom updates `win` immediately; the heights catch up when the
+  // resample lands. Until then the stale mesh (built over surf.win) is slid/
+  // scaled to where its data belongs in the new window — identity when the
+  // two windows agree. Declared after the setData effect: a fresh grid must
+  // be placed before it paints.
+  useEffect(() => {
+    const sw = surf.win
+    painterRef.current?.setView(
+      (sw.b - sw.a) / (win.b - win.a),
+      (sw.d - sw.c) / (win.d - win.c),
+      -1 + (sw.a + sw.b - 2 * win.a) / (win.b - win.a),
+      1 - (sw.c + sw.d - 2 * win.c) / (win.d - win.c),
+    )
+  }, [win, surf.win])
 
   useEffect(() => {
     painterRef.current?.setOrbit(orbit)
@@ -378,7 +429,7 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   const reset = () => {
     setOrbit(DEFAULT_ORBIT)
     setWin({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
-    setHeights(plot.heights)
+    setSurf(sampledOf(plot))
     latestWinRef.current = null
   }
 
@@ -407,6 +458,14 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
         >
           z ∈ [{formatTick(zlo)}, {formatTick(zhi)}]
         </span>
+        {surf.undersampled && (
+          <span
+            className="text-xs text-warn"
+            title={`parts of this window oscillate faster than the finest sampling grid (${surf.nx}×${surf.ny}) can resolve — fine structure may be aliased; zoom in for a faithful view`}
+          >
+            ⚠ undersampled
+          </span>
+        )}
         <button
           onClick={savePng}
           title="download the plot as a PNG"

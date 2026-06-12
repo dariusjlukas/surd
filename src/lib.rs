@@ -16,13 +16,16 @@
 
 pub mod ast;
 pub mod dataio;
+pub mod dsp;
 pub mod eval;
 pub mod expr;
 pub mod f64eval;
+pub mod interval;
 pub mod latex;
 pub mod lexer;
 pub mod matrix;
 pub mod parser;
+pub mod stats;
 
 pub use eval::Interpreter;
 

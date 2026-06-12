@@ -29,10 +29,16 @@ In the web app:
 
 - Curves are drawn with **gaps at poles** — an asymptote is never bridged
   with a lying vertical line.
+- Sampling is **adaptive**: 601 points for smooth curves, refining up to
+  4,801 while the resolution fails a convergence test (each sample is
+  checked against linear interpolation of its 2×-coarser neighbors).
+  Oscillatory curves like `sin(50*x)` get the resolution they need instead
+  of aliasing; a window even the cap can't resolve is labeled
+  **⚠ undersampled** rather than silently drawn wrong.
 - Plots **resample on pan/zoom**: the plot value carries the re-parseable
   text of its expression (workspace bindings already substituted), so any
-  window is re-sampled at full resolution — zooming reveals detail instead
-  of stretching stale samples.
+  window is re-sampled through the same adaptive policy — zooming reveals
+  detail instead of stretching stale samples.
 - Drag pans; wheel zooms x; shift+wheel zooms y. Touching the y-axis
   switches it from auto-fit to manual until reset.
 
@@ -56,3 +62,17 @@ plot3d(x*y, x, -1, 1, y, -1, 1)
 
 Both variables are taken by name and shadowed while `f` evaluates, exactly
 as in `plot`.
+
+In the web app:
+
+- The sampling grid is **adaptive**: 81×81 for smooth surfaces, refining up
+  to 641×641 while the grid fails a convergence test (each sample is checked
+  against linear interpolation of its 2×-coarser neighbors — if the two
+  disagree, the function has structure between the samples and the grid
+  doubles). Oscillatory surfaces like `sin(x*y)` over a wide window get the
+  resolution they need instead of aliasing into spikes.
+- When even the finest grid can't certify a window, the plot is labeled
+  **⚠ undersampled** rather than silently drawn wrong — fine structure may
+  be aliased there, and zooming in (which resamples adaptively) clears it.
+- Pan/zoom **resamples** through the same adaptive policy, exactly like the
+  2D plot.

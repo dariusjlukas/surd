@@ -7,6 +7,12 @@
 // up-vector and a plain spherical orbit do the right thing. Grid cells
 // touching a null sample (pole / domain gap) are skipped, not bridged —
 // the same honesty contract as the 2D painter.
+//
+// View and data are decoupled, like LinePlot: the mesh is built once per
+// heights grid (over the window it was *sampled* on) and setView slides /
+// scales it inside the box when the *view* window moves — so pan/zoom is
+// instant on the stale surface and the resampled data lands later. Stale
+// geometry pushed outside the box is clipped at the frame.
 
 import * as THREE from 'three'
 import { themeColor } from './LinePlot'
@@ -100,6 +106,14 @@ export class SurfacePlot {
   private frame = new THREE.Group()
   private mesh: THREE.Mesh | null = null
   private raycaster = new THREE.Raycaster()
+  /** Clip stale geometry at the frame: pan/zoom moves the surface before the
+   * resample lands, and whatever leaves the box must not paint over it. */
+  private clipPlanes = [
+    new THREE.Plane(new THREE.Vector3(1, 0, 0), 1),
+    new THREE.Plane(new THREE.Vector3(-1, 0, 0), 1),
+    new THREE.Plane(new THREE.Vector3(0, 0, 1), 1),
+    new THREE.Plane(new THREE.Vector3(0, 0, -1), 1),
+  ]
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -107,6 +121,7 @@ export class SurfacePlot {
       antialias: true,
       alpha: true,
     })
+    this.renderer.localClippingEnabled = true
     this.scene.add(this.surface, this.frame)
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.65))
     const sun = new THREE.DirectionalLight(0xffffff, 1.6)
@@ -191,11 +206,23 @@ export class SurfacePlot {
       new THREE.MeshLambertMaterial({
         vertexColors: true,
         side: THREE.DoubleSide,
+        clippingPlanes: this.clipPlanes,
       }),
     )
     this.surface.add(this.mesh)
 
     this.buildFrame()
+    this.render()
+  }
+
+  /** Place the surface for the current view window. The mesh fills the unit
+   * box for the window it was sampled on; when the view window differs
+   * (pan/zoom answered from stale data), an affine slide/scale per axis maps
+   * one onto the other — instant, no resample needed. Identity once the
+   * fresh samples land. */
+  setView(scaleX: number, scaleZ: number, posX: number, posZ: number) {
+    this.surface.scale.set(scaleX, 1, scaleZ)
+    this.surface.position.set(posX, 0, posZ)
     this.render()
   }
 

@@ -25,6 +25,21 @@ export class EngineCancelled extends Error {
   }
 }
 
+/** A resampled curve: points at the resolution the adaptive sampler settled
+ * on, plus the engine's honesty flag (see PlotSeries.undersampled). */
+export interface SampledCurve {
+  points: SamplePoint[]
+  undersampled: boolean
+}
+
+/** A resampled surface: heights on the n×n grid the adaptive sampler settled
+ * on, plus the engine's honesty flag (see Plot3dData.undersampled). */
+export interface Sampled3d {
+  heights: (number | null)[]
+  n: number
+  undersampled: boolean
+}
+
 interface Pending {
   resolve: (v: never) => void
   reject: (e: Error) => void
@@ -97,14 +112,14 @@ export class EngineClient {
   }
 
   /** Re-sample a plot expression over a new window (pan/zoom). Stateless on
-   * the engine side; queues behind any running eval. */
+   * the engine side; queues behind any running eval. The engine's resolution
+   * is adaptive, so the result carries the honesty flag. */
   async resample(
     exprText: string,
     varName: string,
     a: number,
     b: number,
-    n = 600,
-  ): Promise<SamplePoint[]> {
+  ): Promise<SampledCurve> {
     const r = await this.request<ResampleResult>((id) => ({
       type: 'resample',
       id,
@@ -112,14 +127,14 @@ export class EngineClient {
       varName,
       a,
       b,
-      n,
     }))
     if (!r.ok || !r.points) throw new Error(r.error ?? 'resample failed')
-    return r.points
+    return { points: r.points, undersampled: r.undersampled ?? false }
   }
 
   /** Re-sample a surface expression over a new [a, b]×[c, d] domain
-   * (pan/zoom). Stateless, like resample. */
+   * (pan/zoom). Stateless, like resample. The engine's grid is adaptive, so
+   * the result carries the resolution it settled on plus the honesty flag. */
   async resample3d(
     exprText: string,
     xvar: string,
@@ -128,8 +143,7 @@ export class EngineClient {
     b: number,
     c: number,
     d: number,
-    n: number,
-  ): Promise<(number | null)[]> {
+  ): Promise<Sampled3d> {
     const r = await this.request<Resample3dResult>((id) => ({
       type: 'resample3d',
       id,
@@ -140,10 +154,14 @@ export class EngineClient {
       b,
       c,
       d,
-      n,
     }))
-    if (!r.ok || !r.heights) throw new Error(r.error ?? 'resample3d failed')
-    return r.heights
+    if (!r.ok || !r.heights || !r.n)
+      throw new Error(r.error ?? 'resample3d failed')
+    return {
+      heights: r.heights,
+      n: r.n,
+      undersampled: r.undersampled ?? false,
+    }
   }
 
   private request<T>(make: (id: number) => ToWorker): Promise<T> {

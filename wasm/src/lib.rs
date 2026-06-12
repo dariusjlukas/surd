@@ -11,12 +11,25 @@ use surd::{f64eval, latex};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-/// Number of samples per plotted curve. Enough for a smooth 1000-px-wide
-/// canvas; cheap to recompute on zoom by re-evaluating the plot line.
-const PLOT_SAMPLES: usize = 600;
-/// Surface grid resolution per axis (81×81 = 6 561 samples — cheap, and a
-/// finer mesh than a ~600-px canvas can show).
+/// Base number of samples per plotted curve. Enough for a smooth
+/// 1000-px-wide canvas; cheap to recompute on zoom by re-evaluating the plot
+/// line.
+const PLOT_SAMPLES: usize = 601;
+/// Per-curve sample cap. Like surfaces, curves sample adaptively
+/// (601 → 1201 → 2401 → 4801 while the convergence test fails); the cap is
+/// ~8 samples per pixel on a typical canvas — oscillations finer than that
+/// can't be drawn anyway, so past it the curve is flagged `undersampled`
+/// instead.
+const PLOT_SAMPLES_MAX: usize = 4801;
+/// Surface base grid resolution per axis (81×81 = 6 561 samples — cheap, and
+/// a finer mesh than a ~600-px canvas can show for a smooth surface).
 const SURFACE_GRID: usize = 81;
+/// Surface grid cap. Sampling is adaptive (81 → 161 → 321 → 641, doubling
+/// cell density while the grid fails its convergence test — see
+/// `f64eval::sample2d_adaptive`); the cap bounds a worst-case surface at
+/// ~550k evaluations. Windows the cap can't certify come back flagged
+/// `undersampled` rather than silently aliased.
+const SURFACE_GRID_MAX: usize = 641;
 /// Cap on curves per plot — beyond this the legend is unreadable and the
 /// caller almost certainly passed a matrix by mistake.
 const MAX_SERIES: usize = 12;
@@ -57,6 +70,9 @@ struct Series {
     /// frontend can resample any window with `resample` — no session state
     /// needed.
     text: String,
+    /// True when even the finest sampling resolution failed its convergence
+    /// test on this window — the curve may alias and the UI must say so.
+    undersampled: bool,
     /// Sampled (x, y) pairs; y is null at poles / domain gaps.
     points: Vec<(f64, Option<f64>)>,
 }
@@ -74,6 +90,9 @@ struct Plot3dData {
     d: f64,
     nx: usize,
     ny: usize,
+    /// True when even the finest sampling grid failed its convergence test
+    /// on this window — the surface may alias and the UI must say so.
+    undersampled: bool,
     /// Row-major heights (y outer, x inner); null at poles / domain gaps.
     heights: Vec<Option<f64>>,
 }
@@ -145,8 +164,8 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
     }
     let mut series = Vec::with_capacity(exprs.len());
     for expr in exprs {
-        let points = f64eval::sample(expr, var, a, b, PLOT_SAMPLES);
-        if points.iter().all(|(_, y)| y.is_none()) {
+        let curve = f64eval::sample_adaptive(expr, var, a, b, PLOT_SAMPLES, PLOT_SAMPLES_MAX);
+        if curve.points.iter().all(|(_, y)| y.is_none()) {
             return Err(format!(
                 "plot: '{}' never evaluates to a real number on this interval",
                 expr
@@ -155,7 +174,8 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
         series.push(Series {
             latex: latex::to_latex(expr),
             text: format!("{}", expr),
-            points,
+            undersampled: curve.undersampled,
+            points: curve.points,
         });
     }
     Ok(PlotData {
@@ -187,9 +207,18 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
         {
             return Err("plot3d: bounds must be finite with a < b and c < d".into());
         }
-        let heights =
-            f64eval::sample2d(&args[0], xvar, yvar, a, b, c, d, SURFACE_GRID, SURFACE_GRID);
-        if heights.iter().all(|h| h.is_none()) {
+        let surface = f64eval::sample2d_adaptive(
+            &args[0],
+            xvar,
+            yvar,
+            a,
+            b,
+            c,
+            d,
+            SURFACE_GRID,
+            SURFACE_GRID_MAX,
+        );
+        if surface.heights.iter().all(|h| h.is_none()) {
             return Err(
                 "plot3d: the expression never evaluates to a real number on this domain".into(),
             );
@@ -203,9 +232,10 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
             yvar: yvar.clone(),
             c,
             d,
-            nx: SURFACE_GRID,
-            ny: SURFACE_GRID,
-            heights,
+            nx: surface.n,
+            ny: surface.n,
+            undersampled: surface.undersampled,
+            heights: surface.heights,
         })
     };
     Some(inner())
@@ -335,10 +365,12 @@ impl Session {
 }
 
 /// Resample a previously returned plot expression over a new window (zoom /
-/// pan). Stateless: `expr_text` is `PlotData::text`, which is closed except
-/// for the plot variable, so a scratch interpreter suffices.
+/// pan). Stateless: `expr_text` is `Series::text`, which is closed except
+/// for the plot variable, so a scratch interpreter suffices. The resolution
+/// is adaptive (same policy as the original `plot` evaluation), so the
+/// response carries the honesty flag: `{ok, points, undersampled}`.
 #[wasm_bindgen]
-pub fn resample(expr_text: &str, var: &str, a: f64, b: f64, n: usize) -> String {
+pub fn resample(expr_text: &str, var: &str, a: f64, b: f64) -> String {
     if !(a.is_finite() && b.is_finite() && a < b) {
         return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b"})
             .to_string();
@@ -347,27 +379,24 @@ pub fn resample(expr_text: &str, var: &str, a: f64, b: f64, n: usize) -> String 
     match interp.eval_line(expr_text) {
         Err(e) => serde_json::json!({"ok": false, "error": e}).to_string(),
         Ok(expr) => {
-            let points = f64eval::sample(&expr, var, a, b, n);
-            serde_json::json!({"ok": true, "points": points}).to_string()
+            let curve = f64eval::sample_adaptive(&expr, var, a, b, PLOT_SAMPLES, PLOT_SAMPLES_MAX);
+            serde_json::json!({
+                "ok": true,
+                "points": curve.points,
+                "undersampled": curve.undersampled,
+            })
+            .to_string()
         }
     }
 }
 
 /// Resample a surface expression over a new [a, b]×[c, d] domain (zoom /
 /// pan). Stateless, like [`resample`]: `expr_text` is `Plot3dData::text`,
-/// closed except for the two plot variables.
+/// closed except for the two plot variables. The grid is adaptive (same
+/// policy as the original `plot3d` evaluation), so the response carries the
+/// resolution it settled on: `{ok, heights, n, undersampled}`.
 #[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn resample3d(
-    expr_text: &str,
-    xvar: &str,
-    yvar: &str,
-    a: f64,
-    b: f64,
-    c: f64,
-    d: f64,
-    n: usize,
-) -> String {
+pub fn resample3d(expr_text: &str, xvar: &str, yvar: &str, a: f64, b: f64, c: f64, d: f64) -> String {
     if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
         return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b and c < d"})
             .to_string();
@@ -376,8 +405,24 @@ pub fn resample3d(
     match interp.eval_line(expr_text) {
         Err(e) => serde_json::json!({"ok": false, "error": e}).to_string(),
         Ok(expr) => {
-            let heights = f64eval::sample2d(&expr, xvar, yvar, a, b, c, d, n, n);
-            serde_json::json!({"ok": true, "heights": heights}).to_string()
+            let s = f64eval::sample2d_adaptive(
+                &expr,
+                xvar,
+                yvar,
+                a,
+                b,
+                c,
+                d,
+                SURFACE_GRID,
+                SURFACE_GRID_MAX,
+            );
+            serde_json::json!({
+                "ok": true,
+                "heights": s.heights,
+                "n": s.n,
+                "undersampled": s.undersampled,
+            })
+            .to_string()
         }
     }
 }
@@ -486,7 +531,9 @@ mod tests {
         let series = v["plot"]["series"].as_array().unwrap();
         assert_eq!(series.len(), 1);
         let pts = series[0]["points"].as_array().unwrap();
-        assert_eq!(pts.len(), 600);
+        // smooth curve: the adaptive sampler stays at the base resolution
+        assert_eq!(pts.len(), 601);
+        assert_eq!(series[0]["undersampled"], false);
         // sin over a symmetric interval: first sample is sin(-π) ≈ 0.
         let y0 = pts[0][1].as_f64().unwrap();
         assert!(y0.abs() < 1e-12);
@@ -526,27 +573,30 @@ mod tests {
 
     #[test]
     fn resample3d_matches_eval_grid() {
-        // resample3d over the original domain must reproduce eval's grid.
+        // resample3d over the original domain must reproduce eval's grid —
+        // both run the same adaptive sampler, so heights AND resolution agree.
         let mut s = Session::new();
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot3d(x*y, x, -1, 1, y, -1, 1)")).unwrap();
         let text = v["plot3d"]["text"].as_str().unwrap();
-        let n = v["plot3d"]["nx"].as_u64().unwrap() as usize;
         let r: serde_json::Value =
-            serde_json::from_str(&resample3d(text, "x", "y", -1.0, 1.0, -1.0, 1.0, n)).unwrap();
+            serde_json::from_str(&resample3d(text, "x", "y", -1.0, 1.0, -1.0, 1.0)).unwrap();
         assert_eq!(r["ok"], true, "{}", r["error"]);
         assert_eq!(r["heights"], v["plot3d"]["heights"]);
+        assert_eq!(r["n"], v["plot3d"]["nx"]);
+        assert_eq!(r["undersampled"], v["plot3d"]["undersampled"]);
 
         // a zoomed window samples the new domain: corner (2, 2) → 4
         let r: serde_json::Value =
-            serde_json::from_str(&resample3d(text, "x", "y", 0.0, 2.0, 0.0, 2.0, 3)).unwrap();
+            serde_json::from_str(&resample3d(text, "x", "y", 0.0, 2.0, 0.0, 2.0)).unwrap();
+        let n = r["n"].as_u64().unwrap() as usize;
         let h = r["heights"].as_array().unwrap();
-        assert_eq!(h.len(), 9);
-        assert!((h[8].as_f64().unwrap() - 4.0).abs() < 1e-12);
+        assert_eq!(h.len(), n * n);
+        assert!((h[n * n - 1].as_f64().unwrap() - 4.0).abs() < 1e-12);
 
         // inverted bounds are an error, not a panic
         let r: serde_json::Value =
-            serde_json::from_str(&resample3d(text, "x", "y", 1.0, -1.0, 0.0, 1.0, 3)).unwrap();
+            serde_json::from_str(&resample3d(text, "x", "y", 1.0, -1.0, 0.0, 1.0)).unwrap();
         assert_eq!(r["ok"], false);
     }
 
@@ -564,6 +614,9 @@ mod tests {
         let ny = p["ny"].as_u64().unwrap() as usize;
         let heights = p["heights"].as_array().unwrap();
         assert_eq!(heights.len(), nx * ny);
+        // a smooth quadratic converges at the base grid, uncontested
+        assert_eq!(nx, 81);
+        assert_eq!(p["undersampled"], false);
         // corner (x=-1, y=-1) → 2; center → 0
         assert!((heights[0].as_f64().unwrap() - 2.0).abs() < 1e-12);
         let center = (ny / 2) * nx + nx / 2;
