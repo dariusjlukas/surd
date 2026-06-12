@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- surd logo: the canonical surd, sqrt(2), on a dark tile -->
+  <rect width="128" height="128" rx="28" fill="#0b1220"/>
+  <!-- radical sign -->
+  <path d="M 20 76 L 33 69 L 48 98 L 72 28 L 108 28"
+        fill="none" stroke="#38bdf8" stroke-width="10"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the 2 -->
+  <path d="M 76 56 Q 76 45 87.5 45 Q 99 45 99 55 Q 99 62 90 70 L 76 82 L 100 82"
+        fill="none" stroke="#e2e8f0" stroke-width="9"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

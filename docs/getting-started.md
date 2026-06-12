@@ -1,0 +1,81 @@
+# Getting started
+
+## The REPL
+
+surd is written in Rust; a [Rust toolchain](https://rustup.rs) is the only
+requirement.
+
+```sh
+cargo run            # interactive REPL
+echo "sqrt(2)^2" | cargo run    # pipe mode
+cargo test           # the test suite
+```
+
+The REPL reads statements and prints the value of each:
+
+```text
+>> 1/3 + 1/6
+1/2
+>> fact(n) := if n == 0 then 1 else n*fact(n-1) end
+<function(n)>
+>> fact(20)
+2432902008176640000
+```
+
+Input that opens a block or bracket keeps reading (with a `..` continuation
+prompt) until the block closes — `if`/`while`/`function` blocks end with
+`end`, and a newline inside `(...)` or `[...]` is just line continuation.
+
+Meta-commands:
+
+| Command | Effect |
+| --- | --- |
+| `:vars` | List every binding in the workspace |
+| `:q` / `:quit` | Quit (Ctrl-D also works) |
+
+Ctrl-C cancels the entry being typed.
+
+## The web app
+
+The quickest way to try surd is the hosted web app — nothing to install:
+
+**<https://dariusjlukas.github.io/surd/>**
+
+The full frontend — notebook cells, KaTeX-rendered math, interactive 2D/3D
+plots, a workspace panel, data import/export — lives in `app/` and runs the
+same engine compiled to WebAssembly. To run it locally:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack            # if you don't have it
+wasm-pack build wasm --target web --out-dir ../app/src/engine/pkg
+cd app && npm install && npm run dev      # → http://localhost:5173
+```
+
+In the web app, [`plot(...)`](reference/plotting.md) results are drawn as
+interactive plots that resample at full resolution as you pan and zoom.
+
+## A two-minute tour
+
+```text
+>> 1.5                       # decimals are exact rationals
+3/2
+>> x := 3                    # := assigns
+3
+>> x^2 + 1
+10
+>> diff(x^2, x)              # diff takes x by name: 2x, evaluated at x = 3
+6
+>> A := [1, 2; 3, 4]         # matrices: , between entries, ; between rows
+[ 1  2 ]
+[ 3  4 ]
+>> A * inv(A)                # exactly the identity, not "approximately"
+[ 1  0 ]
+[ 0  1 ]
+>> (1 + I)^2                 # complex numbers fold eagerly
+2*I
+>> N(sqrt(2), 10)            # floats are opt-in, to any precision
+1.414213562
+```
+
+Read on: [Syntax](language/syntax.md) covers the grammar in full.

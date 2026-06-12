@@ -1,0 +1,64 @@
+site_name: surd
+site_description: >-
+  Documentation for surd — an exact-by-default computer algebra system.
+site_url: https://dariusjlukas.github.io/surd/docs/
+repo_url: https://github.com/dariusjlukas/surd
+repo_name: surd
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+    - toc.integrate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - The language:
+      - Syntax: language/syntax.md
+      - Exact numbers and floats: language/numbers.md
+      - Variables, functions, control flow: language/programs.md
+      - Matrices: language/matrices.md
+      - Complex numbers: language/complex.md
+      - Structs: language/structs.md
+  - Built-in reference:
+      - Overview: reference/index.md
+      - Elementary functions: reference/elementary.md
+      - Calculus and symbolic: reference/calculus.md
+      - Numeric evaluation: reference/numeric.md
+      - Complex numbers: reference/complex.md
+      - Linear algebra: reference/linear-algebra.md
+      - Plotting: reference/plotting.md
+      - Structs: reference/structs.md
+      - Constants: reference/constants.md
+  - Limits and design notes: limits.md

@@ -26,6 +26,21 @@ other way — **correctness above all, compute time be damned.**
   canonicalization (fold rationals, `sqrt(2)^2 -> 2`, combine like terms). Deep
   simplification is reserved for explicit operations.
 
+## Documentation
+
+User documentation — the language guide and a reference page for every
+built-in, with verified examples — is published at
+**<https://dariusjlukas.github.io/surd/docs/>** (the web app itself lives at
+<https://dariusjlukas.github.io/surd/>). It is built from `docs/` as a
+[MkDocs](https://www.mkdocs.org) (Material) site and deployed alongside the
+web app by the Pages workflow. To work on it locally:
+
+```sh
+pip install mkdocs-material
+mkdocs serve         # live-reloading preview at http://localhost:8000
+mkdocs build         # static site in site/
+```
+
 ## Running it
 
 Requires a Rust toolchain (`rustup` recommended).
@@ -39,6 +54,9 @@ echo "sqrt(2)^2" | cargo run    # pipe mode
 REPL meta-commands: `:vars` lists the workspace, `:q` quits.
 
 ### The web app
+
+A live deployment runs at **<https://dariusjlukas.github.io/surd/>** —
+no install needed.
 
 The real frontend lives in `app/` — React + TypeScript + Vite + Tailwind +
 Zustand, with custom ThreeJS plots — on top of a `wasm-bindgen` crate in

@@ -66,6 +66,12 @@ const baseTheme = EditorView.theme({
     color: 'var(--ink)',
   },
   '.cm-completionDetail': { color: 'var(--faint)', fontStyle: 'normal' },
+  '.cm-tooltip.cm-completionInfo': {
+    color: 'var(--muted)',
+    fontSize: '12px',
+    maxWidth: '320px',
+    padding: '4px 8px',
+  },
 })
 
 export const CodeEditor = forwardRef<CodeEditorHandle, Props>(

@@ -11,6 +11,9 @@ Cargo.lock
 /fuzz/artifacts/
 /fuzz/coverage/
 
+# MkDocs build output (`mkdocs build`)
+/site/
+
 # macOS
 .DS_Store
 
