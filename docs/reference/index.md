@@ -101,6 +101,8 @@ see [Signals](signals.md).
 | [`dsp.circconv(a, b)`](dsp.md#dspcircconv) | Circular convolution |
 | [`dsp.freqz(h, w)`](dsp.md#dspfreqz) | FIR frequency response at frequencies `w` |
 | [`dsp.firlow(n, wc)`](dsp.md#dspfirlow) | Windowed-sinc lowpass prototype |
+| [`dsp.remez(n, edges, desired, w?)`](dsp.md#dspremez) | Exact Parks–McClellan equiripple design |
+| [`dsp.window(name, n)`](dsp.md#dspwindow) | Certified window signal (hann/hamming/blackman) |
 | [`dsp.hann(n)` / `dsp.hamming(n)` / `dsp.blackman(n)`](dsp.md#dsphann-dsphamming-dspblackman) | Cosine-sum windows, exact |
 | [`dsp.quantize(v, bits)`](dsp.md#dspquantize) | Snap to a fixed-point grid (exact rationals) |
 

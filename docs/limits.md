@@ -16,6 +16,7 @@ or adversarial input turns into a clean error, never a crash:
 | `precision(d)` | clamped to 1…100,000 digits |
 | `dsp` pairwise products per call | 4,000,000 (a DFT of length n costs n²) |
 | Signal FFT length | 2²² samples (power of two) |
+| `dsp.remez` | ≤ 127 taps; band edges snap inward ≤ 2⁻²⁴ rad |
 | Signal convolution | 2²⁸ pairwise products |
 | Bulk import size | 2²⁴ samples per file |
 | Comparison interval refinement | 8,192 bits (≈ 2,466 digits), then "may be equal" |
@@ -78,9 +79,10 @@ Scoped out of the prototype on purpose — this is where an exact CAS balloons:
   [structs of functions](language/modules.md); there is no file import or
   package mechanism.
 - **More DSP** — the [`dsp` namespace](reference/dsp.md) covers DFT,
-  convolution, FIR design (windowed-sinc + windows), frequency response,
-  and fixed-point quantization; FFT-speed transforms, equiripple (Remez)
-  design, IIR design, and z-transforms are future work.
+  convolution, FIR design (windowed-sinc and exact Parks–McClellan),
+  frequency response, windows (exact and certified), and fixed-point
+  quantization; STFT/spectrograms, Type II–IV Remez, IIR design, and
+  z-transforms are future work.
 - **Signal gaps** — [signals](reference/signals.md) cover the certified
   bulk pipeline end to end (FFT, convolution, reductions, import/export in
   both substrates, plotting with zoom refinement, slicing); the substrates

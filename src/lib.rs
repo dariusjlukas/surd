@@ -25,6 +25,7 @@ pub mod latex;
 pub mod lexer;
 pub mod matrix;
 pub mod parser;
+pub mod remez;
 pub mod signal;
 pub mod stats;
 

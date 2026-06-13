@@ -27,6 +27,7 @@ use crate::expr::{
     BigRational, Expr,
 };
 use astro_float::{BigFloat, Consts, RoundingMode};
+use num_bigint::BigInt;
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::fmt;
 use std::rc::Rc;
@@ -1210,4 +1211,65 @@ pub fn big_from_decimal_bounds(
         }
         Ok(SignalData::Big { lo, hi, digits })
     })?
+}
+
+// ---------------------------------------------------------------------------
+// Certified window generation
+// ---------------------------------------------------------------------------
+
+/// A cosine-sum window as a *certified* f64 signal: every sample is an
+/// enclosure of the true window value, computed in interval arithmetic
+/// (π as an interval, cos via the Lipschitz bound). This is the honest way
+/// to taper bulk data — `signal(N(dsp.hann(n)))` would launder uncertified
+/// approximations into point intervals.
+pub fn window(name: &str, n: usize) -> Result<SignalData, String> {
+    let (a0, a1, a2): ((i64, i64), (i64, i64), (i64, i64)) = match name {
+        "hann" => ((1, 2), (1, 2), (0, 1)),
+        "hamming" => ((27, 50), (23, 50), (0, 1)),
+        "blackman" => ((21, 50), (1, 2), (2, 25)),
+        other => {
+            return Err(format!(
+                "unknown window '{}' (available: hann, hamming, blackman)",
+                other
+            ))
+        }
+    };
+    if n == 0 {
+        return Err("a window needs at least 1 sample".into());
+    }
+    let rat = |(p, q): (i64, i64)| BigRational::new(BigInt::from(p), BigInt::from(q));
+    let (c0, c1, c2) = (
+        rat_to_f64_iv(&rat(a0))?,
+        rat_to_f64_iv(&rat(a1))?,
+        rat_to_f64_iv(&rat(a2))?,
+    );
+    // π as a certified f64 interval.
+    let pi = (
+        widen_down(std::f64::consts::PI, 1),
+        widen_up(std::f64::consts::PI, 1),
+    );
+    let mut lo = Vec::with_capacity(n);
+    let mut hi = Vec::with_capacity(n);
+    if n == 1 {
+        lo.push(1.0);
+        hi.push(1.0);
+        return Ok(SignalData::F64 { lo, hi });
+    }
+    for k in 0..n {
+        // w[k] = a0 − a1·cos(2πk/(n−1)) + a2·cos(4πk/(n−1))
+        let ratio = rat_to_f64_iv(&rat((2 * k as i64, n as i64 - 1)))?;
+        let angle = f64_mul(ratio, pi)?;
+        let cos1 = f64_unary("cos", angle)?;
+        let cos2 = f64_unary("cos", f64_mul(angle, (2.0, 2.0))?)?;
+        let w = f64_add(
+            f64_sub(c0, f64_mul(c1, cos1)?)?,
+            f64_mul(c2, cos2)?,
+        )?;
+        // The window is mathematically within [0, 1] for these families'
+        // coefficient signs at the sampled points — but the enclosure is the
+        // claim, so no clamping beyond what interval math produced.
+        lo.push(w.0);
+        hi.push(w.1);
+    }
+    Ok(SignalData::F64 { lo, hi })
 }

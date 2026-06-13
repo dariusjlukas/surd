@@ -258,6 +258,33 @@ proptest! {
         prop_assert_eq!(fitted, normalized(&coeffs));
     }
 
+    // Exact Remez: every design must (a) be symmetric, (b) report a
+    // non-negative rational ripple, and (c) satisfy its spec at the DC and
+    // Nyquist grid points as *decidable* exact comparisons — |H(0)−1| ≤ δ
+    // and |H(π)| ≤ δ. These hold by the discrete-minimax construction; any
+    // failure is an implementation bug.
+    #[test]
+    fn remez_designs_meet_their_spec_exactly(
+        half_taps in 3usize..7,
+        cut in 2i64..5,
+    ) {
+        let n = 2 * half_taps + 1;
+        // Passband [0, cut/10·π], stopband [(cut+2)/10·π, π].
+        let spec = format!(
+            "f := dsp.remez({n}, [0, {cut}/10*pi, {hi}/10*pi, pi], [1, 0])",
+            n = n, cut = cut, hi = cut + 2,
+        );
+        let checks = ev_all(&[
+            &spec,
+            "sym := f.taps[1] == f.taps[len(f.taps)] and f.taps[2] == f.taps[len(f.taps) - 1]",
+            "dc := abs(dsp.freqz(f.taps, [0])[1] - 1) <= f.ripple",
+            "ny := abs(dsp.freqz(f.taps, [pi])[1]) <= f.ripple",
+            "pos := f.ripple >= 0",
+            "sym and dc and ny and pos",
+        ]);
+        prop_assert_eq!(checks, "true");
+    }
+
     // Linear convolution is commutative (it's polynomial multiplication).
     #[test]
     fn convolution_is_commutative(

@@ -51,6 +51,21 @@ pub enum Sign {
     Unsupported,
 }
 
+/// A certified rational enclosure of a constant expression at `p` bits of
+/// working precision: the true value provably lies in [lo, hi]. `None` for
+/// non-constant or unsupported expressions. (Used by the exact Remez design
+/// to pin down band edges like cos(2π/5) that have no rational form.)
+pub fn rational_enclosure(
+    e: &Expr,
+    p: usize,
+) -> Option<(crate::expr::BigRational, crate::expr::BigRational)> {
+    let iv = with_consts(|cc| eval_iv(e, p, cc)).ok()??;
+    Some((
+        crate::expr::float_to_rational(&iv.lo)?,
+        crate::expr::float_to_rational(&iv.hi)?,
+    ))
+}
+
 /// The certified sign of `e`, by interval refinement.
 pub fn certified_sign(e: &Expr) -> Sign {
     let mut p = 64;

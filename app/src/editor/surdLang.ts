@@ -256,6 +256,11 @@ const NAMESPACES: Namespace[] = [
         doc: 'FIR frequency response at the frequencies in w.',
       },
       { name: 'hamming', params: ['n'], doc: 'Hamming window (27/50, 23/50).' },
+      {
+        name: 'remez',
+        params: ['n', 'edges', 'desired', 'weights?'],
+        doc: 'Exact Parks–McClellan equiripple FIR design → struct(taps, ripple).',
+      },
       { name: 'hann', params: ['n'], doc: 'Hann window.' },
       {
         name: 'idft',
@@ -286,6 +291,11 @@ const NAMESPACES: Namespace[] = [
         name: 'rms',
         params: ['s'],
         doc: 'Certified upper bound on the RMS of a signal.',
+      },
+      {
+        name: 'window',
+        params: ['name', 'n'],
+        doc: 'Certified window signal (hann, hamming, blackman) for bulk data.',
       },
     ],
   },

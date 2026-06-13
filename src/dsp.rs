@@ -10,6 +10,7 @@
 //! any precision on demand.
 
 use crate::expr::*;
+use crate::remez;
 use crate::signal;
 use num_bigint::BigInt;
 use num_traits::{One, ToPrimitive};
@@ -17,8 +18,8 @@ use std::rc::Rc;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
-    "conv", "circconv", "dft", "dftmatrix", "idft", "freqz", "firlow", "hann", "hamming",
-    "blackman", "quantize", "fft", "ifft", "pad", "peak", "rms",
+    "conv", "circconv", "dft", "dftmatrix", "idft", "freqz", "firlow", "remez", "hann",
+    "hamming", "blackman", "window", "quantize", "fft", "ifft", "pad", "peak", "rms",
 ];
 
 /// Cap on pairwise symbolic products per call (a DFT is n², a convolution
@@ -77,6 +78,18 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         }
         "freqz" => freqz(args),
         "firlow" => firlow(args),
+        "remez" => remez_design(args),
+        "window" => {
+            arity("dsp.window", &args, 2)?;
+            let Expr::Symbol(name) = &args[0] else {
+                return Err(
+                    "dsp.window expects a window name first: dsp.window(hann, n) —                      hann, hamming, or blackman"
+                        .into(),
+                );
+            };
+            let n = as_size("dsp.window", &args[1])?;
+            Ok(Expr::Signal(Rc::new(signal::window(name, n)?)))
+        }
         "hann" => window("dsp.hann", args, (1, 2), (1, 2), (0, 1)),
         "hamming" => window("dsp.hamming", args, (27, 50), (23, 50), (0, 1)),
         "blackman" => window("dsp.blackman", args, (21, 50), (1, 2), (2, 25)),
@@ -360,6 +373,33 @@ fn bulk_transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, St
     structure(vec![
         ("re".to_string(), Expr::Signal(Rc::new(r))),
         ("im".to_string(), Expr::Signal(Rc::new(i))),
+    ])
+}
+
+/// `dsp.remez(n, edges, desired[, weights])`: exact Parks–McClellan. Band
+/// edges in radians/sample, ascending pairs within [0, π]; one desired value
+/// (and optional weight) per band. Returns struct(taps, ripple): exact
+/// rational taps and the exact minimax ripple on the design grid.
+fn remez_design(args: Vec<Expr>) -> Result<Expr, String> {
+    if !(3..=4).contains(&args.len()) {
+        return Err(format!(
+            "dsp.remez expects remez(n, edges, desired[, weights]), got {} argument(s)",
+            args.len()
+        ));
+    }
+    let n = as_size("dsp.remez", &args[0])?;
+    let (edges, _) = as_vector("dsp.remez", &args[1])?;
+    let (desired, _) = as_vector("dsp.remez", &args[2])?;
+    let weights = match args.get(3) {
+        Some(wv) => as_vector("dsp.remez", wv)?.0,
+        None => vec![int(1); desired.len()],
+    };
+    let d = remez::design(n, &edges, &desired, &weights)?;
+    let taps = Expr::Matrix(vec![d.taps.into_iter().map(rat_to_expr).collect()]);
+    structure(vec![
+        ("taps".to_string(), taps),
+        ("ripple".to_string(), rat_to_expr(d.ripple)),
+        ("iterations".to_string(), int(d.iterations as i64)),
     ])
 }
 

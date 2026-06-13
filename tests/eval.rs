@@ -1161,3 +1161,90 @@ fn plotting_signals() {
     // The non-signal short form keeps its error.
     assert!(ev("plot(sin(x))").starts_with("error: plot expects"));
 }
+
+// ---------------------------------------------------------------------------
+// Exact Parks–McClellan (dsp.remez) and certified windows
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remez_degenerate_allpass_is_exact() {
+    // Approximating 1 over the whole band: the impulse, with ripple *exactly*
+    // zero — no tolerance saying "close enough", the answer is just right.
+    assert_eq!(
+        norm("dsp.remez(7, [0, pi], [1]).taps"),
+        "[ 0 0 0 1 0 0 0 ]"
+    );
+    assert_eq!(ev("dsp.remez(7, [0, pi], [1]).ripple"), "0");
+}
+
+#[test]
+fn remez_lowpass_meets_its_spec_exactly() {
+    // The deterministic exact optimum: same grid, same answer, every time.
+    assert_eq!(
+        ev_all(&[
+            "f := dsp.remez(15, [0, 2/5*pi, 1/2*pi, pi], [1, 0])",
+            "N(f.ripple, 6)",
+        ]),
+        "0.119476"
+    );
+    // Spec compliance at band-edge grid points is *decidable*: |H − D| ≤ δ
+    // as an exact comparison of rationals — not a float eyeball.
+    assert_eq!(
+        ev_all(&[
+            "f := dsp.remez(15, [0, 2/5*pi, 1/2*pi, pi], [1, 0])",
+            "a := abs(dsp.freqz(f.taps, [0])[1] - 1) <= f.ripple",
+            "b := abs(dsp.freqz(f.taps, [pi])[1]) <= f.ripple",
+            "c := f.taps[1] == f.taps[15] and f.taps[3] == f.taps[13]",
+            "a and b and c",
+        ]),
+        "true"
+    );
+}
+
+#[test]
+fn remez_weights_trade_ripple_between_bands() {
+    // A 10× stopband weight forces the stopband error under δ/10 — again an
+    // exact, decidable claim.
+    assert_eq!(
+        ev_all(&[
+            "g := dsp.remez(15, [0, 2/5*pi, 1/2*pi, pi], [1, 0], [1, 10])",
+            "10 * abs(dsp.freqz(g.taps, [pi])[1]) <= g.ripple",
+        ]),
+        "true"
+    );
+}
+
+#[test]
+fn remez_validates_its_spec() {
+    assert!(ev("dsp.remez(8, [0, pi], [1])").starts_with("error: dsp.remez designs Type I"));
+    assert!(ev("dsp.remez(7, [0, 1, 2], [1])").starts_with("error: dsp.remez band edges"));
+    assert!(ev("dsp.remez(7, [0, 1], [1, 0])").starts_with("error: dsp.remez expects one desired"));
+    assert!(ev("dsp.remez(7, [1, 1/2], [1])")
+        .starts_with("error: dsp.remez band edges must be strictly increasing"));
+    assert!(ev("dsp.remez(7, [0, 1], [1], [0])").contains("must be a positive number"));
+    assert!(ev("dsp.remez(201, [0, pi], [1])").starts_with("error: dsp.remez supports up to"));
+}
+
+#[test]
+fn certified_windows_enclose_the_exact_values() {
+    // dsp.window is the bulk (certified-interval) sibling of the exact
+    // dsp.hann: at n = 4 the exact values are [0, 3/4, 3/4, 0], and each
+    // must lie within mid ± bound — checked with decidable comparisons.
+    assert_eq!(
+        ev_all(&[
+            "w := dsp.window(hann, 4)",
+            "abs(w[2] - 3/4) <= bound(w, 2) and abs(w[1] - 0) <= bound(w, 1)",
+        ]),
+        "true"
+    );
+    // Tapering bulk data is now one honest elementwise step.
+    assert_eq!(
+        ev_all(&[
+            "s := signal([1; 1; 1; 1; 1; 1; 1; 1])",
+            "len(s .* dsp.window(hamming, 8))",
+        ]),
+        "8"
+    );
+    assert!(ev("dsp.window(kaiser, 8)").starts_with("error: unknown window 'kaiser'"));
+    assert!(ev("dsp.window(8, 8)").starts_with("error: dsp.window expects a window name"));
+}

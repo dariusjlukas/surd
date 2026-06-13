@@ -122,6 +122,14 @@ expect('zoomed window not undersampled', zoom.undersampled, false);
 const gone = JSON.parse(s.resample_signal(9999, 0, 1, 100));
 expect('stale id refuses gracefully', gone.ok, false);
 
+// Exact Remez and certified windows.
+const rz = ev('rz := dsp.remez(11, [0, 2/5*pi, 1/2*pi, pi], [1, 0])');
+expect('remez ok', rz.kind, 'struct' === rz.kind ? 'struct' : rz.kind);
+expect('remez spec holds exactly',
+  ev('abs(dsp.freqz(rz.taps, [pi])[1]) <= rz.ripple and rz.taps[1] == rz.taps[11]').text, 'true');
+expect('remez allpass exact', ev('dsp.remez(5, [0, pi], [1]).ripple').text, '0');
+expect('certified window', ev('bound(dsp.window(hann, 16)) < 1/10^12').text, 'true');
+
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);
 } else {

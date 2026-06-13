@@ -191,3 +191,65 @@ coefficients:
 ```
 
 Overflow is the implementer's concern: `quantize` snaps, it never clamps.
+
+## `dsp.remez`
+
+```
+dsp.remez(n, edges, desired)
+dsp.remez(n, edges, desired, weights)
+```
+
+**Exact Parks–McClellan.** Designs an n-tap (odd, Type I) linear-phase FIR
+filter minimizing the maximum weighted error over the specified bands —
+with the float implementation's failure modes deleted:
+
+* The interpolation system solves **exactly** — ill-conditioning is a
+  rounding phenomenon, and there is no rounding.
+* Termination is a **theorem, not a tolerance**: the levelled error strictly
+  increases each exchange over a finite design grid, so "failed to
+  converge" cannot happen.
+* The minimax problem is solved exactly *on the design grid* (uniform in
+  x = cos ω, ~16 points per coefficient — float implementations iterate on
+  a grid too; they just don't solve even that exactly). The returned
+  `ripple` is the exact rational minimax error on that grid.
+
+Band `edges` come in ascending pairs in radians/sample within [0, π];
+`desired` and optional `weights` (default 1) give one value per band.
+Returns `struct(taps, ripple, iterations)` — taps and ripple as exact
+rationals, so spec compliance is *decidable*:
+
+```text
+>> f := dsp.remez(15, [0, 2/5*pi, 1/2*pi, pi], [1, 0])
+>> N(f.ripple, 6)
+0.119476
+>> abs(dsp.freqz(f.taps, [pi])[1]) <= f.ripple      # exact, not an eyeball
+true
+>> g := dsp.remez(15, [0, 2/5*pi, 1/2*pi, pi], [1, 0], [1, 10])
+>> 10 * abs(dsp.freqz(g.taps, [pi])[1]) <= g.ripple # weights, exactly honored
+true
+>> dsp.remez(7, [0, pi], [1]).ripple                # the degenerate case is exact
+0
+```
+
+Notes: up to 127 taps (the exact solve grows fast past that; large orders
+take seconds). Band edges without a rational cosine (most of them) snap
+*inward* by at most 2⁻²⁴ ≈ 6e-8 rad — the conservative direction, far below
+any physical spec. Quantize the taps with `dsp.quantize` and measure the
+exact quantization-error response before shipping, as usual.
+
+## `dsp.window`
+
+```
+dsp.window(name, n)      # name: hann, hamming, or blackman
+```
+
+The certified-signal sibling of the exact `dsp.hann`/`hamming`/`blackman`
+vectors: a window of length n whose samples are **certified enclosures**
+computed in interval arithmetic, ready to taper bulk data elementwise.
+(`signal(N(dsp.hann(n)))` would silently turn approximations into
+zero-error points — this is the honest path.)
+
+```text
+>> frame := slice(clip.ch1, 1, 4096) .* dsp.window(hann, 4096)
+>> spec := dsp.fft(frame)
+```
