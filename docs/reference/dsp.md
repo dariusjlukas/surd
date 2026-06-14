@@ -178,8 +178,14 @@ dsp.quantize(v, bits)
 ```
 
 Snap every entry to the fixed-point grid with `bits` fractional bits —
-`round(x·2^bits)/2^bits`, ties away from zero — as **exact rationals**. So
-the quantization error is an exact object you can measure before shipping
+`round(x·2^bits)/2^bits`, ties away from zero — as **exact rationals**:
+
+```text
+>> dsp.quantize([1/3, 2/3], 4)                 # 4 fractional bits: round(x·16)/16
+[ 5/16  11/16 ]
+```
+
+So the quantization error is an exact object you can measure before shipping
 coefficients:
 
 ```text
@@ -245,11 +251,16 @@ dsp.window(name, n)      # name: hann, hamming, or blackman
 
 The certified-signal sibling of the exact `dsp.hann`/`hamming`/`blackman`
 vectors: a window of length n whose samples are **certified enclosures**
-computed in interval arithmetic, ready to taper bulk data elementwise.
-(`signal(N(dsp.hann(n)))` would silently turn approximations into
-zero-error points — this is the honest path.)
+computed in interval arithmetic, ready to taper bulk data elementwise. So it
+returns a [signal](signals.md), not a vector — the endpoints are a tiny
+interval around 0, not the exact `0` of `dsp.hann(4)`:
 
 ```text
->> frame := slice(clip.ch1, 1, 4096) .* dsp.window(hann, 4096)
->> spec := dsp.fft(frame)
+>> dsp.window(hann, 4)
+<signal: 4 samples, f64, max error ±2.9e-15>
 ```
+
+(`signal(N(dsp.hann(n)))` would instead turn approximations into zero-error
+points — this is the honest path.) Tapering a frame before an FFT is then one
+line — `slice(clip.ch1, 1, 4096) .* dsp.window(hann, 4096)` — with the
+window's enclosures carried into `dsp.fft` of the result.

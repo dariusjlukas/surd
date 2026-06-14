@@ -32,6 +32,8 @@ matrices; a scalar broadcasts; two scalars degrade to the plain operation.
 ```text
 >> [1, 2, 3] .* [4, 5, 6]
 [ 4  10  18 ]
+>> [6, 8, 9] ./ [2, 4, 3]
+[ 3  2  3 ]
 >> [1, 2, 3] .^ 2
 [ 1  4  9 ]
 >> 2 .* [1, 2]
@@ -51,7 +53,16 @@ Scalar functions (`sin`, `cos`, `tan`, `exp`, `ln`, `sqrt`, `abs`, `conj`,
 
 ```
 len(v)      # entries of a vector; rows of a matrix
-size(m)     # struct(rows, cols)
+size(m)     # dimensions, as struct(rows, cols)
+```
+
+```text
+>> len([3; 1; 4; 1; 5])
+5
+>> len([1, 2, 3; 4, 5, 6])     # a matrix counts its rows
+2
+>> size([1, 2, 3; 4, 5, 6])    # fields are sorted, so cols prints before rows
+struct(cols = 3, rows = 2)
 ```
 
 ## `slice`
@@ -93,6 +104,11 @@ dot(a, b)
 Σ aᵢ·bᵢ for two same-length vectors (bilinear — no conjugation; apply
 `conj` yourself for the Hermitian inner product).
 
+```text
+>> dot([1, 2, 3], [4, 5, 6])
+32
+```
+
 ## `vcat` / `hcat`
 
 ```
@@ -105,6 +121,9 @@ hcat(a, b, ...)    # stack horizontally
 [ 1 ]
 [ 2 ]
 [ 9 ]
+>> hcat([1; 2], [3; 4])     # columns side by side
+[ 1  3 ]
+[ 2  4 ]
 ```
 
 ## `linspace`

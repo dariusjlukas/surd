@@ -91,7 +91,12 @@ Booleans are opaque to arithmetic — `true + 1` is an error, not a `2`.
 10
 ```
 
-The `else` branch is optional; without it, a false condition yields `0`.
+The `else` branch is optional; without it, a false condition yields `0`:
+
+```text
+>> if 1 > 2 then 10 end
+0
+```
 
 **The decidable-boolean rule.** Conditions must evaluate to a real
 `true`/`false`. A condition that can't be decided is an error, never a guess

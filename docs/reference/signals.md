@@ -10,9 +10,9 @@ display refuses to hide it:
 
 ```text
 >> s := signal([1/3; -2; 5/7; 1])
-<signal: 4 samples, f64, max error ±5.6e-17>
+<signal: 4 samples, f64, max error ±1.1e-16>
 >> s .* s
-<signal: 4 samples, f64, max error ±6.7e-16>
+<signal: 4 samples, f64, max error ±8.9e-16>
 ```
 
 ## Two substrates
@@ -32,7 +32,7 @@ signal(v, digits)    # arbitrary precision — slower, bounds shrink at will
 
 ```text
 >> bound(signal([1/3; 2/7]))
-2.78e-17
+5.55e-17
 >> bound(signal([1/3; 2/7], 50))
 4.32e-78
 ```
@@ -46,11 +46,19 @@ reductions are the only ways out. Mixing a signal into exact arithmetic is
 an error, exactly like the design thesis demands:
 
 ```text
->> mid(s)          # column matrix of midpoints (floats)
->> bound(s)        # certified max |true − mid| over all samples
->> bound(s, i)     # …for sample i
->> s[i]            # the midpoint of sample i
->> s + [1; 2]      # error: cannot mix an exact matrix with a signal
+>> mid(s)              # column matrix of midpoints (floats)
+[ 0.33333333333333337 ]
+[                  -2 ]
+[ 0.71428571428571419 ]
+[                   1 ]
+>> bound(s)            # certified max |true − mid| over all samples
+1.11e-16
+>> bound(s, 1)         # …for sample 1 alone
+5.55e-17
+>> s[1]                # the midpoint of sample 1
+0.33333333333333337
+>> s + [1; 2; 3; 4]    # mixing a signal into exact arithmetic is an error
+error: cannot mix an exact matrix with a signal — pack it first: signal([...])
 ```
 
 `mid(s) ± bound(s)` is always a true statement — the bound covers the

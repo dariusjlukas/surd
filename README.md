@@ -47,7 +47,7 @@ Requires a Rust toolchain (`rustup` recommended).
 
 ```sh
 cargo run            # interactive REPL
-cargo test           # behavioral tests in tests/eval.rs
+cargo test           # the full suite (unit + behavioral + property + fuzz + regression)
 echo "sqrt(2)^2" | cargo run    # pipe mode
 ```
 
@@ -74,10 +74,12 @@ wasm-pack build wasm --target web --out-dir ../web/pkg && node web/smoke.mjs
 ```
 
 App structure: `src/engine/` (typed worker protocol + `EngineClient`),
-`src/state/store.ts` (Zustand: cells, transcript, engine status),
-`src/plot/` (`LinePlot` — a framework-free ThreeJS painter — plus the React
-wrapper that owns pan/zoom and triggers engine resampling), `src/components/`
-(notebook, KaTeX output, REPL input bar with block continuation).
+`src/editor/` (a CodeMirror input with surd syntax highlighting,
+autocompletion, and block continuation), `src/state/store.ts` (Zustand: cells,
+transcript, engine status), `src/plot/` (`LinePlot` and `SurfacePlot` —
+framework-free ThreeJS painters for 2D curves and 3D surfaces — plus the React
+wrappers that own pan/zoom and trigger engine resampling), `src/components/`
+(notebook, KaTeX output, workspace panel).
 
 How it holds together:
 
@@ -106,8 +108,10 @@ How it holds together:
   variables) arrive inside a *struct* (`sensor.temp`, see below), so imported
   names can never collide with existing bindings. Numbers are read from their
   literal text — `0.1` in a sensor log becomes the exact rational 1/10, never
-  an f64. Export saves any selection of workspace variables (anything a
-  variable can hold, functions included) into one `surd-data` file; exact
+  an f64. A separate waveform button imports bulk data — WAV, raw binary
+  (`f64`/`f32`/`i16`), or packed CSV — straight into [signals](#certified-bulk-data-signals).
+  Export saves any selection of workspace variables (anything a variable can
+  hold, functions and signals included) into one `surd-data` file; exact
   values round-trip losslessly. An import is a notebook *cell* carrying the
   file's text, so the replay model — and notebook export — keeps working with
   data in play.
@@ -260,12 +264,14 @@ ones (division-free, exact). Inverse / `solve` / `rref` / `rank` share one
 exact Gauss-Jordan routine.
 
 Builtins: `sqrt`, `sin`, `cos`, `tan`, `exp`, `ln`, `diff`/`D`, `subs`, `expand`,
-`N`, `precision`, `conj`, `re`, `im`, `abs`, and matrix ops `det`, `inv`,
-`transpose`/`T`, `solve`, `rref`, `rank`, `nullspace`/`kernel`, `lu`, `qr`,
-`eye`/`identity`, `charpoly`, `eigenvalues`/`eig`, `eigenvectors`.
-Constants: `pi`, `e`, `I` (imaginary unit) — all three are
-ordinary names that user bindings shadow, so `e` and `i` stay free for loop
-counters and the like.
+`N`, `precision`, `conj`, `re`, `im`, `abs`; data ops `map`, `len`, `size`,
+`slice`, `dot`, `vcat`/`hcat`, `linspace`, `plot`/`plot3d`, `struct`, `signal`,
+`mid`, `bound`; and matrix ops `det`, `inv`, `transpose`/`T`, `solve`, `rref`,
+`rank`, `nullspace`/`kernel`, `lu`, `qr`, `eye`/`identity`, `charpoly`,
+`eigenvalues`/`eig`, `eigenvectors`. Domain toolkits live behind **namespaces**
+(`dsp.dft(v)`, `stats.mean(v)`) so they don't claim bare names. Constants:
+`pi`, `e`, `I` (imaginary unit) — all three are ordinary names that user
+bindings shadow, so `e` and `i` stay free for loop counters and the like.
 
 `diff`/`D` and `subs` take their variable argument by *name* and keep it
 symbolic while the expression argument evaluates, so a workspace binding
@@ -331,6 +337,108 @@ full relative precision in each component, so a genuinely tiny part survives:
 tiny *exact* component fed through a transcendental expression — say
 `1 + sin(10^(-50))*I` — is still indistinguishable from residue and gets
 snapped.)
+
+### Signal processing, exactly
+
+DSP — the original motivation — has landed. It lives in the `dsp` namespace,
+so it doesn't claim bare names like `dft` or `conv` for everyone. DFT twiddle
+factors are exact wherever the angle has a surd form, so the DFT of a rational
+vector is a vector of exact surds and `dsp.idft(dsp.dft(v))` is *identically*
+`v`, not `v` up to epsilon:
+
+```
+>> dsp.dft([1; 2; 3; 4])
+[       10 ]
+[ -2 + 2*I ]
+[       -2 ]
+[ -2 - 2*I ]
+>> dsp.conv([1, 2], [1, 3])           # (1 + 2z)(1 + 3z) = 1 + 5z + 6z²
+[ 1  5  6 ]
+>> dsp.freqz([1, 1], [0, pi/2, pi])   # FIR frequency response, exact
+[ 2  1 - I  0 ]
+>> dsp.hann(4)                        # cosine-sum windows, exact rationals
+[ 0  3/4  3/4  0 ]
+```
+
+The namespace covers the DFT/IDFT and the Fourier matrix, linear and circular
+convolution, FIR frequency response (`freqz`), windowed-sinc (`firlow`) and
+**exact Parks–McClellan** (`remez`) filter design, the Hann/Hamming/Blackman
+windows, and fixed-point `quantize`. `remez` is the showpiece: the
+interpolation system solves *exactly* (so ill-conditioning, a rounding
+phenomenon, cannot happen) and termination is a *theorem*, not a tolerance —
+it returns the exact rational minimax ripple, so spec compliance is
+**decidable**, not eyeballed.
+
+### Statistics
+
+The `stats` namespace runs every estimator in exact arithmetic: the mean of
+rationals is a rational, a standard deviation is an exact surd, and perfectly
+linear data correlates to *exactly* ±1 — model quality is never hidden inside
+float noise.
+
+```
+>> stats.mean([1; 2; 3; 4])
+5/2
+>> stats.std([1; 2; 3; 4])              # an exact surd, not a rounded decimal
+sqrt(5/3)
+>> stats.cor([1; 2; 3], [2; 4; 6])
+1
+>> stats.linfit([0; 1; 2], [1; 2; 4])   # exact least-squares line
+struct(intercept = 5/6, slope = 3/2)
+```
+
+Also `median`, `var`, `cov`, `quantile`, `rmse`/`r2`, and exact least-squares
+`polyfit`/`polyval`/`lsq` — Vandermonde *conditioning* is a float problem, and
+there are no floats here.
+
+### Certified bulk data: signals
+
+Exact arithmetic is the right tool for *designing* a filter; it is the wrong
+tool for running it over a million samples. **Signals** bridge the gap: packed
+bulk data where every sample carries a certified error enclosure — an interval
+computed with outward rounding at every step, so the true value provably lies
+inside. The worst-case error is part of the value, and the display refuses to
+hide it:
+
+```
+>> s := signal([1/3; -2; 5/7; 1])
+<signal: 4 samples, f64, max error ±1.1e-16>
+>> s .* s
+<signal: 4 samples, f64, max error ±8.9e-16>
+>> r := dsp.ifft(dsp.fft(s)).re
+>> dsp.peak(r - s) < 1/10^12            # the round-trip error is *provably* tiny
+true
+```
+
+There are two substrates — hardware `f64` (audio-scale fast) and arbitrary
+precision (bounds shrink at will), both rigorous, never mixed implicitly.
+`signal(...)` is the only way in; `mid`/`bound`/indexing/the reductions are the
+only ways out; mixing a signal into exact arithmetic is an error. The `dsp`
+operations (interval FFT, convolution, `peak`/`rms`) carry the enclosures
+through, so every number in a pipeline is either exact or comes with a proven
+bound — there is no third category to debug. The web app imports WAV / raw
+binary / CSV into signals, and exports them losslessly in both substrates.
+
+### Vectors, data, and plotting
+
+Vectors are 1×n / n×1 matrices; indexing is 1-based (`v[2]`, `m[2, 1]`, with
+`m[i]` the whole row), elementwise operators are `.*` `./` `.^`, and scalar
+functions map over a matrix automatically. Helpers: `map`, `len`/`size`,
+`slice`, `dot`, `vcat`/`hcat`, and `linspace` (with an exact rational step).
+
+```
+>> map(abs, dsp.freqz([0, 1], [0, pi/3]))    # a pure delay: unit magnitude
+[ 1  1 ]
+>> linspace(0, pi, 5)
+[ 0  1/4*π  1/2*π  3/4*π  π ]
+```
+
+`plot(f1, …, fk, x, a, b)` and `plot3d(f, x, a, b, y, c, d)` are symbolic
+values in the engine (the plot variable is quoted, like `diff`'s); the web
+frontend samples them at f64 and draws interactive curves and surfaces that
+**resample at full resolution** as you pan and zoom — sampling is the one
+deliberate exception to arbitrary precision, since pixels are already
+approximate and results never are.
 
 ### It's a language, not just a calculator
 
@@ -425,13 +533,29 @@ source ─▶ lexer ─▶ parser ─▶ ast ─▶ eval ─▶ Expr   (canonica
 - `src/matrix.rs` — exact linear algebra (Bareiss/cofactor determinants,
   Gauss-Jordan inverse/solve/rref/rank). Operates on `Expr`, so it's symbolic
   too; exact ℚ is just the all-numeric case.
+- `src/dsp.rs` / `src/remez.rs` — the `dsp` namespace: exact DFT/IDFT and
+  Fourier matrix, linear/circular convolution, `freqz`, windowed-sinc and
+  exact Parks–McClellan (`remez`) FIR design, windows, and `quantize`.
+- `src/stats.rs` — the `stats` namespace: exact mean/variance/correlation,
+  quantiles, and least-squares (`linfit`/`polyfit`/`lsq`).
+- `src/signal.rs` — certified bulk-data signals: interval enclosures in two
+  substrates, the interval FFT/convolution, and reductions.
+- `src/interval.rs` — the certified interval arithmetic underneath signals
+  and the decidable constant comparisons (directed rounding, precision
+  doubling).
+- `src/dataio.rs` — the `surd-data` JSON format plus best-effort JSON/CSV
+  import; decimal literals are read as exact rationals, never round-tripped
+  through f64.
 - `src/{lexer,parser,ast}.rs` — front end.
 - `src/latex.rs` — LaTeX rendering for the web UI (KaTeX). Cosmetic only.
 - `src/f64eval.rs` — fast approximate `Expr → f64` for plot sampling, the one
   deliberate exception to arbitrary precision: pixels are already approximate.
-- `wasm/` — `wasm-bindgen` bindings (`Session`, JSON results, plot sampling).
-- `web/` — the browser UI: worker hosting, transcript persistence, KaTeX,
-  canvas plots.
+- `wasm/` — `wasm-bindgen` bindings (`Session`, JSON results, plot sampling,
+  bulk imports).
+- `app/` — the real browser UI (React + TypeScript + Vite + ThreeJS):
+  notebook, KaTeX, interactive 2D/3D plots, workspace panel, data
+  import/export. `web/` is the earlier no-build harness, kept for its
+  headless `smoke.mjs` engine check.
 
 ## Testing
 
@@ -440,7 +564,7 @@ prettier/eslint/tsc checks, and the wasm smoke test before every commit. Enable 
 `git config core.hooksPath .githooks` (bypass a single commit with
 `git commit --no-verify`).
 
-`cargo test` runs ~100 tests across five layers (`cargo clippy` is clean of
+`cargo test` runs ~190 tests across five layers (`cargo clippy` is clean of
 errors):
 
 - **Unit** (`#[cfg(test)]` in each module) — lexer tokenization, parser
@@ -453,6 +577,10 @@ errors):
   centerpiece is a **differential test**: exact-then-`N` is checked against an
   independent `f64` evaluation, which catches precedence/sign/canonicalization
   bugs wholesale. (It already found one: `(x+1) − (x+1)` not cancelling to 0.)
+  The DSP and signal layers are held to the same bar — the convolution theorem
+  (`freqz(conv(a,b)) = freqz(a).*freqz(b)`) is a property test, and another
+  convolves random rationals exactly as an oracle and checks every coefficient
+  lands inside its certified signal enclosure, in both substrates.
 - **Robustness / fuzz** (`tests/robustness.rs`) — `proptest` throws thousands of
   random and "math-soup" strings at the engine asserting it *never panics*, plus
   curated adversarial inputs and checks that the resource guards (below) turn
@@ -493,7 +621,9 @@ immediately earned its keep, finding that `(11/5)^x` printed as `11/5^x`
 These were scoped out on purpose; they're where an exact CAS balloons.
 
 - **Real algebraic numbers** (poly + isolating interval) for exact roots beyond
-  perfect powers, and decidable comparison. See `calcium`/`arb` for prior art.
+  perfect powers, and for *proving equality* of constants — interval refinement
+  (shipped) certifies any strict ordering, but can never prove two
+  different-looking constants equal. See `calcium`/`arb` for prior art.
 - **The assumptions system** (is `x > 0`? integer?) — wants an SMT backend (Z3).
 - **Conditionals on symbolic predicates / piecewise results.** Control flow is
   in, and (by design) requires a *decidable* boolean — symbolic/undecidable
@@ -510,14 +640,25 @@ These were scoped out on purpose; they're where an exact CAS balloons.
   cubics and biquadratic quartics, eigenvectors over ℚ(√d) and its complex
   extension, `nullspace`, LU and QR, and the particular + null-space form of
   underdetermined `solve`.)
-- **DSP, the original motivation**: a correct DFT/FFT now that `exp(I·θ)`
-  evaluates numerically, plus FIR/IIR filter design. (Complex arithmetic, `sqrt`
-  of negatives, conjugate/abs, and complex `exp`/`sin`/`cos`/`tan`/`ln`/powers
-  are done.)
-- **Symbolic** complex simplification (Euler expansion `exp(I*x) → cos x + I·sin x`,
-  recognizing `exp(I*pi) → -1` exactly rather than numerically).
-- **Square-factor extraction** (`sqrt(8) -> 2 sqrt(2)`) and degree-aware
-  polynomial display ordering.
+- **More DSP and statistics**: STFT/spectrograms, Type II–IV Remez, IIR
+  design, and z-transforms; weighted and iterative regression (logistic,
+  optimizers). (Done: the `dsp` namespace — DFT/IDFT, convolution, `freqz`,
+  windowed-sinc and exact Parks–McClellan FIR design, windows, quantization —
+  the certified signal substrate, and the `stats` namespace through exact
+  least squares.)
+- **Degree-aware polynomial display ordering** — `expand((x+1)^3)` prints
+  `1 + x^3 + 3*x + 3*x^2`, not in descending degree.
+- ~~**DSP, the original motivation**~~ — done: a correct DFT now that complex
+  arithmetic, `sqrt` of negatives, conjugate/abs, and complex
+  `exp`/`sin`/`cos`/`tan`/`ln`/powers all evaluate, plus exact FIR design and
+  the certified signal substrate (see above; IIR and z-transforms remain).
+- ~~**Symbolic complex simplification**~~ — done: `exp(I*x)` unfolds to
+  `cos(x) + sin(x)*I`, and `exp(I*pi)` folds to `-1` exactly, no floats.
+- ~~**Square-factor extraction**~~ — done (best-effort): `sqrt(8) → 2*sqrt(2)`,
+  `sqrt(8/9) → 2/3*sqrt(2)`, and `√a·√b → √(a·b)` fires where nonnegativity is
+  provable (`sqrt(2)*sqrt(3) → sqrt(6)`, while `sqrt(x)*sqrt(y)` stays put).
+- ~~**User-defined functions**~~ — done: `f(x) := …` one-liners and
+  `function … end` blocks, with local scope and recursion.
 - ~~**Implicit multiplication**~~ — done, in the unambiguous cases: a number
   or `)` followed by `(` or an identifier multiplies (`2x`, `2pi`, `2sin(x)`,
   `2(x+1)`, `(x+1)(x-1)`, `(x+1)y`). Deliberately *not* implicit: `ident(…)`
@@ -525,9 +666,7 @@ These were scoped out on purpose; they're where an exact CAS balloons.
   carry block grammar — `x then`), `1.5.5` stays an error, and `3e5` is
   rejected loudly rather than silently becoming `3*e5`. Exponents bind first:
   `x^2y` is `(x^2)·y`.
-- **User-defined functions.**
 - ~~**Float contagion**~~ — done: a float operand makes the numeric part of
   `+`/`*`/`^` float (`N(pi) + 1` is one float; `N(2) + x` keeps `x` symbolic),
   and floats compare/test equal by their exact binary value. Remaining gap:
   float *coefficients* don't merge like terms (`N(2.5)*x + x` stays two terms).
-```
