@@ -123,6 +123,38 @@ How it holds together:
 like `diff`'s); the frontend samples it at f64 — pixels are already
 approximate, results never are.
 
+### The desktop app (offline)
+
+The same frontend ships as a fully offline desktop app via [Tauri](https://tauri.app/).
+Tauri (rather than Electron) is the natural fit here: it's Rust-native like the
+rest of the project, hosts the web UI in the OS's own webview, and produces
+~10 MB installers instead of bundling a ~150 MB Chromium. The engine still runs
+as wasm inside the webview — nothing talks to a server, so the app works with no
+network at all. The shell lives in `app/src-tauri/` and is a detached Cargo
+workspace, keeping Tauri's dependency tree out of the lean native/`wasm` builds.
+
+```sh
+cd app
+npm install
+npm run tauri:dev      # dev window with HMR (builds the wasm engine first)
+npm run tauri:build    # native bundle in app/src-tauri/target/release/bundle/
+```
+
+The desktop build adds two thin platform shims over the web build (see
+`app/src/platform/desktop.ts`), both no-ops in a browser: external links (the
+docs button) open in the system browser, and notebook/data/plot exports go
+through a native **Save** dialog (the `save_export` command in
+`app/src-tauri/src/lib.rs`) instead of a browser download.
+
+Installers for macOS (universal `.dmg`), Windows (`.msi`/`.exe`), and Linux
+(`.AppImage`/`.deb`) are built by `.github/workflows/release.yml` — push a
+`v*` tag (or run it manually) and it attaches them to a draft GitHub Release.
+macOS builds are **signed and notarized** when the `APPLE_*` repository secrets
+are set (and unsigned otherwise); Linux builds ship a `SHA256SUMS.txt` for
+verification; Windows is currently unsigned. The workflow header documents the
+required secrets and the Windows signing options (SignPath / Azure Trusted
+Signing).
+
 ## What works today
 
 ```

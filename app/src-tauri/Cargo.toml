@@ -1,0 +1,37 @@
+# Desktop shell for the surd web app. Detached from the repo's root Cargo
+# workspace on purpose (the empty `[workspace]` table below): this crate only
+# hosts the existing Vite frontend in a system webview — the surd engine still
+# runs as wasm inside that frontend — so Tauri's large dependency tree is kept
+# out of the lean native (`surd`) and `wasm` builds.
+[workspace]
+
+[package]
+name = "surd-desktop"
+version = "0.1.0"
+description = "surd — exact-by-default mathematical scratchpad (desktop)"
+edition = "2021"
+
+[lib]
+# The bundled binary calls into this lib; the cdylib/staticlib crate types are
+# what Tauri's mobile targets link against (unused on desktop, harmless to keep).
+name = "surd_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# External links (the in-app docs button) open in the system browser instead
+# of navigating the app's own webview away.
+tauri-plugin-opener = "2"
+# Native Save dialog for exports — see the `save_export` command in src/lib.rs
+# for why the webview's own download handling isn't relied on.
+tauri-plugin-dialog = "2"
+# Plot PNG snapshots arrive from the frontend as base64 (the tail of a data:
+# URL); decoded here before writing to disk.
+base64 = "0.22"
+
+[features]
+# Tauri's bundler enables this in release to strip debug assertions checks.
+custom-protocol = ["tauri/custom-protocol"]

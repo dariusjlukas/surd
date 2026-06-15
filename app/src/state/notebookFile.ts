@@ -10,6 +10,7 @@
 import type { Cell, Notebook } from './store'
 import { transcriptOf } from './store'
 import type { EvalResult } from '../engine/types'
+import { saveTextFile } from '../platform/desktop'
 
 const FORMAT = 'surd-notebook'
 // Files exported before the rename to Surd; still accepted on import.
@@ -58,13 +59,10 @@ export function serializeNotebook(nb: Notebook): string {
 }
 
 export function downloadNotebook(nb: Notebook) {
-  const blob = new Blob([serializeNotebook(nb)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${nb.name.replace(/[/\\:*?"<>|]/g, '_')}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  const name = `${nb.name.replace(/[/\\:*?"<>|]/g, '_')}.json`
+  void saveTextFile(name, serializeNotebook(nb)).catch((e) =>
+    console.error('notebook export failed', e),
+  )
 }
 
 /** Parse an exported notebook. Throws with a user-facing message on any

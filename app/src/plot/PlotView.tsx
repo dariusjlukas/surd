@@ -22,6 +22,7 @@ import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
 import { LinePlot, seriesColorToken } from './LinePlot'
 import { formatTick, niceTicks, quantileDomain } from './scales'
+import { saveDataUrl } from '../platform/desktop'
 
 const RESAMPLE_DEBOUNCE_MS = 180
 
@@ -258,10 +259,9 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   const savePng = () => {
     const painter = painterRef.current
     if (!painter) return
-    const a = document.createElement('a')
-    a.href = painter.snapshot()
-    a.download = `${exprText.slice(0, 40)}.png`
-    a.click()
+    void saveDataUrl(`${exprText.slice(0, 40)}.png`, painter.snapshot()).catch(
+      (e) => console.error('plot export failed', e),
+    )
   }
 
   // -- tick label positions (same scales as the painter) ---------------------

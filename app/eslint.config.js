@@ -7,7 +7,9 @@ import prettier from 'eslint-config-prettier'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'src/engine/pkg']), // pkg/ is wasm-pack output
+  // pkg/ is wasm-pack output; src-tauri is the Rust desktop crate (its
+  // build output under target/ contains non-JS assets eslint can't parse).
+  globalIgnores(['dist', 'src/engine/pkg', 'src-tauri']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

@@ -7,8 +7,13 @@ import { config } from '@fortawesome/fontawesome-svg-core'
 import '@fortawesome/fontawesome-svg-core/styles.css'
 import './index.css'
 import App from './App.tsx'
+import { installExternalLinkHandler } from './platform/desktop.ts'
 
 config.autoAddCss = false
+
+// Desktop build only: route external links to the system browser so they
+// don't replace the app inside its own webview. No-op in a browser.
+installExternalLinkHandler()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

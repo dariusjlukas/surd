@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions plus opening external links in the system browser.",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default", "opener:allow-open-url"]
+}

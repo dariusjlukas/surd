@@ -21,6 +21,7 @@ import {
   Z_SCALE,
   type Orbit,
 } from './SurfacePlot'
+import { saveDataUrl } from '../platform/desktop'
 
 /** The data domain currently on screen: [a, b]×[c, d]. */
 interface Win {
@@ -440,10 +441,9 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   const savePng = () => {
     const painter = painterRef.current
     if (!painter) return
-    const a = document.createElement('a')
-    a.href = painter.snapshot()
-    a.download = `${plot.text.slice(0, 40)}.png`
-    a.click()
+    void saveDataUrl(`${plot.text.slice(0, 40)}.png`, painter.snapshot()).catch(
+      (e) => console.error('plot export failed', e),
+    )
   }
 
   return (

@@ -1,0 +1,143 @@
+# Build the surd desktop app (Tauri) for macOS, Windows, and Linux and attach
+# the installers to a GitHub Release.
+#
+# Trigger: push a tag like `v0.1.0` (or run manually). Each runner builds the
+# Rust engine → wasm and the Vite bundle (Tauri's beforeBuildCommand), then
+# compiles the desktop shell and packages the native installer.
+#
+# Signing:
+#   macOS  — signed + notarized when the APPLE_* repository secrets below are
+#            set; absent them the build is unsigned (users right-click → Open
+#            past Gatekeeper). Required secrets:
+#              APPLE_CERTIFICATE           base64 of the Developer ID .p12
+#              APPLE_CERTIFICATE_PASSWORD  the .p12 export password
+#              APPLE_SIGNING_IDENTITY      "Developer ID Application: NAME (TEAMID)"
+#              APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization
+#                (APPLE_PASSWORD is an app-specific password; or swap the trio
+#                 for an App Store Connect key: APPLE_API_ISSUER / APPLE_API_KEY
+#                 / APPLE_API_KEY_PATH)
+#   Linux  — no OS signing; a SHA256SUMS.txt of the .AppImage/.deb is attached.
+#   Windows — left unsigned for now (SmartScreen warning). The CI-friendly
+#            route is SignPath (free for OSS) or Azure Trusted Signing, wired
+#            through bundle.windows.signCommand in tauri.conf.json. See
+#            https://v2.tauri.app/distribute/sign/windows/.
+name: Release desktop apps
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One universal (Intel + Apple Silicon) macOS bundle.
+          - platform: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            rust-targets: wasm32-unknown-unknown
+            args: ''
+          - platform: windows-latest
+            rust-targets: wasm32-unknown-unknown
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri's Linux webview + bundler system dependencies (Tauri v2 needs the
+      # webkit2gtk 4.1 line; the rest are for AppImage/.deb packaging).
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './app/src-tauri -> target'
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install app dependencies
+        run: npm ci
+        working-directory: app
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization. tauri-action imports the cert into a
+          # temporary keychain when APPLE_CERTIFICATE is set; all of these are
+          # empty (and signing is skipped) until the secrets are added, and
+          # they're simply ignored on the Windows/Linux runners.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: app
+          # On a tag build, use the tag; on manual runs, derive from the app
+          # version. tauri-action expands __VERSION__ from tauri.conf.json.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: 'surd v__VERSION__'
+          releaseBody: 'Offline desktop builds of surd. Linux/Windows builds are unsigned — verify Linux downloads against SHA256SUMS.txt.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # Attach checksums of the Linux bundles so downloads can be verified
+      # (Linux has no OS signing gate). Runs after tauri-action has created the
+      # draft release and uploaded the .AppImage/.deb on this same runner.
+      - name: Publish Linux checksums
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        working-directory: app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          TAG="v${VERSION}"
+          cd src-tauri/target/release/bundle
+          shopt -s nullglob
+          files=(appimage/*.AppImage deb/*.deb rpm/*.rpm)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no Linux bundles found to checksum" >&2
+            exit 1
+          fi
+          # Hash with bare filenames (no dir prefix) so `sha256sum -c` works
+          # against the flat assets people download from the release.
+          : > SHA256SUMS.txt
+          for f in "${files[@]}"; do
+            ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" ) >> SHA256SUMS.txt
+          done
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --clobber
