@@ -140,6 +140,13 @@ npm run tauri:dev      # dev window with HMR (builds the wasm engine first)
 npm run tauri:build    # native bundle in app/src-tauri/target/release/bundle/
 ```
 
+On macOS, `tauri:build`'s final `.dmg` step styles the disk-image window with
+AppleScript, which needs the terminal to hold Automation permission for Finder
+— without it the step fails (`bundle_dmg.sh` exits 64). Use
+`npm run tauri:build:dmg` (sets `CI=1`, which skips the cosmetic styling) for a
+plain working `.dmg`, or `npm run tauri:build -- --bundles app` for just the
+`.app`. CI sets `CI` automatically, so release builds are unaffected.
+
 The desktop build adds two thin platform shims over the web build (see
 `app/src/platform/desktop.ts`), both no-ops in a browser: external links (the
 docs button) open in the system browser, and notebook/data/plot exports go
@@ -147,13 +154,15 @@ through a native **Save** dialog (the `save_export` command in
 `app/src-tauri/src/lib.rs`) instead of a browser download.
 
 Installers for macOS (universal `.dmg`), Windows (`.msi`/`.exe`), and Linux
-(`.AppImage`/`.deb`) are built by `.github/workflows/release.yml` — push a
-`v*` tag (or run it manually) and it attaches them to a draft GitHub Release.
-macOS builds are **signed and notarized** when the `APPLE_*` repository secrets
-are set (and unsigned otherwise); Linux builds ship a `SHA256SUMS.txt` for
-verification; Windows is currently unsigned. The workflow header documents the
-required secrets and the Windows signing options (SignPath / Azure Trusted
-Signing).
+(`.rpm` for Fedora, plus `.AppImage` and `.deb`) are built by
+`.github/workflows/release.yml` — push a `v*` tag (or run it manually) and it
+attaches them to a draft GitHub Release.
+Builds are **unsigned by default** (macOS Gatekeeper / Windows SmartScreen will
+warn). macOS signing + notarization is opt-in: set the `MACOS_SIGNING`
+repository variable to `true` and add the `APPLE_*` secrets, and the workflow
+signs the build. Linux builds ship a `SHA256SUMS.txt` for verification. The
+workflow header documents the required secrets and the Windows signing options
+(SignPath / Azure Trusted Signing).
 
 ## What works today
 
