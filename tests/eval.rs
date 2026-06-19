@@ -1248,3 +1248,80 @@ fn certified_windows_enclose_the_exact_values() {
     assert!(ev("dsp.window(kaiser, 8)").starts_with("error: unknown window 'kaiser'"));
     assert!(ev("dsp.window(8, 8)").starts_with("error: dsp.window expects a window name"));
 }
+
+// ---------------------------------------------------------------------------
+// Special functions and statistical distributions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn special_functions_fold_at_exact_arguments() {
+    // Gamma closes in elementary form at integers and half-integers — an
+    // exact value, not an opaque application.
+    assert_eq!(ev("gamma(5)"), "24");
+    assert_eq!(ev("gamma(7)"), "720");
+    assert_eq!(ev("gamma(1/2)"), "sqrt(π)");
+    assert_eq!(ev("gamma(3/2)"), "1/2*sqrt(π)");
+    assert_eq!(ev("gamma(5/2)"), "3/4*sqrt(π)");
+    assert_eq!(ev("erf(0)"), "0");
+    assert_eq!(ev("erfc(0)"), "1");
+    // Everywhere else they stay symbolic until N(...) — the visible crossing.
+    assert!(ev("N(erf(1))").starts_with("0.84270079294971"));
+    assert!(ev("N(gamma(1/2))").starts_with("1.77245385090551"));
+    assert!(ev("N(beta(2, 3))").starts_with("0.0833333333333")); // 1/12
+}
+
+#[test]
+fn distributions_evaluate_to_known_values() {
+    assert!(ev("N(stats.normcdf(1.96))").starts_with("0.97500210485177"));
+    assert!(ev("N(stats.norminv(0.975))").starts_with("1.95996398454005"));
+    assert!(ev("N(stats.normcdf(0))").starts_with("0.5")); // exactly one half
+    assert!(ev("N(stats.tcdf(2, 5))").starts_with("0.94903026058507"));
+    assert!(ev("N(stats.chisqinv(0.95, 1))").starts_with("3.84145882069412"));
+    assert!(ev("N(stats.fcdf(1, 10, 10))").starts_with("0.5")); // F(1; d, d) = 1/2
+    // The inverse genuinely inverts the forward CDF.
+    assert!(ev("N(stats.tcdf(stats.tinv(0.975, 10), 10))").starts_with("0.975"));
+    // Arity is checked up front.
+    assert!(ev("stats.tcdf(2)").starts_with("error: stats.tcdf expects 2"));
+}
+
+#[test]
+fn regression_reports_exact_inference() {
+    let m = "m := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])";
+    // Point estimates and fit statistics are exact rationals.
+    assert_eq!(ev_all(&[m, "m.coefficients[1]"]), "11/5"); // intercept
+    assert_eq!(ev_all(&[m, "m.coefficients[2]"]), "3/5"); // slope
+    assert_eq!(ev_all(&[m, "m.r2"]), "3/5");
+    assert_eq!(ev_all(&[m, "m.rss"]), "12/5");
+    assert_eq!(ev_all(&[m, "m.sigma2"]), "4/5");
+    assert_eq!(ev_all(&[m, "m.df"]), "3");
+    assert_eq!(ev_all(&[m, "m.fstat"]), "9/2");
+    // Standard errors are exact surds; Cook's distance is exactly rational.
+    assert_eq!(ev_all(&[m, "m.se[2]"]), "1/5*sqrt(2)");
+    assert_eq!(ev_all(&[m, "m.cooks[1]"]), "3/2");
+    // The hat-matrix diagonal sums to the parameter count (trace H = k = 2).
+    assert_eq!(
+        ev_all(&[
+            m,
+            "h := m.leverage",
+            "h[1] + h[2] + h[3] + h[4] + h[5]",
+        ]),
+        "2"
+    );
+    // For a simple regression the overall-F p-value equals the slope's
+    // two-sided t p-value — a strong internal consistency check.
+    let fp = ev_all(&[m, "N(m.fpvalue)"]);
+    assert_eq!(fp, ev_all(&[m, "N(m.pvalue[2])"]));
+    assert!(fp.starts_with("0.12402706265755"));
+}
+
+#[test]
+fn regress_uses_an_existing_intercept_column() {
+    // An explicit ones column is detected and used rather than duplicated
+    // (which would make XᵀX singular); same fit as the auto-intercept form.
+    assert_eq!(
+        ev("stats.regress([1, 1; 1, 2; 1, 3; 1, 4; 1, 5], [2; 4; 5; 4; 5]).coefficients[2]"),
+        "3/5"
+    );
+    // Too few observations for the parameters is a clean error.
+    assert!(ev("stats.regress([1; 2], [3; 4])").starts_with("error: stats.regress needs at least 3"));
+}

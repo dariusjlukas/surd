@@ -15,7 +15,8 @@ use num_traits::ToPrimitive;
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "mean", "median", "quantile", "var", "std", "cov", "cor", "linfit", "polyfit", "polyval",
-    "lsq", "rmse", "r2",
+    "lsq", "regress", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv",
+    "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -88,6 +89,12 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             let (x, y) = two_vectors("stats.linfit", &args)?;
             linfit(&x, &y)
         }
+        "regress" => regress(&args),
+        // Distributions are symbolic until N(...): an arity check here, the
+        // arbitrary-precision evaluation in `crate::special`.
+        "normcdf" | "normpdf" | "norminv" => dist(name, args, &[1, 3]),
+        "tcdf" | "tpdf" | "tinv" | "chisqcdf" | "chisqpdf" | "chisqinv" => dist(name, args, &[2]),
+        "fcdf" | "fpdf" | "finv" => dist(name, args, &[3]),
         _ => Err(format!(
             "unknown function 'stats.{}' (available: stats.{})",
             name,
@@ -341,6 +348,267 @@ fn normal_equations(a: &Expr, b: &Expr) -> Result<Expr, String> {
         Expr::Struct(_) => Err("the least-squares minimizer is not unique".into()),
         unique => Ok(unique),
     }
+}
+
+// -- distributions ------------------------------------------------------------
+
+/// A distribution function: validate its arity, then hand back the symbolic
+/// application. It carries no exact value (a normal CDF is transcendental), so
+/// it stays a symbol until `N(...)` evaluates it via `crate::special`.
+fn dist(name: &str, args: Vec<Expr>, allowed: &[usize]) -> Result<Expr, String> {
+    if !allowed.contains(&args.len()) {
+        let counts: Vec<String> = allowed.iter().map(|n| n.to_string()).collect();
+        return Err(format!(
+            "stats.{} expects {} argument(s), got {}",
+            name,
+            counts.join(" or "),
+            args.len()
+        ));
+    }
+    Ok(func(name, args))
+}
+
+// -- linear regression with inference ----------------------------------------
+
+/// Ordinary least squares with the full inferential apparatus, as a fitted-
+/// model struct. The point estimates and their covariance are *exact* (the
+/// coefficient covariance σ̂²·(XᵀX)⁻¹ is a rational matrix, so standard errors
+/// and t-statistics are exact surds); only the p-values, information criteria,
+/// and log-likelihood carry a symbolic `tcdf`/`fcdf`/`ln` to be taken to
+/// decimals with `N(...)`. An intercept column is added automatically unless
+/// the design already holds a constant column.
+fn regress(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "stats.regress expects 2 argument(s), got {}",
+            args.len()
+        ));
+    }
+    let y = entries("stats.regress", &args[1])?;
+    let n = y.len();
+    if n < 3 {
+        return Err("stats.regress needs at least 3 observations".into());
+    }
+    let mut rows = design_rows(&args[0], n)?;
+    if !has_constant_col(&rows) {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let k = rows[0].len();
+    if n <= k {
+        return Err(format!(
+            "stats.regress needs more observations ({}) than parameters ({})",
+            n, k
+        ));
+    }
+    let dfmodel = k - 1;
+    if dfmodel == 0 {
+        return Err("stats.regress needs at least one non-constant regressor".into());
+    }
+    let df = n - k;
+
+    // β̂ = (XᵀX)⁻¹Xᵀy, plus (XᵀX)⁻¹ itself for the covariance.
+    let xmat = Expr::Matrix(rows.clone());
+    let ycol = col(y.clone());
+    let xt = matrix::transpose(&xmat);
+    let xtx = matrix::mat_mul(&xt, &xmat)?;
+    let xty = matrix::mat_mul(&xt, &ycol)?;
+    let beta = match matrix::solve(&xtx, &xty)? {
+        Expr::Struct(_) => {
+            return Err(
+                "stats.regress: the regressors are linearly dependent (rank-deficient)".into(),
+            )
+        }
+        b => b,
+    };
+    let xtx_inv = matrix::inverse(&xtx)?;
+    let inv_diag = diagonal(&xtx_inv)?;
+
+    let fitted = matrix::mat_mul(&xmat, &beta)?;
+    let fitted_v = entries("stats.regress", &fitted)?;
+    let beta_v = entries("stats.regress", &beta)?;
+    let resid: Vec<Expr> = y
+        .iter()
+        .zip(&fitted_v)
+        .map(|(yi, fi)| add(vec![yi.clone(), mul(vec![int(-1), fi.clone()])]))
+        .collect();
+
+    let rss = sum_products(&resid, &resid);
+    if is_known_zero(&rss) {
+        return Err(
+            "stats.regress: residuals are exactly zero (a perfect fit leaves no residual variance \
+             to do inference with)"
+                .into(),
+        );
+    }
+    let sigma2 = mul(vec![inv_int(df), rss.clone()]);
+
+    let cy = centered(&y);
+    let ss_tot = sum_products(&cy, &cy);
+    if is_known_zero(&ss_tot) {
+        return Err("stats.regress is undefined for constant observations (zero variance)".into());
+    }
+
+    // se_j = √(σ̂²·(XᵀX)⁻¹_jj); t_j = β_j/se_j; two-sided p via the t CDF.
+    let mut se = Vec::with_capacity(k);
+    let mut tstat = Vec::with_capacity(k);
+    let mut pvalue = Vec::with_capacity(k);
+    for (bj, vjj) in beta_v.iter().zip(&inv_diag) {
+        let var_j = mul(vec![sigma2.clone(), vjj.clone()]);
+        se.push(pow(var_j.clone(), half()));
+        let t = mul(vec![bj.clone(), pow(var_j, neg_half())]);
+        let p = mul(vec![
+            int(2),
+            add(vec![
+                int(1),
+                mul(vec![
+                    int(-1),
+                    func("tcdf", vec![func("abs", vec![t.clone()]), int(df as i64)]),
+                ]),
+            ]),
+        ]);
+        tstat.push(t);
+        pvalue.push(p);
+    }
+
+    // R², adjusted R², and the overall-significance F.
+    let r2 = add(vec![
+        int(1),
+        mul(vec![int(-1), rss.clone(), pow(ss_tot.clone(), int(-1))]),
+    ]);
+    let adjr2 = add(vec![
+        int(1),
+        mul(vec![
+            int(-1),
+            rss.clone(),
+            int(n as i64 - 1),
+            inv_int(df),
+            pow(ss_tot.clone(), int(-1)),
+        ]),
+    ]);
+    let explained = add(vec![ss_tot, mul(vec![int(-1), rss.clone()])]);
+    let fstat = mul(vec![
+        explained,
+        int(df as i64),
+        inv_int(dfmodel),
+        pow(rss.clone(), int(-1)),
+    ]);
+    let fpvalue = add(vec![
+        int(1),
+        mul(vec![
+            int(-1),
+            func(
+                "fcdf",
+                vec![fstat.clone(), int(dfmodel as i64), int(df as i64)],
+            ),
+        ]),
+    ]);
+
+    // Leverage hᵢ (hat-matrix diagonal), internally studentized residuals, and
+    // Cook's distance — the last is exact (no radical).
+    let hat = matrix::mat_mul(&matrix::mat_mul(&xmat, &xtx_inv)?, &xt)?;
+    let lev = diagonal(&hat)?;
+    let mut studentized = Vec::with_capacity(n);
+    let mut cooks = Vec::with_capacity(n);
+    for (ei, hi) in resid.iter().zip(&lev) {
+        let one_minus_h = add(vec![int(1), mul(vec![int(-1), hi.clone()])]);
+        studentized.push(mul(vec![
+            ei.clone(),
+            pow(mul(vec![sigma2.clone(), one_minus_h.clone()]), neg_half()),
+        ]));
+        cooks.push(mul(vec![
+            pow(ei.clone(), int(2)),
+            inv_int(k),
+            pow(sigma2.clone(), int(-1)),
+            hi.clone(),
+            pow(one_minus_h, int(-2)),
+        ]));
+    }
+
+    // Gaussian log-likelihood and the information criteria (symbolic: each
+    // carries an `ln`). loglik = -(n/2)·(ln 2π + ln(RSS/n) + 1).
+    let loglik = mul(vec![
+        rat_to_expr(BigRational::new(
+            BigInt::from(-(n as i64)),
+            BigInt::from(2),
+        )),
+        add(vec![
+            func("ln", vec![mul(vec![int(2), Expr::Const(Constant::Pi)])]),
+            func("ln", vec![mul(vec![inv_int(n), rss.clone()])]),
+            int(1),
+        ]),
+    ]);
+    let neg2ll = mul(vec![int(-2), loglik.clone()]);
+    let aic = add(vec![neg2ll.clone(), int(2 * (k as i64 + 1))]);
+    let bic = add(vec![
+        neg2ll,
+        mul(vec![func("ln", vec![int(n as i64)]), int(k as i64 + 1)]),
+    ]);
+
+    structure(vec![
+        ("coefficients".into(), beta),
+        ("se".into(), col(se)),
+        ("tstat".into(), col(tstat)),
+        ("pvalue".into(), col(pvalue)),
+        ("fitted".into(), fitted),
+        ("residuals".into(), col(resid)),
+        ("leverage".into(), col(lev)),
+        ("studentized".into(), col(studentized)),
+        ("cooks".into(), col(cooks)),
+        ("cov".into(), matrix::scalar_mul(&sigma2, &xtx_inv)),
+        ("sigma2".into(), sigma2),
+        ("rss".into(), rss),
+        ("r2".into(), r2),
+        ("adjr2".into(), adjr2),
+        ("fstat".into(), fstat),
+        ("fpvalue".into(), fpvalue),
+        ("loglik".into(), loglik),
+        ("aic".into(), aic),
+        ("bic".into(), bic),
+        ("n".into(), int(n as i64)),
+        ("k".into(), int(k as i64)),
+        ("df".into(), int(df as i64)),
+        ("dfmodel".into(), int(dfmodel as i64)),
+    ])
+}
+
+/// Interpret the regressor argument as `n` rows of predictors: an n×k design
+/// matrix as-is, or a length-n vector (row or column) as a single predictor.
+fn design_rows(x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, String> {
+    let Expr::Matrix(rows) = x else {
+        return Err("stats.regress expects a matrix or vector of regressors".into());
+    };
+    if rows.len() == 1 && rows[0].len() == n {
+        return Ok(rows[0].iter().map(|e| vec![e.clone()]).collect());
+    }
+    if rows.len() == n {
+        return Ok(rows.clone());
+    }
+    Err(format!(
+        "stats.regress: {} regressor rows but {} observations",
+        rows.len(),
+        n
+    ))
+}
+
+/// Does any column hold one repeated value? Such a column already spans the
+/// intercept, so `regress` won't add another (which would be rank-deficient).
+fn has_constant_col(rows: &[Vec<Expr>]) -> bool {
+    (0..rows[0].len()).any(|j| rows.iter().all(|r| r[j] == rows[0][j]))
+}
+
+/// Pack a list of entries as an n×1 column vector.
+fn col(v: Vec<Expr>) -> Expr {
+    Expr::Matrix(v.into_iter().map(|e| vec![e]).collect())
+}
+
+/// The main diagonal of a square matrix.
+fn diagonal(m: &Expr) -> Result<Vec<Expr>, String> {
+    let Expr::Matrix(rows) = m else {
+        return Err("expected a matrix".into());
+    };
+    Ok((0..rows.len()).map(|i| rows[i][i].clone()).collect())
 }
 
 /// Entries sorted by exact numeric value (floats by their exact binary

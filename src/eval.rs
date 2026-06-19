@@ -639,6 +639,19 @@ impl Interpreter {
                 }
                 Ok(func(name, args))
             }
+            // Special functions: symbolic objects that fold at exact arguments
+            // (gamma of an integer, erf(0)) and otherwise evaluate under N(...).
+            "erf" | "erfc" | "gamma" | "lgamma" => {
+                arity(name, &args, 1)?;
+                if matrix::is_matrix(&args[0]) {
+                    return matrix::try_map(&args[0], |e| Ok(func(name, vec![e.clone()])));
+                }
+                Ok(func(name, args))
+            }
+            "beta" => {
+                arity(name, &args, 2)?;
+                Ok(func("beta", args))
+            }
             "conj" => {
                 arity(name, &args, 1)?;
                 if matrix::is_matrix(&args[0]) {

@@ -777,10 +777,53 @@ pub fn func(name: &str, args: Vec<Expr>) -> Expr {
                 }
             }
             "ln" if is_one(a) => return int(0),
+            "gamma" => {
+                if let Some(v) = gamma_exact(a) {
+                    return v;
+                }
+            }
+            "erf" if is_zero(a) => return int(0),
+            "erfc" if is_zero(a) => return int(1),
             _ => {}
         }
     }
     Expr::Func(name.to_string(), args)
+}
+
+/// Γ at exact arguments where it closes in elementary form: `Γ(n) = (n-1)!`
+/// for a positive integer, and `Γ(m+½) = (2m)!/(4ᵐ·m!)·√π` for a half-integer
+/// `≥ ½`. Other arguments (including floats) stay symbolic and evaluate under
+/// `N(...)`. Capped to keep the exact factorials from exploding.
+fn gamma_exact(a: &Expr) -> Option<Expr> {
+    let r = numeric_value(a)?;
+    if r.is_integer() {
+        let n = r.to_integer().to_i64().filter(|n| (1..=1000).contains(n))?;
+        return Some(rat_to_expr(BigRational::from_integer(factorial_i(n - 1))));
+    }
+    if r.denom() == &BigInt::from(2) {
+        let numr = r.numer().to_i64()?; // r = numr/2 with numr odd
+        let m = (numr - 1) / 2;
+        if numr >= 1 && (0..=1000).contains(&m) {
+            let mut four_m = BigInt::one();
+            for _ in 0..m {
+                four_m *= BigInt::from(4);
+            }
+            let coeff = BigRational::new(factorial_i(2 * m), four_m * factorial_i(m));
+            return Some(mul(vec![
+                rat_to_expr(coeff),
+                pow(Expr::Const(Constant::Pi), half()),
+            ]));
+        }
+    }
+    None
+}
+
+fn factorial_i(n: i64) -> BigInt {
+    let mut acc = BigInt::one();
+    for k in 2..=n {
+        acc *= BigInt::from(k);
+    }
+    acc
 }
 
 /// Exact trig at `r·π` (and at zero): `sin(pi/6)` is 1/2, not an opaque
@@ -1227,6 +1270,16 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
             }
             let exp = to_bigfloat(ex, p, cc)?;
             Ok(base.pow(&exp, p, ROUND, cc))
+        }
+        // Special functions and statistical distributions (erf, gamma,
+        // normcdf, tcdf, …) evaluate through their own arbitrary-precision
+        // module. Their arguments are ordinary numbers, evaluated here first.
+        Expr::Func(name, args) if crate::special::is_special(name) => {
+            let xs = args
+                .iter()
+                .map(|a| to_bigfloat(a, p, cc))
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::special::eval(name, &xs, p, cc)
         }
         Expr::Func(name, args) if args.len() == 1 => {
             let x = to_bigfloat(&args[0], p, cc)?;

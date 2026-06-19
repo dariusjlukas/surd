@@ -27,6 +27,7 @@ pub mod matrix;
 pub mod parser;
 pub mod remez;
 pub mod signal;
+pub mod special;
 pub mod stats;
 
 pub use eval::Interpreter;
