@@ -5,9 +5,9 @@
 //! `end`), then evaluate the whole unit and print its value. Interactive mode
 //! adds line editing, history, and a continuation prompt.
 
+use std::io::IsTerminal;
 use surd::lexer::{is_blank, is_incomplete};
 use surd::Interpreter;
-use std::io::IsTerminal;
 
 fn main() {
     // Run the whole REPL on a large-stack thread so deep recursion/nesting hits

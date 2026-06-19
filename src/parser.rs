@@ -210,7 +210,11 @@ impl Parser {
         self.expect(Token::RParen)?;
         self.expect(Token::Assign)?;
         let body = self.parse_expr()?;
-        Ok(Some(Node::FuncDef(name.to_string(), params, Box::new(body))))
+        Ok(Some(Node::FuncDef(
+            name.to_string(),
+            params,
+            Box::new(body),
+        )))
     }
 
     fn parse_params(&mut self) -> Result<Vec<String>, String> {
@@ -515,7 +519,9 @@ mod tests {
     #[test]
     fn unary_minus_below_power() {
         // -2 ^ 2  ==  -(2 ^ 2)
-        assert!(matches!(stmt("-2 ^ 2"), Node::Neg(inner) if matches!(*inner, Node::BinOp(Op::Pow, _, _))));
+        assert!(
+            matches!(stmt("-2 ^ 2"), Node::Neg(inner) if matches!(*inner, Node::BinOp(Op::Pow, _, _)))
+        );
     }
 
     #[test]

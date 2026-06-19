@@ -214,15 +214,27 @@ fn big_check(lo: BigFloat, hi: BigFloat) -> Result<(BigFloat, BigFloat), String>
     }
 }
 
-fn big_add(a: (&BigFloat, &BigFloat), b: (&BigFloat, &BigFloat), p: usize) -> Result<(BigFloat, BigFloat), String> {
+fn big_add(
+    a: (&BigFloat, &BigFloat),
+    b: (&BigFloat, &BigFloat),
+    p: usize,
+) -> Result<(BigFloat, BigFloat), String> {
     big_check(a.0.add(b.0, p, DOWN), a.1.add(b.1, p, UP))
 }
 
-fn big_sub(a: (&BigFloat, &BigFloat), b: (&BigFloat, &BigFloat), p: usize) -> Result<(BigFloat, BigFloat), String> {
+fn big_sub(
+    a: (&BigFloat, &BigFloat),
+    b: (&BigFloat, &BigFloat),
+    p: usize,
+) -> Result<(BigFloat, BigFloat), String> {
     big_check(a.0.sub(b.1, p, DOWN), a.1.sub(b.0, p, UP))
 }
 
-fn big_mul(a: (&BigFloat, &BigFloat), b: (&BigFloat, &BigFloat), p: usize) -> Result<(BigFloat, BigFloat), String> {
+fn big_mul(
+    a: (&BigFloat, &BigFloat),
+    b: (&BigFloat, &BigFloat),
+    p: usize,
+) -> Result<(BigFloat, BigFloat), String> {
     let mut lo: Option<BigFloat> = None;
     let mut hi: Option<BigFloat> = None;
     for x in [a.0, a.1] {
@@ -242,7 +254,11 @@ fn big_mul(a: (&BigFloat, &BigFloat), b: (&BigFloat, &BigFloat), p: usize) -> Re
     big_check(lo.unwrap(), hi.unwrap())
 }
 
-fn big_div(a: (&BigFloat, &BigFloat), b: (&BigFloat, &BigFloat), p: usize) -> Result<(BigFloat, BigFloat), String> {
+fn big_div(
+    a: (&BigFloat, &BigFloat),
+    b: (&BigFloat, &BigFloat),
+    p: usize,
+) -> Result<(BigFloat, BigFloat), String> {
     if !bf_strictly_pos(b.0) && !bf_strictly_neg(b.1) {
         return Err("division by an interval containing zero (a sample's divisor may be 0)".into());
     }
@@ -281,7 +297,11 @@ fn big_unary(
                 big_check(a.1.neg(), a.0.neg())
             } else {
                 let neg_lo = a.0.neg();
-                let mag = if bf_lt(a.1, &neg_lo) { neg_lo } else { a.1.clone() };
+                let mag = if bf_lt(a.1, &neg_lo) {
+                    neg_lo
+                } else {
+                    a.1.clone()
+                };
                 big_check(zero, mag)
             }
         }
@@ -289,7 +309,11 @@ fn big_unary(
             if a.1.is_negative() {
                 return Err("sqrt of a negative sample (signals are real-valued)".into());
             }
-            let lo = if a.0.is_negative() { zero } else { a.0.sqrt(p, DOWN) };
+            let lo = if a.0.is_negative() {
+                zero
+            } else {
+                a.0.sqrt(p, DOWN)
+            };
             big_check(lo, a.1.sqrt(p, UP))
         }
         "exp" => big_check(a.0.exp(p, DOWN, cc), a.1.exp(p, UP, cc)),
@@ -327,8 +351,7 @@ fn big_unary(
 /// approximation outward until exact containment is verified.
 fn rat_to_f64_iv(r: &BigRational) -> Result<(f64, f64), String> {
     let approx = r.to_f64().filter(|v| v.is_finite()).ok_or_else(|| {
-        "an entry exceeds the f64 range — use signal(v, digits) for arbitrary precision"
-            .to_string()
+        "an entry exceeds the f64 range — use signal(v, digits) for arbitrary precision".to_string()
     })?;
     let mut lo = approx;
     let mut hi = approx;
@@ -353,7 +376,11 @@ fn rat_to_f64_iv(r: &BigRational) -> Result<(f64, f64), String> {
     }
 }
 
-fn rat_to_big_iv(r: &BigRational, p: usize, cc: &mut Consts) -> Result<(BigFloat, BigFloat), String> {
+fn rat_to_big_iv(
+    r: &BigRational,
+    p: usize,
+    cc: &mut Consts,
+) -> Result<(BigFloat, BigFloat), String> {
     let radix = astro_float::Radix::Dec;
     let nearest = RoundingMode::ToEven;
     // Numerator and denominator parse exactly given enough bits, then a
@@ -373,8 +400,9 @@ fn rat_to_big_iv(r: &BigRational, p: usize, cc: &mut Consts) -> Result<(BigFloat
 /// their exact binary value. Symbolic entries refuse.
 fn entry_rational(e: &Expr) -> Result<BigRational, String> {
     match e {
-        Expr::Float(bf, _) => float_to_rational(bf)
-            .ok_or_else(|| "cannot pack a non-finite float".to_string()),
+        Expr::Float(bf, _) => {
+            float_to_rational(bf).ok_or_else(|| "cannot pack a non-finite float".to_string())
+        }
         other => numeric_value(other).ok_or_else(|| {
             format!(
                 "signal needs numeric entries, got '{}' — evaluate symbolic values first (N, subs)",
@@ -471,7 +499,9 @@ fn deviation_f64(s: &SignalData, i: usize) -> f64 {
 }
 
 fn max_half_width_f64(s: &SignalData) -> f64 {
-    (0..s.len()).map(|i| deviation_f64(s, i)).fold(0.0, f64::max)
+    (0..s.len())
+        .map(|i| deviation_f64(s, i))
+        .fold(0.0, f64::max)
 }
 
 /// An f64 ≥ the BigFloat value, for display purposes. Round-trips through
@@ -519,8 +549,16 @@ pub fn binop(op: &str, a: &SignalData, b: &SignalData) -> Result<SignalData, Str
             Ok(SignalData::F64 { lo, hi })
         }
         (
-            SignalData::Big { lo: al, hi: ah, digits },
-            SignalData::Big { lo: bl, hi: bh, digits: bd },
+            SignalData::Big {
+                lo: al,
+                hi: ah,
+                digits,
+            },
+            SignalData::Big {
+                lo: bl,
+                hi: bh,
+                digits: bd,
+            },
         ) => {
             let digits = (*digits).max(*bd);
             let p = prec_bits(digits);
@@ -573,8 +611,12 @@ pub fn scalar_binop(
     scalar: &Expr,
     scalar_on_left: bool,
 ) -> Result<SignalData, String> {
-    let r = entry_rational(scalar)
-        .map_err(|_| format!("cannot mix '{}' into a signal — only numbers broadcast", scalar))?;
+    let r = entry_rational(scalar).map_err(|_| {
+        format!(
+            "cannot mix '{}' into a signal — only numbers broadcast",
+            scalar
+        )
+    })?;
     let broadcast = constant(s, &r)?;
     if scalar_on_left {
         binop(op, &broadcast, s)
@@ -690,8 +732,16 @@ pub fn conv(a: &SignalData, b: &SignalData) -> Result<SignalData, String> {
             Ok(SignalData::F64 { lo, hi })
         }
         (
-            SignalData::Big { lo: al, hi: ah, digits },
-            SignalData::Big { lo: bl, hi: bh, digits: bd },
+            SignalData::Big {
+                lo: al,
+                hi: ah,
+                digits,
+            },
+            SignalData::Big {
+                lo: bl,
+                hi: bh,
+                digits: bd,
+            },
         ) => {
             let digits = (*digits).max(*bd);
             let p = prec_bits(digits);
@@ -809,9 +859,7 @@ fn fft_f64(
         _ => return Err("fft: real and imaginary parts must share a substrate".into()),
     };
     // (re_lo, re_hi, im_lo, im_hi) per element.
-    let mut buf: Vec<(f64, f64, f64, f64)> = (0..n)
-        .map(|i| (rl[i], rh[i], il[i], ih[i]))
-        .collect();
+    let mut buf: Vec<(f64, f64, f64, f64)> = (0..n).map(|i| (rl[i], rh[i], il[i], ih[i])).collect();
     bit_reverse_permute(&mut buf);
 
     let mut len = 2;
@@ -858,8 +906,14 @@ fn fft_f64(
         out.3.push(d * scale);
     }
     Ok((
-        SignalData::F64 { lo: out.0, hi: out.1 },
-        SignalData::F64 { lo: out.2, hi: out.3 },
+        SignalData::F64 {
+            lo: out.0,
+            hi: out.1,
+        },
+        SignalData::F64 {
+            lo: out.2,
+            hi: out.3,
+        },
     ))
 }
 
@@ -951,8 +1005,16 @@ fn fft_big(
         }
     }
     Ok((
-        SignalData::Big { lo: out.0, hi: out.1, digits },
-        SignalData::Big { lo: out.2, hi: out.3, digits },
+        SignalData::Big {
+            lo: out.0,
+            hi: out.1,
+            digits,
+        },
+        SignalData::Big {
+            lo: out.2,
+            hi: out.3,
+            digits,
+        },
     ))
 }
 
@@ -1025,14 +1087,17 @@ pub fn slice(s: &SignalData, start: usize, n: usize) -> Result<SignalData, Strin
     if n == 0 {
         return Err("slice needs at least 1 sample".into());
     }
-    let end = start.checked_add(n).filter(|e| *e <= s.len()).ok_or_else(|| {
-        format!(
-            "slice of {} samples from position {} runs past the end (the signal has {})",
-            n,
-            start + 1,
-            s.len()
-        )
-    })?;
+    let end = start
+        .checked_add(n)
+        .filter(|e| *e <= s.len())
+        .ok_or_else(|| {
+            format!(
+                "slice of {} samples from position {} runs past the end (the signal has {})",
+                n,
+                start + 1,
+                s.len()
+            )
+        })?;
     Ok(match s {
         SignalData::F64 { lo, hi } => SignalData::F64 {
             lo: lo[start..end].to_vec(),
@@ -1057,7 +1122,9 @@ fn mid_f64(s: &SignalData, i: usize) -> f64 {
             let m = lo[i]
                 .add(&hi[i], p, RoundingMode::ToEven)
                 .div(&two, p, RoundingMode::ToEven);
-            float_to_rational(&m).and_then(|r| r.to_f64()).unwrap_or(f64::NAN)
+            float_to_rational(&m)
+                .and_then(|r| r.to_f64())
+                .unwrap_or(f64::NAN)
         }
     }
 }
@@ -1190,8 +1257,8 @@ pub fn big_from_decimal_bounds(
             if s.len() > 1_000_000 {
                 return Err("'signal' bound is too long".into());
             }
-            let r = crate::dataio::decimal_to_rat(s)
-                .map_err(|e| format!("bad signal bound: {}", e))?;
+            let r =
+                crate::dataio::decimal_to_rat(s).map_err(|e| format!("bad signal bound: {}", e))?;
             let (d, u) = rat_to_big_iv(&r, p, cc)?;
             Ok(if low_side { d } else { u })
         };
@@ -1261,10 +1328,7 @@ pub fn window(name: &str, n: usize) -> Result<SignalData, String> {
         let angle = f64_mul(ratio, pi)?;
         let cos1 = f64_unary("cos", angle)?;
         let cos2 = f64_unary("cos", f64_mul(angle, (2.0, 2.0))?)?;
-        let w = f64_add(
-            f64_sub(c0, f64_mul(c1, cos1)?)?,
-            f64_mul(c2, cos2)?,
-        )?;
+        let w = f64_add(f64_sub(c0, f64_mul(c1, cos1)?)?, f64_mul(c2, cos2)?)?;
         // The window is mathematically within [0, 1] for these families'
         // coefficient signs at the sampled points — but the enclosure is the
         // claim, so no clamping beyond what interval math produced.

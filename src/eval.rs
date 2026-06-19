@@ -5,11 +5,11 @@ use crate::ast::{Node, Op};
 use crate::dsp;
 use crate::expr::*;
 use crate::interval;
-use crate::signal;
-use crate::stats;
 use crate::lexer::lex;
 use crate::matrix;
 use crate::parser::parse;
+use crate::signal;
+use crate::stats;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use std::collections::HashMap;
@@ -85,7 +85,10 @@ impl Interpreter {
 
     /// Bind a value in the current frame (local inside a function, else global).
     fn set_var(&mut self, name: &str, value: Expr) {
-        self.frames.last_mut().unwrap().insert(name.to_string(), value);
+        self.frames
+            .last_mut()
+            .unwrap()
+            .insert(name.to_string(), value);
     }
 
     // -- evaluation ----------------------------------------------------------
@@ -132,8 +135,7 @@ impl Interpreter {
                         .find(|(n, _)| n == field)
                         .map(|(_, v)| v.clone())
                         .ok_or_else(|| {
-                            let names: Vec<&str> =
-                                fields.iter().map(|(n, _)| n.as_str()).collect();
+                            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
                             format!(
                                 "struct has no field '{}' (fields: {})",
                                 field,
@@ -190,9 +192,7 @@ impl Interpreter {
                 }
                 // struct(a = 1, ...) reads its field names from the syntax —
                 // the `a` must not collapse to a workspace binding first.
-                if name == "struct"
-                    && !matches!(self.get_var(name), Some(Expr::Function { .. }))
-                {
+                if name == "struct" && !matches!(self.get_var(name), Some(Expr::Function { .. })) {
                     return self.call_struct(args);
                 }
                 let evaluated = args
@@ -407,12 +407,7 @@ impl Interpreter {
     /// user module — a struct whose `name` field holds a function. A user
     /// binding of the namespace's name shadows it, the same rule as any
     /// other builtin.
-    fn eval_field_call(
-        &mut self,
-        base: &Node,
-        name: &str,
-        args: &[Node],
-    ) -> Result<Expr, String> {
+    fn eval_field_call(&mut self, base: &Node, name: &str, args: &[Node]) -> Result<Expr, String> {
         if let Node::Ident(ns) = base {
             if self.get_var(ns).is_none() && is_namespace(ns) {
                 let evaluated = args
@@ -512,9 +507,7 @@ impl Interpreter {
         for f in &args[..var_idx] {
             let curve = self.eval_shadowed(std::slice::from_ref(&var), f)?;
             if matches!(curve, Expr::Signal(_)) {
-                return Err(
-                    "signals plot without a window — plot(s), not plot(s, x, a, b)".into(),
-                );
+                return Err("signals plot without a window — plot(s), not plot(s, x, a, b)".into());
             }
             out.push(curve);
         }
@@ -724,7 +717,10 @@ impl Interpreter {
                         }
                         Ok(signal::half_width(s, Some(i - 1)))
                     }
-                    _ => Err(format!("bound expects 1 or 2 arguments, got {}", args.len())),
+                    _ => Err(format!(
+                        "bound expects 1 or 2 arguments, got {}",
+                        args.len()
+                    )),
                 }
             }
             // -- data primitives ---------------------------------------------
@@ -740,7 +736,9 @@ impl Interpreter {
             "size" => {
                 arity(name, &args, 1)?;
                 expect_matrix(name, &args[0])?;
-                let Expr::Matrix(rows) = &args[0] else { unreachable!() };
+                let Expr::Matrix(rows) = &args[0] else {
+                    unreachable!()
+                };
                 structure(vec![
                     ("rows".to_string(), int(rows.len() as i64)),
                     ("cols".to_string(), int(rows[0].len() as i64)),
@@ -776,7 +774,9 @@ impl Interpreter {
                     )?))),
                     Expr::Matrix(rows) if rows.len() == 1 => {
                         check_slice(start, n, rows[0].len())?;
-                        Ok(Expr::Matrix(vec![rows[0][start - 1..start - 1 + n].to_vec()]))
+                        Ok(Expr::Matrix(vec![
+                            rows[0][start - 1..start - 1 + n].to_vec()
+                        ]))
                     }
                     Expr::Matrix(rows) if rows.iter().all(|r| r.len() == 1) => {
                         check_slice(start, n, rows.len())?;
@@ -797,7 +797,12 @@ impl Interpreter {
                     pow(int(n as i64 - 1), int(-1)),
                 ]);
                 let row = (0..n)
-                    .map(|k| add(vec![args[0].clone(), mul(vec![int(k as i64), step.clone()])]))
+                    .map(|k| {
+                        add(vec![
+                            args[0].clone(),
+                            mul(vec![int(k as i64), step.clone()]),
+                        ])
+                    })
                     .collect();
                 Ok(Expr::Matrix(vec![row]))
             }
@@ -846,7 +851,10 @@ impl Interpreter {
                     let var = as_symbol(&args[1])?;
                     matrix::char_poly(&args[0], &var)
                 }
-                _ => Err(format!("charpoly expects 1 or 2 arguments, got {}", args.len())),
+                _ => Err(format!(
+                    "charpoly expects 1 or 2 arguments, got {}",
+                    args.len()
+                )),
             },
             "eigenvalues" | "eig" => {
                 arity(name, &args, 1)?;
@@ -1156,10 +1164,7 @@ fn check_assignable(name: &str) -> Result<(), String> {
 fn as_bool(e: &Expr) -> Result<bool, String> {
     match e {
         Expr::Bool(b) => Ok(*b),
-        other => Err(format!(
-            "expected a true/false condition, got '{}'",
-            other
-        )),
+        other => Err(format!("expected a true/false condition, got '{}'", other)),
     }
 }
 
@@ -1177,8 +1182,7 @@ fn expect_matrix(name: &str, e: &Expr) -> Result<(), String> {
 }
 
 fn vector_arg(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
-    matrix::vector_of(e)
-        .ok_or_else(|| format!("{} expects a vector (a 1×n or n×1 matrix)", name))
+    matrix::vector_of(e).ok_or_else(|| format!("{} expects a vector (a 1×n or n×1 matrix)", name))
 }
 
 /// `vcat`/`hcat`: stack matrices vertically/horizontally. Scalars join as
@@ -1191,9 +1195,7 @@ fn concat(name: &str, args: &[Expr]) -> Result<Expr, String> {
     for a in args {
         match a {
             Expr::Matrix(rows) => blocks.push(rows.clone()),
-            e if is_opaque_value(e) => {
-                return Err(format!("{} cannot include '{}'", name, e))
-            }
+            e if is_opaque_value(e) => return Err(format!("{} cannot include '{}'", name, e)),
             scalar => blocks.push(vec![vec![scalar.clone()]]),
         }
     }

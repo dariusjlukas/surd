@@ -6,11 +6,11 @@
 //! is the cancellation boundary: killing the worker and replaying the
 //! transcript is the supported way to abort a runaway evaluation.
 
+use serde::Serialize;
 use std::collections::BTreeSet;
 use surd::ast::Node;
 use surd::expr::Expr;
 use surd::{f64eval, latex};
-use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 /// Base number of samples per plotted curve. Enough for a smooth
@@ -200,7 +200,10 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
 /// A `plot(s1, ..., sk)` over signals: the samples are the data — no
 /// resampling, no window arguments. Long signals decimate to a min/max
 /// envelope (extremes survive; the `undersampled` flag says so).
-fn plot_signal_data(e: &Expr, sig_id: u32) -> Option<Result<(PlotData, Vec<surd::signal::Signal>), String>> {
+fn plot_signal_data(
+    e: &Expr,
+    sig_id: u32,
+) -> Option<Result<(PlotData, Vec<surd::signal::Signal>), String>> {
     let Expr::Func(name, args) = e else {
         return None;
     };
@@ -219,7 +222,9 @@ fn plot_signal_data(e: &Expr, sig_id: u32) -> Option<Result<(PlotData, Vec<surd:
     let mut maxlen = 0usize;
     for (i, arg) in args.iter().enumerate() {
         let Expr::Signal(s) = arg else {
-            return Some(Err("plot: signals and functions cannot mix in one plot".into()));
+            return Some(Err(
+                "plot: signals and functions cannot mix in one plot".into()
+            ));
         };
         maxlen = maxlen.max(s.len());
         signals.push(s.clone());
@@ -260,8 +265,7 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
         let b = bound_f64(&args[3], "plot3d", "upper x")?;
         let c = bound_f64(&args[5], "plot3d", "lower y")?;
         let d = bound_f64(&args[6], "plot3d", "upper y")?;
-        if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d)
-        {
+        if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
             return Err("plot3d: bounds must be finite with a < b and c < d".into());
         }
         let surface = f64eval::sample2d_adaptive(
@@ -493,9 +497,9 @@ impl Session {
                     plot3d,
                     error: None,
                 };
-                let curve = plot_data(&value).map(|r| r.map(|p| (p, Vec::new()))).or_else(
-                    || plot_signal_data(&value, self.next_plot_id),
-                );
+                let curve = plot_data(&value)
+                    .map(|r| r.map(|p| (p, Vec::new())))
+                    .or_else(|| plot_signal_data(&value, self.next_plot_id));
                 match (curve, plot3d_data(&value)) {
                     (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
                     (Some(Ok((plot, signals))), _) => {
@@ -549,7 +553,15 @@ pub fn resample(expr_text: &str, var: &str, a: f64, b: f64) -> String {
 /// policy as the original `plot3d` evaluation), so the response carries the
 /// resolution it settled on: `{ok, heights, n, undersampled}`.
 #[wasm_bindgen]
-pub fn resample3d(expr_text: &str, xvar: &str, yvar: &str, a: f64, b: f64, c: f64, d: f64) -> String {
+pub fn resample3d(
+    expr_text: &str,
+    xvar: &str,
+    yvar: &str,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+) -> String {
     if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
         return serde_json::json!({"ok": false, "error": "bounds must be finite with a < b and c < d"})
             .to_string();
@@ -799,8 +811,7 @@ mod tests {
         assert_eq!(v["ok"], true, "{}", v["error"]);
         let v: serde_json::Value = serde_json::from_str(&s2.eval("saved.x + x")).unwrap();
         assert_eq!(v["text"], "2998/3");
-        let v: serde_json::Value =
-            serde_json::from_str(&s2.eval("saved.sensor.t")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s2.eval("saved.sensor.t")).unwrap();
         assert_eq!(v["ok"], true, "{}", v["error"]);
 
         // Errors surface, and bad names are rejected.
@@ -832,8 +843,7 @@ mod tests {
         assert!(pts.iter().all(|p| !p[1].is_null()));
 
         // 1/x on [-1, 1] has a gap at the pole
-        let v: serde_json::Value =
-            serde_json::from_str(&s.eval("plot(1/x, x, -1, 1)")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s.eval("plot(1/x, x, -1, 1)")).unwrap();
         assert_eq!(v["kind"], "plot");
     }
 
@@ -929,8 +939,7 @@ mod tests {
     fn symbols(src: &str) -> (Vec<String>, Vec<String>) {
         let v: serde_json::Value = serde_json::from_str(&cell_symbols(src)).unwrap();
         let take = |k: &str| {
-            v[k]
-                .as_array()
+            v[k].as_array()
                 .unwrap()
                 .iter()
                 .map(|s| s.as_str().unwrap().to_string())

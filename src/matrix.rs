@@ -509,11 +509,14 @@ pub fn qr(a: &Expr) -> Result<Expr, String> {
         .flatten()
         .any(|e| matches!(e, Expr::Complex(..)))
     {
-        return Err("qr of a complex matrix isn't implemented (needs the conjugate inner product)".into());
+        return Err(
+            "qr of a complex matrix isn't implemented (needs the conjugate inner product)".into(),
+        );
     }
     let column = |j: usize| -> Vec<Expr> { (0..m).map(|i| rows[i][j].clone()).collect() };
     let dot = |x: &[Expr], y: &[Expr]| -> Expr {
-        add(x.iter()
+        add(x
+            .iter()
             .zip(y)
             .map(|(p, q)| mul(vec![p.clone(), q.clone()]))
             .collect())
@@ -547,7 +550,11 @@ pub fn qr(a: &Expr) -> Result<Expr, String> {
             ));
         }
         let inv_norm = pow(norm2.clone(), neg_half.clone());
-        q_cols.push(v.iter().map(|e| mul(vec![inv_norm.clone(), e.clone()])).collect());
+        q_cols.push(
+            v.iter()
+                .map(|e| mul(vec![inv_norm.clone(), e.clone()]))
+                .collect(),
+        );
         r[j][j] = pow(norm2.clone(), half()); // |vⱼ|
         for i in 0..j {
             r[i][j] = dot(&q_cols[i], &aj); // qᵢ·aⱼ
@@ -830,7 +837,11 @@ fn root_to_expr(r: &ExactRoot) -> Expr {
             if *disc < BigRational::zero() {
                 // (−b ± i·√(−disc)) / (2a) — one of a complex-conjugate pair.
                 let real_term = mul(vec![neg_b, two_a_inv.clone()]);
-                let imag_term = mul(vec![sign, pow(rat_to_expr(-disc.clone()), half()), two_a_inv]);
+                let imag_term = mul(vec![
+                    sign,
+                    pow(rat_to_expr(-disc.clone()), half()),
+                    two_a_inv,
+                ]);
                 complex(real_term, imag_term)
             } else {
                 let signed_sqrt = mul(vec![sign, pow(rat_to_expr(disc.clone()), half())]);
@@ -979,10 +990,17 @@ fn real_cbrt_rat(w: &BigRational) -> Expr {
 fn real_cbrt_surd(a: &BigRational, s: i64, delta: &BigRational) -> Expr {
     let q = BigRational::from_integer(BigInt::from(s));
     let sgn = quad_surd_sign(a, &q, delta);
-    let (aa, qq) = if sgn < 0 { (-a.clone(), -q) } else { (a.clone(), q) };
+    let (aa, qq) = if sgn < 0 {
+        (-a.clone(), -q)
+    } else {
+        (a.clone(), q)
+    };
     let inner = add(vec![
         rat_to_expr(aa),
-        mul(vec![rat_to_expr(qq), pow(rat_to_expr(delta.clone()), half())]),
+        mul(vec![
+            rat_to_expr(qq),
+            pow(rat_to_expr(delta.clone()), half()),
+        ]),
     ]);
     let root = pow(inner, third());
     if sgn < 0 {
@@ -1005,10 +1023,8 @@ fn cubic_roots(c: &[BigRational]) -> Result<Vec<ExactRoot>, String> {
     let dd = c[0].clone() / c[3].clone();
     let shift = -bb.clone() / n(3);
     let p = cc.clone() - bb.clone() * bb.clone() / n(3);
-    let q =
-        n(2) * bb.clone() * bb.clone() * bb.clone() / n(27) - bb.clone() * cc / n(3) + dd;
-    let delta =
-        q.clone() * q.clone() / n(4) + p.clone() * p.clone() * p.clone() / n(27);
+    let q = n(2) * bb.clone() * bb.clone() * bb.clone() / n(27) - bb.clone() * cc / n(3) + dd;
+    let delta = q.clone() * q.clone() / n(4) + p.clone() * p.clone() * p.clone() / n(27);
 
     if delta < BigRational::zero() {
         return Err(
@@ -1236,8 +1252,7 @@ impl QuadRat {
     /// 1/(a + b√d) = (a − b√d)/(a² − b²·d). The denominator is nonzero for a
     /// nonzero element because √d is irrational.
     fn inv(&self, d: &BigRational) -> Self {
-        let denom =
-            self.a.clone() * self.a.clone() - self.b.clone() * self.b.clone() * d.clone();
+        let denom = self.a.clone() * self.a.clone() - self.b.clone() * self.b.clone() * d.clone();
         QuadRat {
             a: self.a.clone() / denom.clone(),
             b: -self.b.clone() / denom,
@@ -1283,7 +1298,11 @@ impl QuadComplex {
     /// conj(z) / |z|². The norm re² + im² lives in ℚ(√d) ⊂ ℝ, so it vanishes
     /// only when z itself is zero.
     fn inv(&self, d: &BigRational) -> Self {
-        let norm_inv = self.re.mul(&self.re, d).add(&self.im.mul(&self.im, d)).inv(d);
+        let norm_inv = self
+            .re
+            .mul(&self.re, d)
+            .add(&self.im.mul(&self.im, d))
+            .inv(d);
         QuadComplex {
             re: self.re.mul(&norm_inv, d),
             im: self.im.neg().mul(&norm_inv, d),
@@ -1309,7 +1328,10 @@ fn root_to_quad(r: &ExactRoot) -> (QuadComplex, BigRational) {
             }
             if *disc > BigRational::zero() {
                 // Real surd: λ = −b/(2a) + (±1/(2a))·√disc.
-                let re = QuadRat { a: rat_part, b: coeff };
+                let re = QuadRat {
+                    a: rat_part,
+                    b: coeff,
+                };
                 (
                     QuadComplex {
                         re,

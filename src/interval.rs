@@ -15,7 +15,9 @@
 //! avoiding non-monotonic case analysis; tan goes through sin/cos with a
 //! zero-excluding interval division (so poles refuse rather than lie).
 
-use crate::expr::{bf_lt, bf_strictly_neg, bf_strictly_pos, numeric_value, with_consts, Constant, Expr};
+use crate::expr::{
+    bf_lt, bf_strictly_neg, bf_strictly_pos, numeric_value, with_consts, Constant, Expr,
+};
 use astro_float::{BigFloat, Consts, Radix, RoundingMode};
 use num_traits::ToPrimitive;
 
@@ -276,7 +278,11 @@ fn abs_iv(a: &Iv, p: usize) -> Option<Iv> {
     } else if a.hi.is_negative() {
         neg_iv(a)
     } else {
-        let mag = if bf_lt(&a.hi, &a.lo.neg()) { a.lo.neg() } else { a.hi.clone() };
+        let mag = if bf_lt(&a.hi, &a.lo.neg()) {
+            a.lo.neg()
+        } else {
+            a.hi.clone()
+        };
         Iv::new(BigFloat::from_i64(0, p.max(64)), mag)
     }
 }
@@ -385,7 +391,10 @@ mod tests {
         // (√2+√3)² − (5+2√6) is exactly 0 but not structurally 0: the
         // enclosure can never exclude zero, so the answer is "inseparable",
         // not a wrong sign.
-        let lhs = pow(add(vec![pow(int(2), rat(1, 2)), pow(int(3), rat(1, 2))]), int(2));
+        let lhs = pow(
+            add(vec![pow(int(2), rat(1, 2)), pow(int(3), rat(1, 2))]),
+            int(2),
+        );
         let rhs = add(vec![int(5), mul(vec![int(2), pow(int(6), rat(1, 2))])]);
         let d = add(vec![lhs, mul(vec![int(-1), rhs])]);
         assert!(matches!(sign_of(&d), Sign::Inseparable));

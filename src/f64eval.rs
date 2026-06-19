@@ -158,14 +158,7 @@ pub struct Curve1d {
 /// convergence test, doubling sample density (`n → 2n−1`, so sample sets
 /// nest) from `base` up to `max` — the 1D sibling of [`sample2d_adaptive`],
 /// same test, same tolerances.
-pub fn sample_adaptive(
-    e: &Expr,
-    var: &str,
-    a: f64,
-    b: f64,
-    base: usize,
-    max: usize,
-) -> Curve1d {
+pub fn sample_adaptive(e: &Expr, var: &str, a: f64, b: f64, base: usize, max: usize) -> Curve1d {
     let max = max.clamp(3, 100_000);
     // the even-index subset only reaches b when n is odd
     let base = base.clamp(3, max) | 1;

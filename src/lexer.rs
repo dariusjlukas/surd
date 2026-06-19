@@ -300,27 +300,33 @@ mod tests {
 
     #[test]
     fn comparison_operators() {
-        assert_eq!(
-            toks("< <= > >= !="),
-            vec![Lt, Le, Gt, Ge, Ne, Eof]
-        );
+        assert_eq!(toks("< <= > >= !="), vec![Lt, Le, Gt, Ge, Ne, Eof]);
     }
 
     #[test]
     fn decimals_are_one_token() {
         assert_eq!(toks("1.5"), vec![Num("1.5".into()), Eof]);
         // a second dot ends the number
-        assert_eq!(toks("1.5.5"), vec![Num("1.5".into()), Num(".5".into()), Eof]);
+        assert_eq!(
+            toks("1.5.5"),
+            vec![Num("1.5".into()), Num(".5".into()), Eof]
+        );
     }
 
     #[test]
     fn comments_run_to_end_of_line() {
-        assert_eq!(toks("1 # ignored\n2"), vec![Num("1".into()), Newline, Num("2".into()), Eof]);
+        assert_eq!(
+            toks("1 # ignored\n2"),
+            vec![Num("1".into()), Newline, Num("2".into()), Eof]
+        );
     }
 
     #[test]
     fn newlines_are_significant_only_at_depth_zero() {
-        assert_eq!(toks("1\n2"), vec![Num("1".into()), Newline, Num("2".into()), Eof]);
+        assert_eq!(
+            toks("1\n2"),
+            vec![Num("1".into()), Newline, Num("2".into()), Eof]
+        );
         // inside parens a newline is line continuation, not a separator
         assert_eq!(
             toks("(1\n+ 2)"),

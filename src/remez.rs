@@ -217,7 +217,8 @@ fn error_numerators(
         // N = wn·(dn·da·s^{r−1} − dd·S)·(wd_all / (wd·dd))
         let scale = &wd_all / (w[j].denom() * d[j].denom());
         let n = w[j].numer()
-            * (d[j].numer() * d[j].denom() * &da * &s_pow[r - 1] / d[j].denom() - d[j].denom() * &sum)
+            * (d[j].numer() * d[j].denom() * &da * &s_pow[r - 1] / d[j].denom()
+                - d[j].denom() * &sum)
             * &scale;
         out.push(n);
     }
@@ -241,9 +242,8 @@ fn resolve_bands(edges: &[Expr], desired: &[Expr], weights: &[Expr]) -> Result<V
             }
             xs.push((x.clone(), x));
         } else {
-            let (lo, hi) = interval::rational_enclosure(&c, 128).ok_or_else(|| {
-                format!("band edge '{}' is not a constant frequency", e)
-            })?;
+            let (lo, hi) = interval::rational_enclosure(&c, 128)
+                .ok_or_else(|| format!("band edge '{}' is not a constant frequency", e))?;
             if hi > BigRational::from_integer(1.into())
                 || lo < BigRational::from_integer((-1).into())
             {
@@ -389,8 +389,8 @@ fn solve_levelled(
     r: usize,
 ) -> Result<(Vec<BigRational>, BigRational), String> {
     let m = extremals.len(); // r + 1
-    // Build the augmented matrix [A | b] over the rationals, then scale each
-    // row by the lcm of its denominators to integers.
+                             // Build the augmented matrix [A | b] over the rationals, then scale each
+                             // row by the lcm of its denominators to integers.
     let mut aug: Vec<Vec<BigInt>> = Vec::with_capacity(m);
     for (i, &j) in extremals.iter().enumerate() {
         let x = &grid[j];
@@ -403,8 +403,7 @@ fn solve_levelled(
                 0 => t_prev.clone(),
                 1 => t_curr.clone(),
                 _ => {
-                    let t_next =
-                        BigRational::from_integer(2.into()) * x * &t_curr - &t_prev;
+                    let t_next = BigRational::from_integer(2.into()) * x * &t_curr - &t_prev;
                     t_prev = std::mem::replace(&mut t_curr, t_next);
                     t_curr.clone()
                 }

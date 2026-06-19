@@ -407,7 +407,10 @@ fn mul_real(factors: Vec<Expr>) -> Expr {
     if !coeff.is_one() && result.len() == 1 {
         if let Expr::Add(terms) = &result[0] {
             let c = rat_to_expr(coeff);
-            return add(terms.iter().map(|t| mul(vec![c.clone(), t.clone()])).collect());
+            return add(terms
+                .iter()
+                .map(|t| mul(vec![c.clone(), t.clone()]))
+                .collect());
         }
     }
 
@@ -529,8 +532,7 @@ pub fn pow(base: Expr, exp: Expr) -> Expr {
                     let (s, f) = extract_square_rational(&b);
                     let s_bits = s.numer().bits().max(s.denom().bits()).max(1) as u128;
                     if !s.is_one()
-                        && s_bits.saturating_mul(k.unsigned_abs() as u128)
-                            <= MAX_POW_RESULT_BITS
+                        && s_bits.saturating_mul(k.unsigned_abs() as u128) <= MAX_POW_RESULT_BITS
                     {
                         return mul(vec![
                             rat_to_expr(rat_pow(&s, &BigInt::from(k))),
@@ -567,7 +569,11 @@ fn known_nonneg(e: &Expr) -> bool {
             // r + c·√m with exactly one negative side: decidable exactly by
             // comparing r² against c²·m (e.g. 10 − 2·√5 ≥ 0 since 100 ≥ 20).
             if let [a, b] = ts.as_slice() {
-                let (num, surd) = if numeric_value(a).is_some() { (a, b) } else { (b, a) };
+                let (num, surd) = if numeric_value(a).is_some() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
                 if let (Some(r), Some((c, m))) = (numeric_value(num), surd_value(surd)) {
                     let r2 = &r * &r;
                     let c2m = &c * &c * &m;
@@ -972,7 +978,10 @@ pub fn differentiate(e: &Expr, var: &str) -> Expr {
                 ])
             } else {
                 // General: d(u^v) = u^v·(v'·ln u + v·u'/u)
-                let term1 = mul(vec![differentiate(ex, var), func("ln", vec![(**b).clone()])]);
+                let term1 = mul(vec![
+                    differentiate(ex, var),
+                    func("ln", vec![(**b).clone()]),
+                ]);
                 let term2 = mul(vec![
                     (**ex).clone(),
                     differentiate(b, var),
@@ -1030,7 +1039,9 @@ pub fn substitute(e: &Expr, var: &str, val: &Expr) -> Expr {
         Expr::Add(ts) => add(ts.iter().map(|t| substitute(t, var, val)).collect()),
         Expr::Mul(fs) => mul(fs.iter().map(|f| substitute(f, var, val)).collect()),
         Expr::Pow(b, ex) => pow(substitute(b, var, val), substitute(ex, var, val)),
-        Expr::Func(name, args) => func(name, args.iter().map(|a| substitute(a, var, val)).collect()),
+        Expr::Func(name, args) => {
+            func(name, args.iter().map(|a| substitute(a, var, val)).collect())
+        }
         Expr::Complex(re, im) => complex(substitute(re, var, val), substitute(im, var, val)),
         Expr::Matrix(rows) => Expr::Matrix(map_entries(rows, |x| substitute(x, var, val))),
         // Substitution reaches into struct fields (names are not symbols).
@@ -1183,7 +1194,10 @@ pub fn numeric_eval(e: &Expr, digits: usize) -> Result<Expr, String> {
         return Ok(if im.is_zero() {
             Expr::Float(re, digits)
         } else {
-            Expr::Complex(Box::new(Expr::Float(re, digits)), Box::new(Expr::Float(im, digits)))
+            Expr::Complex(
+                Box::new(Expr::Float(re, digits)),
+                Box::new(Expr::Float(im, digits)),
+            )
         });
     }
 
@@ -1218,8 +1232,7 @@ pub(crate) fn with_consts<T>(f: impl FnOnce(&mut Consts) -> T) -> Result<T, Stri
     CONSTS.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
-            *slot =
-                Some(Consts::new().map_err(|_| "could not initialise constants".to_string())?);
+            *slot = Some(Consts::new().map_err(|_| "could not initialise constants".to_string())?);
         }
         Ok(f(slot.as_mut().expect("just initialised")))
     })
@@ -1390,23 +1403,27 @@ fn c_add(x: &Cpx, y: &Cpx, p: usize) -> Cpx {
 }
 
 fn c_mul(x: &Cpx, y: &Cpx, p: usize) -> Cpx {
-    let re = x.0.mul(&y.0, p, ROUND).sub(&x.1.mul(&y.1, p, ROUND), p, ROUND);
-    let im = x.0.mul(&y.1, p, ROUND).add(&x.1.mul(&y.0, p, ROUND), p, ROUND);
+    let re =
+        x.0.mul(&y.0, p, ROUND)
+            .sub(&x.1.mul(&y.1, p, ROUND), p, ROUND);
+    let im =
+        x.0.mul(&y.1, p, ROUND)
+            .add(&x.1.mul(&y.0, p, ROUND), p, ROUND);
     (re, im)
 }
 
 fn c_div(x: &Cpx, y: &Cpx, p: usize) -> Cpx {
-    let denom = y.0.mul(&y.0, p, ROUND).add(&y.1.mul(&y.1, p, ROUND), p, ROUND);
-    let re = x
-        .0
-        .mul(&y.0, p, ROUND)
-        .add(&x.1.mul(&y.1, p, ROUND), p, ROUND)
-        .div(&denom, p, ROUND);
-    let im = x
-        .1
-        .mul(&y.0, p, ROUND)
-        .sub(&x.0.mul(&y.1, p, ROUND), p, ROUND)
-        .div(&denom, p, ROUND);
+    let denom =
+        y.0.mul(&y.0, p, ROUND)
+            .add(&y.1.mul(&y.1, p, ROUND), p, ROUND);
+    let re =
+        x.0.mul(&y.0, p, ROUND)
+            .add(&x.1.mul(&y.1, p, ROUND), p, ROUND)
+            .div(&denom, p, ROUND);
+    let im =
+        x.1.mul(&y.0, p, ROUND)
+            .sub(&x.0.mul(&y.1, p, ROUND), p, ROUND)
+            .div(&denom, p, ROUND);
     (re, im)
 }
 
@@ -1483,7 +1500,9 @@ fn c_arg(a: &BigFloat, b: &BigFloat, p: usize, cc: &mut Consts) -> BigFloat {
 
 /// ln(z) = ln|z| + i·arg(z).
 fn c_ln(z: &Cpx, p: usize, cc: &mut Consts) -> Result<Cpx, String> {
-    let mod_sq = z.0.mul(&z.0, p, ROUND).add(&z.1.mul(&z.1, p, ROUND), p, ROUND);
+    let mod_sq =
+        z.0.mul(&z.0, p, ROUND)
+            .add(&z.1.mul(&z.1, p, ROUND), p, ROUND);
     if mod_sq.is_zero() {
         return Err("ln(0) is undefined".to_string());
     }
@@ -1596,7 +1615,11 @@ fn snap_negligible(re: BigFloat, im: BigFloat, digits: usize, p: usize) -> Cpx {
     let ten = BigFloat::from_i64(10, p);
     let threshold = scale.mul(&bf_powi(&ten, -(digits as i64), p), p, ROUND);
     let zero = BigFloat::from_i64(0, p);
-    let re = if bf_lt(&abs_re, &threshold) { zero.clone() } else { re };
+    let re = if bf_lt(&abs_re, &threshold) {
+        zero.clone()
+    } else {
+        re
+    };
     let im = if bf_lt(&abs_im, &threshold) { zero } else { im };
     (re, im)
 }
@@ -2145,7 +2168,10 @@ mod tests {
         // x * x == x^2
         assert_eq!(mul(vec![sym("x"), sym("x")]), pow(sym("x"), int(2)));
         // numeric coefficient is folded
-        assert_eq!(mul(vec![int(2), int(3), sym("x")]), mul(vec![int(6), sym("x")]));
+        assert_eq!(
+            mul(vec![int(2), int(3), sym("x")]),
+            mul(vec![int(6), sym("x")])
+        );
         // zero annihilates
         assert_eq!(mul(vec![int(0), sym("x")]), int(0));
     }

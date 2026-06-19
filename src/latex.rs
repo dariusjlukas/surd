@@ -180,7 +180,11 @@ fn render_product(fs: &[Expr]) -> (u8, String) {
             if i > 0 {
                 // Two adjacent numbers need an explicit dot; otherwise a thin
                 // space reads as multiplication.
-                out.push_str(if prev_numeric && numeric { r" \cdot " } else { r"\, " });
+                out.push_str(if prev_numeric && numeric {
+                    r" \cdot "
+                } else {
+                    r"\, "
+                });
             }
             out.push_str(&render(f, PREC_MUL));
             prev_numeric = numeric;
@@ -193,14 +197,7 @@ fn render_product(fs: &[Expr]) -> (u8, String) {
     } else {
         format!(r"\frac{{{}}}{{{}}}", join(&num), join(&den))
     };
-    (
-        PREC_MUL,
-        if negative {
-            format!("-{}", body)
-        } else {
-            body
-        },
-    )
+    (PREC_MUL, if negative { format!("-{}", body) } else { body })
 }
 
 /// If `ex` is a negative exact number, return its negation (else None).

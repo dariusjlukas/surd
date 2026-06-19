@@ -162,8 +162,7 @@ fn encode(e: &Expr) -> Result<Value, String> {
         Expr::Float(bf, digits) => {
             let r = float_to_rational(bf)
                 .ok_or_else(|| "cannot export a non-finite float".to_string())?;
-            let dec = rat_to_decimal(&r)
-                .expect("a binary float is always a terminating decimal");
+            let dec = rat_to_decimal(&r).expect("a binary float is always a terminating decimal");
             json!({ "t": "float", "v": dec, "digits": digits })
         }
         Expr::Const(Constant::Pi) => json!({ "t": "const", "v": "pi" }),
@@ -239,8 +238,8 @@ fn import_native(map: &Map<String, Value>) -> Result<Expr, String> {
         let value = entry
             .get("value")
             .ok_or_else(|| format!("variable '{}' has no 'value'", name))?;
-        let value = decode(value, Mode::Tagged)
-            .map_err(|e| format!("variable '{}': {}", name, e))?;
+        let value =
+            decode(value, Mode::Tagged).map_err(|e| format!("variable '{}': {}", name, e))?;
         fields.push((name.to_string(), value));
     }
     structure(fields)
@@ -312,7 +311,8 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
         .and_then(Value::as_str)
         .ok_or("object in surd-data file has no 't' tag")?;
     let field = |k: &str| -> Result<&Value, String> {
-        map.get(k).ok_or_else(|| format!("'{}' value has no '{}'", tag, k))
+        map.get(k)
+            .ok_or_else(|| format!("'{}' value has no '{}'", tag, k))
     };
     let dec = |k: &str| -> Result<Expr, String> { decode(field(k)?, Mode::Tagged) };
     let dec_args = |k: &str| -> Result<Vec<Expr>, String> {
@@ -387,7 +387,11 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
             if lo.len() != hi.len() {
                 return Err("'signal' lo and hi must have the same length".into());
             }
-            if lo.iter().zip(&hi).any(|(l, h)| !l.is_finite() || !h.is_finite() || l > h) {
+            if lo
+                .iter()
+                .zip(&hi)
+                .any(|(l, h)| !l.is_finite() || !h.is_finite() || l > h)
+            {
                 return Err("'signal' bounds must be finite with lo <= hi".into());
             }
             Ok(Expr::Signal(Rc::new(crate::signal::SignalData::F64 {
@@ -400,7 +404,10 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
                 .map_err(|_| "'function' params must be an array of strings".to_string())?;
             let body: Node = serde_json::from_value(field("body")?.clone())
                 .map_err(|e| format!("bad function body: {}", e))?;
-            Ok(Expr::Function { params, body: Rc::new(body) })
+            Ok(Expr::Function {
+                params,
+                body: Rc::new(body),
+            })
         }
         "struct" => {
             let fields = field("fields")?
@@ -444,7 +451,11 @@ fn import_csv(text: &str) -> Result<Expr, String> {
     if !has_header {
         let rows = records
             .iter()
-            .map(|r| r.iter().map(|c| decimal_to_rat(c).map(rat_to_expr)).collect())
+            .map(|r| {
+                r.iter()
+                    .map(|c| decimal_to_rat(c).map(rat_to_expr))
+                    .collect()
+            })
             .collect::<Result<Vec<Vec<Expr>>, String>>()?;
         return matrix::matrix(rows);
     }
@@ -499,7 +510,11 @@ fn parse_csv(text: &str) -> Vec<Vec<String>> {
 
     let push_cell = |record: &mut Vec<String>, cell: &mut String, quoted: bool| {
         let done = std::mem::take(cell);
-        record.push(if quoted { done } else { done.trim().to_string() });
+        record.push(if quoted {
+            done
+        } else {
+            done.trim().to_string()
+        });
     };
 
     while let Some(c) = chars.next() {
@@ -554,7 +569,13 @@ fn sanitize_ident(s: &str, fallback: &str) -> String {
     let mut out: String = s
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if out.is_empty() {
         out = fallback.to_string();
@@ -603,7 +624,11 @@ pub(crate) fn decimal_to_rat(s: &str) -> Result<BigRational, String> {
     if int_part.is_empty() && frac_part.is_empty() {
         return Err(bad());
     }
-    if !int_part.chars().chain(frac_part.chars()).all(|c| c.is_ascii_digit()) {
+    if !int_part
+        .chars()
+        .chain(frac_part.chars())
+        .all(|c| c.is_ascii_digit())
+    {
         return Err(bad());
     }
     let scale = exp - frac_part.len() as i64;
@@ -612,7 +637,9 @@ pub(crate) fn decimal_to_rat(s: &str) -> Result<BigRational, String> {
     {
         return Err(format!("number '{}' is too large to represent", s));
     }
-    let mut numer: BigInt = format!("{}{}", int_part, frac_part).parse().map_err(|_| bad())?;
+    let mut numer: BigInt = format!("{}{}", int_part, frac_part)
+        .parse()
+        .map_err(|_| bad())?;
     if negative {
         numer = -numer;
     }
@@ -659,7 +686,11 @@ pub(crate) fn rat_to_decimal(r: &BigRational) -> Option<String> {
     s.insert(s.len() - digits, '.');
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
     let s = if s.is_empty() { "0".to_string() } else { s };
-    Some(if r.is_negative() { format!("-{}", s) } else { s })
+    Some(if r.is_negative() {
+        format!("-{}", s)
+    } else {
+        s
+    })
 }
 
 #[cfg(test)]
@@ -689,9 +720,9 @@ mod tests {
         for src in [
             "123",
             "-7",
-            "10^40",          // beyond u64
-            "1/3",            // non-decimal rational -> tagged
-            "-3/2",           // decimal-friendly rational -> plain number
+            "10^40", // beyond u64
+            "1/3",   // non-decimal rational -> tagged
+            "-3/2",  // decimal-friendly rational -> plain number
             "true",
             "pi + e",         // constants inside a sum
             "sqrt(2)",        // 2^(1/2)
@@ -700,7 +731,7 @@ mod tests {
             "[1, 2; 3, 4]",
             "[1; 2; 3]",
             "2 + 3*I",
-            "x^2 = 4",       // equation
+            "x^2 = 4", // equation
             "struct(a = 1, b = struct(c = [1; 2]))",
             "plot(x^2, x, 0, 1)",
         ] {
@@ -726,7 +757,12 @@ mod tests {
         for src in ["N(pi, 40)", "N(1/3)", "N(2)^(1/3)", "N(-1.5e-10, 12)"] {
             let v = val(src);
             let back = round_trip(&v);
-            assert_eq!(format!("{}", back), format!("{}", v), "float text changed for {}", src);
+            assert_eq!(
+                format!("{}", back),
+                format!("{}", v),
+                "float text changed for {}",
+                src
+            );
         }
     }
 
@@ -751,11 +787,11 @@ mod tests {
             "struct(gain = 1/10, label = probe, n = 3, ok = true)"
         );
         // Flat arrays are column vectors; nested arrays are matrices.
-        assert_eq!(format!("{}", import("[1, 2.5, 3e2]").unwrap()), "[   1 ]\n[ 5/2 ]\n[ 300 ]");
         assert_eq!(
-            import("[[1, 2], [3, 4]]").unwrap(),
-            val("[1, 2; 3, 4]")
+            format!("{}", import("[1, 2.5, 3e2]").unwrap()),
+            "[   1 ]\n[ 5/2 ]\n[ 300 ]"
         );
+        assert_eq!(import("[[1, 2], [3, 4]]").unwrap(), val("[1, 2; 3, 4]"));
         // Awkward keys are bent into identifiers.
         let v = import(r#"{"sensor 1": 5, "2nd": 6}"#).unwrap();
         assert_eq!(format!("{}", v), "struct(_2nd = 6, sensor_1 = 5)");
@@ -768,7 +804,9 @@ mod tests {
     #[test]
     fn csv_with_header_becomes_struct_of_columns() {
         let v = import("t, value\n0, 1.5\n1, 2.5e-1\n2, -3\n").unwrap();
-        let Expr::Struct(fields) = &v else { panic!("expected struct") };
+        let Expr::Struct(fields) = &v else {
+            panic!("expected struct")
+        };
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].0, "t");
         assert_eq!(fields[0].1, val("[0; 1; 2]"));
@@ -790,7 +828,11 @@ mod tests {
         assert_eq!(format!("{}", v), "struct(temp = [ 20 ], time__s = [ 1 ])");
         // A non-numeric data cell errors with its location.
         let err = import("t, v\n1, oops\n").unwrap_err();
-        assert!(err.contains("row 2") && err.contains("'v'") && err.contains("oops"), "{}", err);
+        assert!(
+            err.contains("row 2") && err.contains("'v'") && err.contains("oops"),
+            "{}",
+            err
+        );
         // Ragged rows error with the row number.
         assert!(import("a, b\n1\n").unwrap_err().contains("row 2"));
         assert!(import("").is_err());
@@ -798,9 +840,18 @@ mod tests {
 
     #[test]
     fn decimal_text_helpers() {
-        assert_eq!(decimal_to_rat("0.1").unwrap(), BigRational::new(1.into(), 10.into()));
-        assert_eq!(decimal_to_rat("-1.5e-3").unwrap(), BigRational::new((-3).into(), 2000.into()));
-        assert_eq!(decimal_to_rat("+2e3").unwrap(), BigRational::from_integer(2000.into()));
+        assert_eq!(
+            decimal_to_rat("0.1").unwrap(),
+            BigRational::new(1.into(), 10.into())
+        );
+        assert_eq!(
+            decimal_to_rat("-1.5e-3").unwrap(),
+            BigRational::new((-3).into(), 2000.into())
+        );
+        assert_eq!(
+            decimal_to_rat("+2e3").unwrap(),
+            BigRational::from_integer(2000.into())
+        );
         assert!(decimal_to_rat("nope").is_err());
         assert!(decimal_to_rat("1e999999999").is_err());
 
@@ -811,7 +862,10 @@ mod tests {
         assert_eq!(rat_to_decimal(&r(1, 8)).unwrap(), "0.125");
         assert_eq!(rat_to_decimal(&r(1, 3)), None);
         // Sanity: text -> rational -> text is stable.
-        assert_eq!(rat_to_decimal(&decimal_to_rat("123.456").unwrap()).unwrap(), "123.456");
+        assert_eq!(
+            rat_to_decimal(&decimal_to_rat("123.456").unwrap()).unwrap(),
+            "123.456"
+        );
     }
 
     #[test]
@@ -966,7 +1020,10 @@ pub fn import_raw(bytes: &[u8], format: &str) -> Result<Expr, String> {
     }
     let n = bytes.len() / width;
     if n > MAX_BULK_SAMPLES {
-        return Err(format!("raw data too large ({} samples; cap {})", n, MAX_BULK_SAMPLES));
+        return Err(format!(
+            "raw data too large ({} samples; cap {})",
+            n, MAX_BULK_SAMPLES
+        ));
     }
     let mut lo = Vec::with_capacity(n);
     for i in 0..n {
@@ -995,7 +1052,11 @@ pub fn import_raw(bytes: &[u8], format: &str) -> Result<Expr, String> {
 pub fn import_csv_packed(text: &str) -> Result<Expr, String> {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
     let first = *lines.peek().ok_or("the CSV file is empty")?;
-    let cells = |l: &str| l.split(',').map(|c| c.trim().to_string()).collect::<Vec<_>>();
+    let cells = |l: &str| {
+        l.split(',')
+            .map(|c| c.trim().to_string())
+            .collect::<Vec<_>>()
+    };
     let head = cells(first);
     let has_header = head.iter().any(|c| c.parse::<f64>().is_err());
     let names: Vec<String> = if has_header {
@@ -1035,7 +1096,12 @@ pub fn import_csv_packed(text: &str) -> Result<Expr, String> {
                 Some(v) => (v as f64, v as f64),
                 None => {
                     let v: f64 = cell.parse().map_err(|_| {
-                        format!("row {}, column {}: '{}' is not a number", row + 2, c + 1, cell)
+                        format!(
+                            "row {}, column {}: '{}' is not a number",
+                            row + 2,
+                            c + 1,
+                            cell
+                        )
                     })?;
                     if !v.is_finite() {
                         return Err(format!("row {}: non-finite value", row + 2));
@@ -1100,7 +1166,9 @@ mod bulk_tests {
         let Expr::Struct(fields) = &v else { panic!() };
         assert_eq!(fields[1].0, "rate");
         assert_eq!(fields[1].1, Expr::Int(BigInt::from(8000)));
-        let Expr::Signal(s) = &fields[0].1 else { panic!() };
+        let Expr::Signal(s) = &fields[0].1 else {
+            panic!()
+        };
         let crate::signal::SignalData::F64 { lo, hi } = s.as_ref() else {
             panic!()
         };
@@ -1123,7 +1191,9 @@ mod bulk_tests {
 
         let v = import_csv_packed("t, y\n0, 1.5\n1, 0.1\n").unwrap();
         let Expr::Struct(fields) = &v else { panic!() };
-        let Expr::Signal(y) = &fields[1].1 else { panic!() };
+        let Expr::Signal(y) = &fields[1].1 else {
+            panic!()
+        };
         let crate::signal::SignalData::F64 { lo, hi } = y.as_ref() else {
             panic!()
         };
@@ -1156,10 +1226,24 @@ mod big_signal_tests {
         let sig = Expr::Signal(Rc::new(original.clone()));
         let json = export_variables(&[("s", &sig)]).unwrap();
         let back = import(&json).unwrap();
-        let Expr::Struct(fields) = &back else { panic!("import wraps in a struct") };
-        let Expr::Signal(restored) = &fields[0].1 else { panic!("field is a signal") };
-        let (SignalData::Big { lo: a, hi: b, digits: d1 }, SignalData::Big { lo: c, hi: e, digits: d2 }) =
-            (&original, restored.as_ref())
+        let Expr::Struct(fields) = &back else {
+            panic!("import wraps in a struct")
+        };
+        let Expr::Signal(restored) = &fields[0].1 else {
+            panic!("field is a signal")
+        };
+        let (
+            SignalData::Big {
+                lo: a,
+                hi: b,
+                digits: d1,
+            },
+            SignalData::Big {
+                lo: c,
+                hi: e,
+                digits: d2,
+            },
+        ) = (&original, restored.as_ref())
         else {
             panic!("both are Big")
         };

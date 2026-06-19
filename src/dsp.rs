@@ -18,8 +18,24 @@ use std::rc::Rc;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
-    "conv", "circconv", "dft", "dftmatrix", "idft", "freqz", "firlow", "remez", "hann",
-    "hamming", "blackman", "window", "quantize", "fft", "ifft", "pad", "peak", "rms",
+    "conv",
+    "circconv",
+    "dft",
+    "dftmatrix",
+    "idft",
+    "freqz",
+    "firlow",
+    "remez",
+    "hann",
+    "hamming",
+    "blackman",
+    "window",
+    "quantize",
+    "fft",
+    "ifft",
+    "pad",
+    "peak",
+    "rms",
 ];
 
 /// Cap on pairwise symbolic products per call (a DFT is n², a convolution
@@ -57,7 +73,9 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "pad" => {
             arity("dsp.pad", &args, 2)?;
             let Expr::Signal(s) = &args[0] else {
-                return Err("dsp.pad expects a signal (exact vectors concatenate with vcat)".into());
+                return Err(
+                    "dsp.pad expects a signal (exact vectors concatenate with vcat)".into(),
+                );
             };
             let n = as_size("dsp.pad", &args[1])?;
             Ok(Expr::Signal(Rc::new(signal::pad(s, n)?)))
@@ -231,13 +249,15 @@ fn firlow(args: Vec<Expr>) -> Result<Expr, String> {
     let n = as_size("dsp.firlow", &args[0])?;
     check_ops("dsp.firlow", n)?;
     let wc = args[1].clone();
-    let rat = |num: i64, den: i64| {
-        rat_to_expr(BigRational::new(BigInt::from(num), BigInt::from(den)))
-    };
+    let rat =
+        |num: i64, den: i64| rat_to_expr(BigRational::new(BigInt::from(num), BigInt::from(den)));
     let mut row = Vec::with_capacity(n);
     for k in 0..n {
         // d = k − (n−1)/2, kept exact (a half-integer for even n).
-        let d = (rat(2 * k as i64 - (n as i64 - 1), 2), 2 * k as i64 != n as i64 - 1);
+        let d = (
+            rat(2 * k as i64 - (n as i64 - 1), 2),
+            2 * k as i64 != n as i64 - 1,
+        );
         row.push(if d.1 {
             // sin(d·wc) / (d·π)
             mul(vec![

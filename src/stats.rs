@@ -155,11 +155,7 @@ fn correlation(a: &[Expr], b: &[Expr]) -> Result<Expr, String> {
         return Err("stats.cor is undefined for zero-variance data".into());
     }
     let cov = covariance(a, b)?;
-    Ok(mul(vec![
-        cov,
-        pow(va, neg_half()),
-        pow(vb, neg_half()),
-    ]))
+    Ok(mul(vec![cov, pow(va, neg_half()), pow(vb, neg_half())]))
 }
 
 /// Exact least-squares line y = intercept + slope·x, as a struct.
@@ -204,7 +200,9 @@ fn median(xs: &[Expr]) -> Result<Expr, String> {
 /// interpolation weight (n−1)·q is an exact rational.
 fn quantile(xs: &[Expr], q: &Expr) -> Result<Expr, String> {
     let q = numeric_value(q)
-        .filter(|q| *q >= BigRational::from_integer(0.into()) && *q <= BigRational::from_integer(1.into()))
+        .filter(|q| {
+            *q >= BigRational::from_integer(0.into()) && *q <= BigRational::from_integer(1.into())
+        })
         .ok_or("stats.quantile expects a rational q with 0 <= q <= 1")?;
     let sorted = sorted_numeric("stats.quantile", xs)?;
     let n = sorted.len();
@@ -529,10 +527,7 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
     // Gaussian log-likelihood and the information criteria (symbolic: each
     // carries an `ln`). loglik = -(n/2)·(ln 2π + ln(RSS/n) + 1).
     let loglik = mul(vec![
-        rat_to_expr(BigRational::new(
-            BigInt::from(-(n as i64)),
-            BigInt::from(2),
-        )),
+        rat_to_expr(BigRational::new(BigInt::from(-(n as i64)), BigInt::from(2))),
         add(vec![
             func("ln", vec![mul(vec![int(2), Expr::Const(Constant::Pi)])]),
             func("ln", vec![mul(vec![inv_int(n), rss.clone()])]),
@@ -667,14 +662,22 @@ fn entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
 
 fn one_vector(name: &str, args: &[Expr]) -> Result<Vec<Expr>, String> {
     if args.len() != 1 {
-        return Err(format!("{} expects 1 argument(s), got {}", name, args.len()));
+        return Err(format!(
+            "{} expects 1 argument(s), got {}",
+            name,
+            args.len()
+        ));
     }
     entries(name, &args[0])
 }
 
 fn two_vectors(name: &str, args: &[Expr]) -> Result<(Vec<Expr>, Vec<Expr>), String> {
     if args.len() != 2 {
-        return Err(format!("{} expects 2 argument(s), got {}", name, args.len()));
+        return Err(format!(
+            "{} expects 2 argument(s), got {}",
+            name,
+            args.len()
+        ));
     }
     let a = entries(name, &args[0])?;
     let b = entries(name, &args[1])?;

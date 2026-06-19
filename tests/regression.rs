@@ -189,10 +189,7 @@ fn negated_product_of_sums_display_is_a_fixed_point() {
     // `(1 + x)*(1 - x)` (found by the display round-trip property). A
     // sign/coefficient before a leading parenthesized sum now groups the
     // factors: `-((-1 + x)*(1 + x))`.
-    assert_eq!(
-        ev("(z - z) - (x + (-1))*(1 + x)"),
-        "-((-1 + x)*(1 + x))"
-    );
+    assert_eq!(ev("(z - z) - (x + (-1))*(1 + x)"), "-((-1 + x)*(1 + x))");
     assert_eq!(ev("-((-1 + x)*(1 + x))"), "-((-1 + x)*(1 + x))");
     // Same trap with a plain coefficient (built via a binding, since direct
     // source distributes immediately under left-associative parsing).

@@ -168,7 +168,10 @@ fn exact_eigenvalues() {
         "[ 1/2 + 1/2*sqrt(5) ] [ 1/2 - 1/2*sqrt(5) ]"
     );
     // 3×3: one rational root peeled off, then a quadratic factor.
-    assert_eq!(norm("eigenvalues([2,0,0; 0,3,0; 0,0,5])"), "[ 2 ] [ 3 ] [ 5 ]");
+    assert_eq!(
+        norm("eigenvalues([2,0,0; 0,3,0; 0,0,5])"),
+        "[ 2 ] [ 3 ] [ 5 ]"
+    );
 }
 
 #[test]
@@ -196,9 +199,7 @@ fn complex_eigenvectors_diagonalize_exactly() {
     assert_eq!(norm("eigenvectors([0,-1;1,0])"), "[ I -I ] [ 1 1 ]");
     // Complex arithmetic folds eagerly, so V⁻¹·B·V is exactly diag(1+i, 1−i).
     assert_eq!(
-        norm(
-            "inv(eigenvectors([1,-1;1,1])) * [1,-1;1,1] * eigenvectors([1,-1;1,1])"
-        ),
+        norm("inv(eigenvectors([1,-1;1,1])) * [1,-1;1,1] * eigenvectors([1,-1;1,1])"),
         "[ 1 + I 0 ] [ 0 1 - I ]"
     );
 }
@@ -219,7 +220,10 @@ fn nullspace_basis() {
     assert_eq!(norm("nullspace([1,2,3;4,5,6])"), "[ 1 ] [ -2 ] [ 1 ]");
     // Full column rank: the trivial kernel is said in words, not guessed at.
     let msg = ev("nullspace([1,0;0,1])");
-    assert!(msg.starts_with("error:") && msg.contains("trivial"), "got: {msg}");
+    assert!(
+        msg.starts_with("error:") && msg.contains("trivial"),
+        "got: {msg}"
+    );
     // `kernel` is an alias.
     assert_eq!(norm("kernel([1,2;2,4])"), "[ -2 ] [ 1 ]");
 }
@@ -232,10 +236,7 @@ fn underdetermined_solve_returns_general_solution() {
         "struct(nullspace = [ -1 ] [ 1 ], particular = [ 3 ] [ 0 ])"
     );
     // The pieces are reachable as struct fields.
-    assert_eq!(
-        norm("solve([1,1;2,2], [3;6]).particular"),
-        "[ 3 ] [ 0 ]"
-    );
+    assert_eq!(norm("solve([1,1;2,2], [3;6]).particular"), "[ 3 ] [ 0 ]");
 }
 
 #[test]
@@ -265,7 +266,7 @@ fn complex_transcendentals() {
     // Euler's identity, exactly (the negligible imaginary residue is snapped).
     assert_eq!(ev("N(exp(I*pi))"), "-1");
     assert_eq!(ev("N(exp(I*pi/2), 20)"), "I"); // e^(iπ/2) = i
-    // Primitive cube root of unity: −1/2 + (√3/2)i.
+                                               // Primitive cube root of unity: −1/2 + (√3/2)i.
     assert!(ev("N(exp(2*pi*I/3), 25)").starts_with("-0.5 + 0.866025403784438"));
     // ln(i) = iπ/2.
     assert!(ev("N(ln(I), 20)").starts_with("1.5707963267948966"));
@@ -301,11 +302,16 @@ fn cubic_and_biquadratic_eigenvalues_in_radicals() {
     assert!(norm("N(eigenvalues([0,0,1; 1,0,0; 0,1,-1]), 20)")
         .starts_with("[ 0.75487766624669276005 ]"));
     // Biquadratic quartic x⁴ − 2x² − 1: nested radicals ±√(1+√2), ±i·√(√2−1).
-    assert!(norm("N(eigenvalues([0,0,0,1; 1,0,0,0; 0,1,0,2; 0,0,1,0]), 20)")
-        .starts_with("[ 1.5537739740300373073 ] [ -1.5537739740300373073 ]"));
+    assert!(
+        norm("N(eigenvalues([0,0,0,1; 1,0,0,0; 0,1,0,2; 0,0,1,0]), 20)")
+            .starts_with("[ 1.5537739740300373073 ] [ -1.5537739740300373073 ]")
+    );
     // Eigenvectors don't pretend to follow into cubic fields.
     let msg = ev("eigenvectors([0,0,2; 1,0,0; 0,1,0])");
-    assert!(msg.starts_with("error:") && msg.contains("radical"), "got: {msg}");
+    assert!(
+        msg.starts_with("error:") && msg.contains("radical"),
+        "got: {msg}"
+    );
 }
 
 #[test]
@@ -316,8 +322,10 @@ fn eigenvalue_limits_are_honest() {
     // A quartic with odd-power terms needs the full Ferrari reduction.
     assert!(ev("eigenvalues([0,0,0,1; 1,0,0,1; 0,1,0,0; 0,0,1,0])").starts_with("error:"));
     // Degree ≥ 5 has no radical formula at all (Abel–Ruffini).
-    assert!(ev("eigenvalues([0,0,0,0,1; 1,0,0,0,1; 0,1,0,0,0; 0,0,1,0,0; 0,0,0,1,0])")
-        .starts_with("error:"));
+    assert!(
+        ev("eigenvalues([0,0,0,0,1; 1,0,0,0,1; 0,1,0,0,0; 0,0,1,0,0; 0,0,0,1,0])")
+            .starts_with("error:")
+    );
 }
 
 #[test]
@@ -349,7 +357,10 @@ fn qr_decomposition() {
     assert_eq!(norm("f := qr([1,1;1,0]); f.Q * f.R"), "[ 1 1 ] [ 1 0 ]");
     // Dependent columns are refused, not silently degenerate.
     let msg = ev("qr([1,2;2,4])");
-    assert!(msg.starts_with("error:") && msg.contains("independent"), "got: {msg}");
+    assert!(
+        msg.starts_with("error:") && msg.contains("independent"),
+        "got: {msg}"
+    );
 }
 
 #[test]
@@ -359,13 +370,19 @@ fn precision_context() {
         "3.1415926535897932384626433832795028841971693993751"
     );
     // An explicit digit count still overrides the default.
-    assert_eq!(ev_all(&["precision(5)", "N(1/3, 20)"]), "0.33333333333333333333");
+    assert_eq!(
+        ev_all(&["precision(5)", "N(1/3, 20)"]),
+        "0.33333333333333333333"
+    );
     assert_eq!(ev("precision()"), "30"); // factory default
 }
 
 #[test]
 fn matrix_errors_are_clean() {
-    assert_eq!(ev("inv([1,2;2,4])"), "error: matrix is singular (no inverse)");
+    assert_eq!(
+        ev("inv([1,2;2,4])"),
+        "error: matrix is singular (no inverse)"
+    );
     assert!(ev("[1,2;3,4] + [1,2,3]").starts_with("error:"));
     assert!(ev("[1,2;3,4] * [1,2,3]").starts_with("error:"));
     assert!(ev("solve([1,1;2,2], [1;3])").starts_with("error:")); // inconsistent
@@ -415,10 +432,7 @@ fn while_loop_is_exact() {
 #[test]
 fn function_scope_is_local() {
     // Parameter `x` inside f must not leak into the global `x`.
-    assert_eq!(
-        ev_all(&["x := 99", "f(x) := x + 1", "f(2)", "x"]),
-        "99"
-    );
+    assert_eq!(ev_all(&["x := 99", "f(x) := x + 1", "f(2)", "x"]), "99");
 }
 
 #[test]
@@ -427,7 +441,7 @@ fn control_flow_requires_decidable_booleans() {
     assert!(ev("if x then 1 else 2 end").starts_with("error:"));
     assert!(ev("x < 4").starts_with("error:")); // a free symbol has no order
     assert!(ev("2 + true").starts_with("error:")); // arithmetic on a boolean
-    // (`pi < 4` is fine — constants are decided by certified intervals.)
+                                                   // (`pi < 4` is fine — constants are decided by certified intervals.)
 }
 
 #[test]
@@ -487,7 +501,10 @@ fn plot_is_a_symbolic_value() {
     // The engine doesn't draw; plot(...) is data for the frontend, with the
     // plotted variable quoted (kept symbolic) like diff's.
     assert_eq!(ev("plot(sin(x), x, -pi, pi)"), "plot(sin(x), x, -π, π)");
-    assert_eq!(ev_all(&["x := 3", "plot(x^2, x, 0, 1)"]), "plot(x^2, x, 0, 1)");
+    assert_eq!(
+        ev_all(&["x := 3", "plot(x^2, x, 0, 1)"]),
+        "plot(x^2, x, 0, 1)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +580,7 @@ fn trig_folds_at_rational_multiples_of_pi() {
     assert_eq!(ev("sin(7*pi/6)"), "-1/2");
     assert_eq!(ev("cos(3*pi/4)"), "-1/2*sqrt(2)");
     assert_eq!(ev("sin(13*pi/6)"), "1/2"); // periodicity past 2π
-    // The folded surd squares back to the exact value.
+                                           // The folded surd squares back to the exact value.
     assert_eq!(ev("sin(pi/4)^2"), "1/2");
 }
 
@@ -684,7 +701,10 @@ fn dft_of_known_vectors() {
 #[test]
 fn idft_inverts_dft_exactly() {
     // Size 3 exercises the √3/2 twiddles; the round trip folds back to ℚ.
-    assert_eq!(norm("dsp.idft(dsp.dft([1/3; -2; 5/7]))"), "[ 1/3 ] [ -2 ] [ 5/7 ]");
+    assert_eq!(
+        norm("dsp.idft(dsp.dft([1/3; -2; 5/7]))"),
+        "[ 1/3 ] [ -2 ] [ 5/7 ]"
+    );
     // Complex entries round-trip too.
     assert_eq!(norm("dsp.idft(dsp.dft([I; 1 + I]))"), "[ I ] [ 1 + I ]");
 }
@@ -707,7 +727,10 @@ fn convolution_known_results() {
     // (1 + 2z)(1 + 3z) = 1 + 5z + 6z² — convolution is polynomial product.
     assert_eq!(norm("dsp.conv([1, 2], [1, 3])"), "[ 1 5 6 ]");
     // Orientation follows the first argument.
-    assert_eq!(norm("dsp.conv([1; 2; 1], [1; 1])"), "[ 1 ] [ 3 ] [ 3 ] [ 1 ]");
+    assert_eq!(
+        norm("dsp.conv([1; 2; 1], [1; 1])"),
+        "[ 1 ] [ 3 ] [ 3 ] [ 1 ]"
+    );
     // Circular shift: convolving with a rotated impulse rotates the input.
     assert_eq!(norm("dsp.circconv([1, 2, 3], [0, 1, 0])"), "[ 3 1 2 ]");
     assert!(ev("dsp.circconv([1, 2], [1, 2, 3])")
@@ -837,7 +860,10 @@ fn equal_constants_refuse_rather_than_guess() {
     // (√2+√3)² = 5+2√6 exactly, but not structurally: enclosures can never
     // separate, so the comparison refuses instead of inventing an answer.
     let msg = ev("(sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)");
-    assert!(msg.starts_with("error:") && msg.contains("may be equal"), "got: {msg}");
+    assert!(
+        msg.starts_with("error:") && msg.contains("may be equal"),
+        "got: {msg}"
+    );
     let msg = ev("exp(1) < e");
     assert!(msg.contains("may be equal"), "got: {msg}");
     // Non-real and opaque values still refuse outright.
@@ -893,10 +919,7 @@ fn data_primitives() {
     assert_eq!(norm("hcat([1; 2], [3; 4])"), "[ 1 3 ] [ 2 4 ]");
     assert_eq!(norm("linspace(0, 1, 5)"), "[ 0 1/4 1/2 3/4 1 ]"); // exact steps
     assert_eq!(norm("map(sin, [0, pi/2])"), "[ 0 1 ]");
-    assert_eq!(
-        ev_all(&["f(x) := x^2 + 1", "map(f, [1, 2])"]),
-        "[ 2  5 ]"
-    );
+    assert_eq!(ev_all(&["f(x) := x^2 + 1", "map(f, [1, 2])"]), "[ 2  5 ]");
     assert!(ev("map(3, [1])").starts_with("error: map expects a function"));
     assert!(ev("vcat([1, 2], [1; 2])").starts_with("error: vcat needs"));
 }
@@ -1012,7 +1035,10 @@ fn polyfit_and_polyval() {
 
 #[test]
 fn least_squares_is_exact() {
-    assert_eq!(norm("stats.lsq([1, 0; 0, 1; 1, 1], [1; 1; 2])"), "[ 1 ] [ 1 ]");
+    assert_eq!(
+        norm("stats.lsq([1, 0; 0, 1; 1, 1], [1; 1; 2])"),
+        "[ 1 ] [ 1 ]"
+    );
     assert!(ev("stats.lsq([1, 2; 2, 4], [1; 2])")
         .starts_with("error: stats.lsq: the regressors are linearly dependent"));
     assert!(ev("stats.lsq([1, 0; 0, 1], [1; 2; 3])").starts_with("error: stats.lsq expects one"));
@@ -1024,10 +1050,7 @@ fn least_squares_is_exact() {
 
 #[test]
 fn signals_pack_and_read_back() {
-    assert_eq!(
-        ev_all(&["s := signal([1; 2; 3])", "len(s)"]),
-        "3"
-    );
+    assert_eq!(ev_all(&["s := signal([1; 2; 3])", "len(s)"]), "3");
     // Dyadic rationals pack exactly: a point interval, certified error 0.
     assert!(ev("signal([1/2; 3; -5/8])").contains("exact"));
     // 1/3 is not representable: the display owns up to the enclosure.
@@ -1056,8 +1079,10 @@ fn signal_arithmetic_and_boundary_rules() {
     assert!(ev_all(&["s := signal([1; 2])", "s + [1; 2]"])
         .starts_with("error: cannot mix an exact matrix"));
     // Substrates never mix silently either.
-    assert!(ev_all(&["a := signal([1])", "b := signal([1], 30)", "a + b"])
-        .starts_with("error: cannot mix f64 and arbitrary-precision"));
+    assert!(
+        ev_all(&["a := signal([1])", "b := signal([1], 30)", "a + b"])
+            .starts_with("error: cannot mix f64 and arbitrary-precision")
+    );
     // Signals cannot be ordered (which sample would it mean?).
     assert!(ev_all(&["s := signal([1])", "s < 2"]).starts_with("error: cannot order"));
 }
@@ -1146,8 +1171,9 @@ fn slice_vectors_and_signals() {
         "1"
     );
     assert!(ev("slice([1, 2], 2, 5)").starts_with("error: slice of 5 from position 2"));
-    assert!(ev_all(&["s := signal([1])", "slice(s, 1, 2)"])
-        .starts_with("error: slice of 2 samples"));
+    assert!(
+        ev_all(&["s := signal([1])", "slice(s, 1, 2)"]).starts_with("error: slice of 2 samples")
+    );
     assert!(ev("slice(3, 1, 1)").starts_with("error: slice expects"));
 }
 
@@ -1170,10 +1196,7 @@ fn plotting_signals() {
 fn remez_degenerate_allpass_is_exact() {
     // Approximating 1 over the whole band: the impulse, with ripple *exactly*
     // zero — no tolerance saying "close enough", the answer is just right.
-    assert_eq!(
-        norm("dsp.remez(7, [0, pi], [1]).taps"),
-        "[ 0 0 0 1 0 0 0 ]"
-    );
+    assert_eq!(norm("dsp.remez(7, [0, pi], [1]).taps"), "[ 0 0 0 1 0 0 0 ]");
     assert_eq!(ev("dsp.remez(7, [0, pi], [1]).ripple"), "0");
 }
 
@@ -1278,7 +1301,7 @@ fn distributions_evaluate_to_known_values() {
     assert!(ev("N(stats.tcdf(2, 5))").starts_with("0.94903026058507"));
     assert!(ev("N(stats.chisqinv(0.95, 1))").starts_with("3.84145882069412"));
     assert!(ev("N(stats.fcdf(1, 10, 10))").starts_with("0.5")); // F(1; d, d) = 1/2
-    // The inverse genuinely inverts the forward CDF.
+                                                                // The inverse genuinely inverts the forward CDF.
     assert!(ev("N(stats.tcdf(stats.tinv(0.975, 10), 10))").starts_with("0.975"));
     // Arity is checked up front.
     assert!(ev("stats.tcdf(2)").starts_with("error: stats.tcdf expects 2"));
@@ -1300,11 +1323,7 @@ fn regression_reports_exact_inference() {
     assert_eq!(ev_all(&[m, "m.cooks[1]"]), "3/2");
     // The hat-matrix diagonal sums to the parameter count (trace H = k = 2).
     assert_eq!(
-        ev_all(&[
-            m,
-            "h := m.leverage",
-            "h[1] + h[2] + h[3] + h[4] + h[5]",
-        ]),
+        ev_all(&[m, "h := m.leverage", "h[1] + h[2] + h[3] + h[4] + h[5]",]),
         "2"
     );
     // For a simple regression the overall-F p-value equals the slope's
@@ -1323,5 +1342,7 @@ fn regress_uses_an_existing_intercept_column() {
         "3/5"
     );
     // Too few observations for the parameters is a clean error.
-    assert!(ev("stats.regress([1; 2], [3; 4])").starts_with("error: stats.regress needs at least 3"));
+    assert!(
+        ev("stats.regress([1; 2], [3; 4])").starts_with("error: stats.regress needs at least 3")
+    );
 }
