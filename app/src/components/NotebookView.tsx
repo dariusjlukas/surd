@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useSettings } from '../state/settings'
 import { useActiveNotebook, useNotebook } from '../state/store'
+import { computeStaleCells, useDrafts } from '../state/staleness'
 import { CellView } from './CellView'
 import { openContextMenu } from '../state/contextMenu'
 
@@ -12,6 +13,14 @@ export function NotebookView() {
   const autoScroll = useSettings((s) => s.autoScroll)
   const endRef = useRef<HTMLDivElement>(null)
   const count = notebook.cells.length
+
+  // An in-progress edit anywhere can stale this cell or any later one that
+  // reads what it changes; recompute the set once and hand each cell a bool.
+  const drafts = useDrafts((s) => s.drafts)
+  const stale = useMemo(
+    () => computeStaleCells(notebook.cells, drafts),
+    [notebook.cells, drafts],
+  )
 
   useEffect(() => {
     if (autoScroll) endRef.current?.scrollIntoView({ block: 'end' })
@@ -47,7 +56,7 @@ export function NotebookView() {
     >
       {count === 0 && <Welcome />}
       {notebook.cells.map((c) => (
-        <CellView key={c.id} cell={c} />
+        <CellView key={c.id} cell={c} stale={stale.has(c.id)} />
       ))}
       <div ref={endRef} />
     </div>
@@ -88,8 +97,8 @@ function Welcome() {
       </ul>
       <p className="mt-4 text-xs text-faint">
         <code>:=</code> assigns · <code>plot(f, x, a, b)</code> draws · ↑/↓
-        recalls history · double-click a cell to edit it (everything below
-        recomputes) · <em>+ note</em> adds markdown · notebooks save
+        recalls history · click a cell to edit it (re-running recomputes
+        everything below) · <em>+ note</em> adds markdown · notebooks save
         automatically
       </p>
     </div>

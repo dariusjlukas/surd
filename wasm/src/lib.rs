@@ -6,6 +6,8 @@
 //! is the cancellation boundary: killing the worker and replaying the
 //! transcript is the supported way to abort a runaway evaluation.
 
+use std::collections::BTreeSet;
+use surd::ast::Node;
 use surd::expr::Expr;
 use surd::{f64eval, latex};
 use serde::Serialize;
@@ -591,6 +593,144 @@ pub fn is_blank(src: &str) -> bool {
     surd::lexer::is_blank(src)
 }
 
+#[derive(Serialize)]
+struct Symbols {
+    /// Workspace names this cell binds (unconditional top-level `:=` / function
+    /// defs). Drives "who reads what I changed" and the healing of names a
+    /// later, current cell redefines.
+    defs: Vec<String>,
+    /// Free workspace names this cell reads — identifiers and call/closure
+    /// targets that aren't bound within the cell itself.
+    uses: Vec<String>,
+}
+
+/// The workspace symbols a cell binds and reads, for the notebook's stale-
+/// dependency analysis (which downstream cells an edit invalidates). Reuses
+/// the real lexer + parser so the analysis can't drift from evaluation.
+///
+/// Best-effort and deliberately one-sided: source that doesn't parse (a
+/// half-typed draft, a syntax-error cell) yields empty sets, and only
+/// *unconditional* top-level bindings count as `defs` — a name bound only
+/// inside an `if`/`while` is left out so a later use of it still reads as a
+/// workspace dependency rather than being silently healed.
+#[wasm_bindgen]
+pub fn cell_symbols(src: &str) -> String {
+    let mut defs = BTreeSet::new();
+    let mut uses = BTreeSet::new();
+    if let Ok(node) = surd::lexer::lex(src).and_then(surd::parser::parse) {
+        let mut bound = BTreeSet::new();
+        symbol_walk(&node, true, false, &mut bound, &mut defs, &mut uses);
+    }
+    serde_json::to_string(&Symbols {
+        defs: defs.into_iter().collect(),
+        uses: uses.into_iter().collect(),
+    })
+    .expect("Symbols is always serializable")
+}
+
+/// Walk the parse tree collecting workspace `defs`/`uses`.
+///
+/// * `top` — at workspace scope (false inside a function body, whose bindings
+///   are local and never workspace defs).
+/// * `cond` — under an `if`/`while` branch, so a binding here only *may* run;
+///   such names are not recorded as `defs` (they must not heal a dependency).
+/// * `bound` — names already bound in this straight-line scope, excluded from
+///   `uses`. Branch and function bodies get a throwaway clone so their locals
+///   don't leak out.
+fn symbol_walk(
+    node: &Node,
+    top: bool,
+    cond: bool,
+    bound: &mut BTreeSet<String>,
+    defs: &mut BTreeSet<String>,
+    uses: &mut BTreeSet<String>,
+) {
+    match node {
+        Node::Num(_) => {}
+        Node::Ident(name) => {
+            if !bound.contains(name) {
+                uses.insert(name.clone());
+            }
+        }
+        Node::Call(name, args) => {
+            if !bound.contains(name) {
+                uses.insert(name.clone());
+            }
+            for a in args {
+                symbol_walk(a, top, cond, bound, defs, uses);
+            }
+        }
+        Node::BinOp(_, a, b) | Node::Equation(a, b) => {
+            symbol_walk(a, top, cond, bound, defs, uses);
+            symbol_walk(b, top, cond, bound, defs, uses);
+        }
+        Node::Neg(a) | Node::Not(a) => symbol_walk(a, top, cond, bound, defs, uses),
+        Node::Field(base, _) => symbol_walk(base, top, cond, bound, defs, uses),
+        Node::FieldCall(base, _, args) => {
+            symbol_walk(base, top, cond, bound, defs, uses);
+            for a in args {
+                symbol_walk(a, top, cond, bound, defs, uses);
+            }
+        }
+        Node::Index(base, idx) => {
+            symbol_walk(base, top, cond, bound, defs, uses);
+            for i in idx {
+                symbol_walk(i, top, cond, bound, defs, uses);
+            }
+        }
+        Node::Matrix(rows) => {
+            for row in rows {
+                for c in row {
+                    symbol_walk(c, top, cond, bound, defs, uses);
+                }
+            }
+        }
+        Node::Assign(name, rhs) => {
+            // The RHS sees only bindings established before this statement.
+            symbol_walk(rhs, top, cond, bound, defs, uses);
+            if top && !cond {
+                defs.insert(name.clone());
+            }
+            bound.insert(name.clone());
+        }
+        Node::FuncDef(name, params, body) => {
+            // Params and body-local assignments are local to the function; a
+            // free identifier in the body is still a workspace read (capture).
+            let mut inner = bound.clone();
+            for p in params {
+                inner.insert(p.clone());
+            }
+            let mut local = BTreeSet::new();
+            symbol_walk(body, false, cond, &mut inner, &mut local, uses);
+            if top && !cond {
+                defs.insert(name.clone());
+            }
+            bound.insert(name.clone());
+        }
+        Node::If(c, then, els) => {
+            symbol_walk(c, top, cond, bound, defs, uses);
+            // Each branch runs conditionally; bindings stay in a throwaway
+            // scope so a post-`if` use of them still counts as a read.
+            let mut tb = bound.clone();
+            symbol_walk(then, top, true, &mut tb, defs, uses);
+            if let Some(e) = els {
+                let mut eb = bound.clone();
+                symbol_walk(e, top, true, &mut eb, defs, uses);
+            }
+        }
+        Node::While(c, body) => {
+            symbol_walk(c, top, cond, bound, defs, uses);
+            let mut wb = bound.clone();
+            symbol_walk(body, top, true, &mut wb, defs, uses);
+        }
+        Node::Block(stmts) => {
+            for s in stmts {
+                symbol_walk(s, top, cond, bound, defs, uses);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,5 +924,66 @@ mod tests {
             serde_json::from_str(&s.eval("plot3d(x*y, x, 0, 1, y, 0, 1)")).unwrap();
         assert_eq!(v["ok"], true, "{}", v["error"]);
         assert_eq!(v["plot3d"]["text"], "x*y");
+    }
+
+    fn symbols(src: &str) -> (Vec<String>, Vec<String>) {
+        let v: serde_json::Value = serde_json::from_str(&cell_symbols(src)).unwrap();
+        let take = |k: &str| {
+            v[k]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        (take("defs"), take("uses"))
+    }
+
+    #[test]
+    fn symbols_assignment_defs_and_uses() {
+        let (defs, uses) = symbols("y := a*x + b");
+        assert_eq!(defs, ["y"]);
+        assert_eq!(uses, ["a", "b", "x"]);
+    }
+
+    #[test]
+    fn symbols_function_def_binds_name_captures_globals_not_params() {
+        // `f` is defined; body reads workspace `a` but not the param `n`.
+        let (defs, uses) = symbols("f(n) := n*a + g(n)");
+        assert_eq!(defs, ["f"]);
+        assert_eq!(uses, ["a", "g"]); // `n` is a param, excluded
+    }
+
+    #[test]
+    fn symbols_local_binding_shadows_later_use() {
+        // First statement binds t; the call then reads this cell's t, not the
+        // workspace's — so t is a def, not a use.
+        let (defs, uses) = symbols("t := 5\nf(t)");
+        assert_eq!(defs, ["t"]);
+        assert_eq!(uses, ["f"]);
+    }
+
+    #[test]
+    fn symbols_conditional_binding_is_not_a_def() {
+        // x is only bound when the branch runs, so it must not count as a def
+        // (it can't heal a downstream reader); the post-`if` `x` reads through.
+        let (defs, uses) = symbols("if c then x := 1 end\ny := x");
+        assert_eq!(defs, ["y"]);
+        assert!(uses.contains(&"c".to_string()));
+        assert!(uses.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn symbols_namespace_base_is_a_use() {
+        let (defs, uses) = symbols("sig := dsp.fft(src)");
+        assert_eq!(defs, ["sig"]);
+        assert_eq!(uses, ["dsp", "src"]);
+    }
+
+    #[test]
+    fn symbols_unparseable_draft_is_empty() {
+        let (defs, uses) = symbols("y := a +");
+        assert!(defs.is_empty());
+        assert!(uses.is_empty());
     }
 }

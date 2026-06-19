@@ -31,6 +31,8 @@ interface Props {
   /** Bindings that run before everything else (Enter, ArrowUp, Escape…). */
   keys?: KeyBinding[]
   onDocChange?: (doc: string) => void
+  /** Fires when the editor loses focus (e.g. clicking away from a cell). */
+  onBlur?: () => void
 }
 
 // All colors come from the theme tokens in index.css, so the editor follows
@@ -101,6 +103,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
       editable = true,
       keys,
       onDocChange,
+      onBlur,
     },
     ref,
   ) {
@@ -114,8 +117,15 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
     keysRef.current = keys
     const onDocChangeRef = useRef(onDocChange)
     onDocChangeRef.current = onDocChange
+    const onBlurRef = useRef(onBlur)
+    onBlurRef.current = onBlur
 
     useEffect(() => {
+      // True only while this view is the live, mounted one. Destroying a
+      // focused view fires a `blur` synchronously — and in dev StrictMode the
+      // first mount is torn down immediately — so the handler must ignore
+      // blurs raised during teardown, or it would collapse a just-opened cell.
+      let alive = false
       // Bindings delegate through keysRef so parents can pass fresh closures
       // every render without rebuilding the view.
       const dynamicKeys: KeyBinding[] = (keysRef.current ?? []).map((k, i) => ({
@@ -148,12 +158,19 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
             EditorView.updateListener.of((u) => {
               if (u.docChanged) onDocChangeRef.current?.(u.state.doc.toString())
             }),
+            EditorView.domEventHandlers({
+              blur: () => {
+                if (alive) onBlurRef.current?.()
+              },
+            }),
           ],
         }),
       })
       viewRef.current = view
+      alive = true
       if (autoFocus) view.focus()
       return () => {
+        alive = false
         view.destroy()
         viewRef.current = null
       }

@@ -3,7 +3,7 @@
 // and the worker may be busy with a long evaluation — so the input bar gets
 // its own engine instance that never evaluates anything.
 
-import init, { is_blank, is_incomplete } from './pkg/surd_wasm'
+import init, { cell_symbols, is_blank, is_incomplete } from './pkg/surd_wasm'
 import wasmUrl from './pkg/surd_wasm_bg.wasm?url'
 
 let ready: Promise<void> | null = null
@@ -13,4 +13,4 @@ export function initLexer(): Promise<void> {
   return ready
 }
 
-export { is_blank, is_incomplete }
+export { is_blank, is_incomplete, cell_symbols }
