@@ -38,6 +38,8 @@ pub enum Token {
     Assign,
     /// `=` — builds an equation, not a truth test.
     Eq,
+    /// `~` — builds a model formula (`y ~ x1 + x2`).
+    Tilde,
     /// `==` — decidable equality test.
     EqEq,
     /// `!=`
@@ -81,6 +83,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
         match c {
             '+' => push(&mut tokens, Token::Plus, &mut i),
             '-' => push(&mut tokens, Token::Minus, &mut i),
+            '~' => push(&mut tokens, Token::Tilde, &mut i),
             '*' => push(&mut tokens, Token::Star, &mut i),
             '/' => push(&mut tokens, Token::Slash, &mut i),
             '^' => push(&mut tokens, Token::Caret, &mut i),

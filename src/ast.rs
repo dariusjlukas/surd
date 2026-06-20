@@ -31,6 +31,8 @@ pub enum Node {
     Assign(String, Box<Node>),
     /// `lhs = rhs` — an equation object, never a boolean.
     Equation(Box<Node>, Box<Node>),
+    /// `response ~ terms` — a model formula (column names kept symbolic).
+    Formula(Box<Node>, Box<Node>),
     /// `if cond then <block> [else <block>] end` — an expression whose value is
     /// the taken branch.
     If(Box<Node>, Box<Node>, Option<Box<Node>>),

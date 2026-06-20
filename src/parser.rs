@@ -247,10 +247,22 @@ impl Parser {
     }
 
     fn parse_expr_inner(&mut self) -> Result<Node, String> {
-        let left = self.parse_or()?;
+        let left = self.parse_formula()?;
         if self.eat(&Token::Eq) {
-            let right = self.parse_or()?;
+            let right = self.parse_formula()?;
             Ok(Node::Equation(Box::new(left), Box::new(right)))
+        } else {
+            Ok(left)
+        }
+    }
+
+    /// `response ~ terms` — a model formula, just inside `=` in precedence and
+    /// non-associative (one tilde), so `y ~ a + b` is `y ~ (a + b)`.
+    fn parse_formula(&mut self) -> Result<Node, String> {
+        let left = self.parse_or()?;
+        if self.eat(&Token::Tilde) {
+            let right = self.parse_or()?;
+            Ok(Node::Formula(Box::new(left), Box::new(right)))
         } else {
             Ok(left)
         }

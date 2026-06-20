@@ -62,6 +62,9 @@ pub enum Expr {
     Function { params: Vec<String>, body: Rc<Node> },
     /// `lhs = rhs`. A piece of data, not a boolean.
     Equation(Box<Expr>, Box<Expr>),
+    /// `response ~ terms`. A model formula consumed by the `stats` models; its
+    /// operands stay symbolic (they name data columns).
+    Formula(Box<Expr>, Box<Expr>),
     /// Named fields holding arbitrary values: `struct(a = 1, b = [1; 2])`.
     /// Invariants (enforced by [`structure`]): non-empty, names unique and
     /// sorted — so derived equality is field-order-independent. Fields are
@@ -1016,6 +1019,10 @@ pub fn differentiate(e: &Expr, var: &str) -> Expr {
             Box::new(differentiate(l, var)),
             Box::new(differentiate(r, var)),
         ),
+        Expr::Formula(l, r) => Expr::Formula(
+            Box::new(differentiate(l, var)),
+            Box::new(differentiate(r, var)),
+        ),
     }
 }
 
@@ -1052,6 +1059,10 @@ pub fn substitute(e: &Expr, var: &str, val: &Expr) -> Expr {
                 .collect(),
         ),
         Expr::Equation(l, r) => Expr::Equation(
+            Box::new(substitute(l, var, val)),
+            Box::new(substitute(r, var, val)),
+        ),
+        Expr::Formula(l, r) => Expr::Formula(
             Box::new(substitute(l, var, val)),
             Box::new(substitute(r, var, val)),
         ),
@@ -1145,7 +1156,9 @@ pub fn contains_symbol(e: &Expr, var: &str) -> bool {
         Expr::Complex(re, im) => contains_symbol(re, var) || contains_symbol(im, var),
         Expr::Matrix(rows) => rows.iter().flatten().any(|e| contains_symbol(e, var)),
         Expr::Struct(fields) => fields.iter().any(|(_, v)| contains_symbol(v, var)),
-        Expr::Equation(l, r) => contains_symbol(l, var) || contains_symbol(r, var),
+        Expr::Equation(l, r) | Expr::Formula(l, r) => {
+            contains_symbol(l, var) || contains_symbol(r, var)
+        }
     }
 }
 
@@ -1316,6 +1329,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
         Expr::Bool(_) => Err("cannot numerically evaluate a boolean".to_string()),
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
+        Expr::Formula(..) => Err("cannot numerically evaluate a formula".to_string()),
         Expr::Struct(..) => Err("cannot numerically evaluate a struct".to_string()),
         Expr::Signal(_) => Err(
             "cannot collapse a signal to one number (use mid, bound, dsp.peak, or dsp.rms)"
@@ -1388,7 +1402,7 @@ fn contains_complex(e: &Expr) -> bool {
         Expr::Complex(..) => true,
         Expr::Add(ts) | Expr::Mul(ts) | Expr::Func(_, ts) => ts.iter().any(contains_complex),
         Expr::Pow(b, x) => contains_complex(b) || contains_complex(x),
-        Expr::Equation(l, r) => contains_complex(l) || contains_complex(r),
+        Expr::Equation(l, r) | Expr::Formula(l, r) => contains_complex(l) || contains_complex(r),
         Expr::Matrix(rows) => rows.iter().flatten().any(contains_complex),
         _ => false,
     }
@@ -1573,6 +1587,7 @@ fn to_complex(e: &Expr, p: usize, cc: &mut Consts) -> Result<Cpx, String> {
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Matrix(..) => Err("cannot collapse a matrix to a single number".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
+        Expr::Formula(..) => Err("cannot numerically evaluate a formula".to_string()),
         Expr::Struct(..) => Err("cannot numerically evaluate a struct".to_string()),
     }
 }
@@ -1592,7 +1607,9 @@ fn involves_transcendentals(e: &Expr) -> bool {
         }
         Expr::Complex(re, im) => involves_transcendentals(re) || involves_transcendentals(im),
         Expr::Matrix(rows) => rows.iter().flatten().any(involves_transcendentals),
-        Expr::Equation(l, r) => involves_transcendentals(l) || involves_transcendentals(r),
+        Expr::Equation(l, r) | Expr::Formula(l, r) => {
+            involves_transcendentals(l) || involves_transcendentals(r)
+        }
         _ => false,
     }
 }
@@ -1891,6 +1908,7 @@ fn type_rank(e: &Expr) -> u8 {
         Expr::Function { .. } => 9,
         Expr::Signal(_) => 10,
         Expr::Equation(..) => 10,
+        Expr::Formula(..) => 10,
         Expr::Struct(_) => 11,
     }
 }
@@ -2020,6 +2038,10 @@ impl Expr {
             Expr::Equation(l, r) => (
                 PREC_EQ,
                 format!("{} = {}", l.render(PREC_ADD), r.render(PREC_ADD)),
+            ),
+            Expr::Formula(l, r) => (
+                PREC_EQ,
+                format!("{} ~ {}", l.render(PREC_ADD), r.render(PREC_ADD)),
             ),
             // Re-parseable through the `struct(...)` builtin: equation-valued
             // fields render above PREC_EQ, so they come back parenthesized.

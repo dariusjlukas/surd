@@ -117,6 +117,10 @@ fn render_inner(e: &Expr) -> (u8, String) {
             PREC_EQ,
             format!("{} = {}", render(l, PREC_ADD), render(r, PREC_ADD)),
         ),
+        Expr::Formula(l, r) => (
+            PREC_EQ,
+            format!("{} \\sim {}", render(l, PREC_ADD), render(r, PREC_ADD)),
+        ),
         Expr::Struct(fields) => (
             PREC_ATOM,
             format!(

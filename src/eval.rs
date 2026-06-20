@@ -212,6 +212,16 @@ impl Interpreter {
                 Box::new(self.eval_node(l)?),
                 Box::new(self.eval_node(r)?),
             )),
+            // A formula keeps its operands symbolic — they name data columns,
+            // so a workspace binding of `x` must not collapse `y ~ x`.
+            Node::Formula(l, r) => {
+                let mut names = Vec::new();
+                collect_node_idents(l, &mut names);
+                collect_node_idents(r, &mut names);
+                let le = self.eval_shadowed(&names, l)?;
+                let re = self.eval_shadowed(&names, r)?;
+                Ok(Expr::Formula(Box::new(le), Box::new(re)))
+            }
             Node::If(cond, then_b, else_b) => {
                 if as_bool(&self.eval_node(cond)?)? {
                     self.eval_node(then_b)
@@ -963,14 +973,47 @@ impl Interpreter {
 /// The built-in namespaces. Each groups a domain toolkit behind one name so
 /// the global builtin set stays small; `ns.func(...)` dispatches here.
 fn is_namespace(name: &str) -> bool {
-    matches!(name, "dsp" | "stats")
+    matches!(name, "dsp" | "stats" | "data")
 }
 
 fn call_namespace(ns: &str, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
     match ns {
         "dsp" => dsp::call(name, args),
         "stats" => stats::call(name, args),
+        "data" => crate::data::call(name, args),
         _ => unreachable!("call_namespace on a non-namespace"),
+    }
+}
+
+/// Collect the identifiers appearing in a syntax node (deduped, first-seen
+/// order) — used to shadow a formula's column names before evaluating it.
+fn collect_node_idents(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Ident(s) => {
+            if !out.contains(s) {
+                out.push(s.clone());
+            }
+        }
+        Node::BinOp(_, a, b) | Node::Equation(a, b) | Node::Formula(a, b) => {
+            collect_node_idents(a, out);
+            collect_node_idents(b, out);
+        }
+        Node::Neg(a) | Node::Not(a) => collect_node_idents(a, out),
+        Node::Call(_, args) => args.iter().for_each(|a| collect_node_idents(a, out)),
+        Node::Field(b, _) => collect_node_idents(b, out),
+        Node::FieldCall(b, _, args) => {
+            collect_node_idents(b, out);
+            args.iter().for_each(|a| collect_node_idents(a, out));
+        }
+        Node::Index(b, idx) => {
+            collect_node_idents(b, out);
+            idx.iter().for_each(|i| collect_node_idents(i, out));
+        }
+        Node::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .for_each(|c| collect_node_idents(c, out)),
+        _ => {}
     }
 }
 

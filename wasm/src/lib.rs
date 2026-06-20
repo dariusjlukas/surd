@@ -123,6 +123,7 @@ fn kind_of(e: &Expr) -> &'static str {
         Expr::Matrix(_) => "matrix",
         Expr::Bool(_) => "boolean",
         Expr::Equation(..) => "equation",
+        Expr::Formula(..) => "formula",
         Expr::Function { .. } => "function",
         Expr::Struct(_) => "struct",
         _ => "scalar",
@@ -672,7 +673,7 @@ fn symbol_walk(
                 symbol_walk(a, top, cond, bound, defs, uses);
             }
         }
-        Node::BinOp(_, a, b) | Node::Equation(a, b) => {
+        Node::BinOp(_, a, b) | Node::Equation(a, b) | Node::Formula(a, b) => {
             symbol_walk(a, top, cond, bound, defs, uses);
             symbol_walk(b, top, cond, bound, defs, uses);
         }

@@ -394,9 +394,9 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
             args.len()
         ));
     }
-    let y = entries("stats.regress", &args[1])?;
+    let (x, y) = model_data("stats.regress", &args[0], &args[1])?;
     let w = vec![int(1); y.len()];
-    fit_linear("stats.regress", &args[0], y, w)
+    fit_linear("stats.regress", &x, y, w)
 }
 
 /// Weighted least squares: exactly `stats.regress`, but minimizing
@@ -410,7 +410,7 @@ fn wls(args: &[Expr]) -> Result<Expr, String> {
             args.len()
         ));
     }
-    let y = entries("stats.wls", &args[1])?;
+    let (x, y) = model_data("stats.wls", &args[0], &args[1])?;
     let w = entries("stats.wls", &args[2])?;
     if w.len() != y.len() {
         return Err(format!(
@@ -424,7 +424,7 @@ fn wls(args: &[Expr]) -> Result<Expr, String> {
     {
         return Err("stats.wls: weights must be positive".into());
     }
-    fit_linear("stats.wls", &args[0], y, w)
+    fit_linear("stats.wls", &x, y, w)
 }
 
 /// The shared (weighted) least-squares engine behind `regress` and `wls`. With
@@ -696,7 +696,7 @@ fn ridge(args: &[Expr]) -> Result<Expr, String> {
             args.len()
         ));
     }
-    let y = entries("stats.ridge", &args[1])?;
+    let (x, y) = model_data("stats.ridge", &args[0], &args[1])?;
     let n = y.len();
     if n < 2 {
         return Err("stats.ridge needs at least 2 observations".into());
@@ -705,7 +705,7 @@ fn ridge(args: &[Expr]) -> Result<Expr, String> {
     if numeric_value(lambda).is_some_and(|v| v < BigRational::from_integer(0.into())) {
         return Err("stats.ridge: the penalty lambda must be nonnegative".into());
     }
-    let mut rows = design_rows("stats.ridge", &args[0], n)?;
+    let mut rows = design_rows("stats.ridge", &x, n)?;
     let added_intercept = !has_constant_col(&rows);
     if added_intercept {
         for r in rows.iter_mut() {
@@ -789,6 +789,121 @@ fn constant_col_index(rows: &[Vec<Expr>]) -> Option<usize> {
     (0..rows[0].len()).find(|&j| rows.iter().all(|r| r[j] == rows[0][j]))
 }
 
+// -- the formula interface ----------------------------------------------------
+
+/// Resolve the `(design X, response y)` for a model, supporting both the matrix
+/// form `(X, y)` and the formula form `(response ~ terms, data)`.
+fn model_data(caller: &str, a0: &Expr, a1: &Expr) -> Result<(Expr, Vec<Expr>), String> {
+    if let Expr::Formula(lhs, rhs) = a0 {
+        build_from_formula(caller, lhs, rhs, a1)
+    } else {
+        Ok((a0.clone(), entries(caller, a1)?))
+    }
+}
+
+/// Build a design matrix and response from `response ~ terms` against a data
+/// struct (columns named by the formula's symbols). Numeric columns enter
+/// directly; categorical (symbol-valued) columns are one-hot encoded with the
+/// first level dropped as the reference, since `fit_linear` supplies the
+/// intercept.
+fn build_from_formula(
+    caller: &str,
+    lhs: &Expr,
+    rhs: &Expr,
+    data: &Expr,
+) -> Result<(Expr, Vec<Expr>), String> {
+    let Expr::Struct(fields) = data else {
+        return Err(format!(
+            "{}: the formula form needs a data struct as the second argument",
+            caller
+        ));
+    };
+    let Expr::Symbol(resp) = lhs else {
+        return Err(format!(
+            "{}: the formula response (left of ~) must be a single column name",
+            caller
+        ));
+    };
+    let y = lookup_column(caller, fields, resp)?;
+    let n = y.len();
+
+    let mut cols: Vec<Vec<Expr>> = Vec::new();
+    for term in formula_terms(caller, rhs)? {
+        let column = lookup_column(caller, fields, &term)?;
+        if column.len() != n {
+            return Err(format!(
+                "{}: column '{}' has {} rows but the response has {}",
+                caller,
+                term,
+                column.len(),
+                n
+            ));
+        }
+        if column.iter().any(|e| !is_numeric(e)) {
+            // Categorical: one indicator column per level past the reference.
+            let levels = distinct(&column);
+            for lv in levels.iter().skip(1) {
+                cols.push(
+                    column
+                        .iter()
+                        .map(|x| if x == lv { int(1) } else { int(0) })
+                        .collect(),
+                );
+            }
+        } else {
+            cols.push(column);
+        }
+    }
+    if cols.is_empty() {
+        return Err(format!("{}: the formula has no usable predictors", caller));
+    }
+    let rows: Vec<Vec<Expr>> = (0..n)
+        .map(|i| cols.iter().map(|c| c[i].clone()).collect())
+        .collect();
+    Ok((Expr::Matrix(rows), y))
+}
+
+/// The additive terms on the right of `~`, each a bare column name. (`a + b`
+/// has already canonicalized to `Add([a, b])`.)
+fn formula_terms(caller: &str, rhs: &Expr) -> Result<Vec<String>, String> {
+    let name = |e: &Expr| match e {
+        Expr::Symbol(s) => Ok(s.clone()),
+        other => Err(format!(
+            "{}: formula predictors must be column names, got '{}'",
+            caller, other
+        )),
+    };
+    match rhs {
+        Expr::Add(ts) => ts.iter().map(name).collect(),
+        other => Ok(vec![name(other)?]),
+    }
+}
+
+/// A named column of a data struct, as a flat vector of entries.
+fn lookup_column(caller: &str, fields: &[(String, Expr)], name: &str) -> Result<Vec<Expr>, String> {
+    let v = fields
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v)
+        .ok_or_else(|| format!("{}: the data has no column '{}'", caller, name))?;
+    entries(caller, v)
+}
+
+fn is_numeric(e: &Expr) -> bool {
+    numeric_value(e).is_some() || matches!(e, Expr::Float(..))
+}
+
+/// Distinct entries in first-appearance order.
+fn distinct(xs: &[Expr]) -> Vec<Expr> {
+    let mut out: Vec<Expr> = Vec::new();
+    for x in xs {
+        if !out.contains(x) {
+            out.push(x.clone());
+        }
+    }
+    out
+}
+
 /// Logistic regression by iteratively reweighted least squares (IRLS). The
 /// response `y` is binary (0/1); the fit models P(y = 1) = 1/(1 + e^{−xβ}).
 /// IRLS iterates — so the estimates are floats — but it's the same weighted
@@ -801,7 +916,7 @@ fn logit(args: &[Expr]) -> Result<Expr, String> {
             args.len()
         ));
     }
-    let y_expr = entries("stats.logit", &args[1])?;
+    let (xdesign, y_expr) = model_data("stats.logit", &args[0], &args[1])?;
     let n = y_expr.len();
     if n < 3 {
         return Err("stats.logit needs at least 3 observations".into());
@@ -814,7 +929,7 @@ fn logit(args: &[Expr]) -> Result<Expr, String> {
         }
         y.push(v);
     }
-    let mut rows = design_rows("stats.logit", &args[0], n)?;
+    let mut rows = design_rows("stats.logit", &xdesign, n)?;
     let added_intercept = !has_constant_col(&rows);
     if added_intercept {
         for r in rows.iter_mut() {

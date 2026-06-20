@@ -180,6 +180,7 @@ fn encode(e: &Expr) -> Result<Value, String> {
         ),
         Expr::Complex(re, im) => json!({ "t": "complex", "re": encode(re)?, "im": encode(im)? }),
         Expr::Equation(l, r) => json!({ "t": "eq", "lhs": encode(l)?, "rhs": encode(r)? }),
+        Expr::Formula(l, r) => json!({ "t": "formula", "lhs": encode(l)?, "rhs": encode(r)? }),
         Expr::Function { params, body } => {
             let body = serde_json::to_value(body.as_ref())
                 .map_err(|e| format!("could not serialize function body: {}", e))?;
@@ -364,6 +365,7 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
         "func" => Ok(func(text("name")?, dec_args("args")?)),
         "complex" => Ok(complex(dec("re")?, dec("im")?)),
         "eq" => Ok(Expr::Equation(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
+        "formula" => Ok(Expr::Formula(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
         "signal" => {
             // Arbitrary precision (decimal-string bounds + digits)…
             if let Some(d) = map.get("digits") {

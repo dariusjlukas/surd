@@ -139,3 +139,54 @@ n evenly spaced points from a to b inclusive, as a row vector — with an
 >> linspace(0, pi, 5)
 [ 0  1/4*π  1/2*π  3/4*π  π ]
 ```
+
+## The `data` namespace — preparing data for a model
+
+These helpers sit in front of the [`stats`](stats.md) models. The column
+transforms stay **exact** — a z-score is `(x − μ)/σ` with `μ` rational and `σ`
+a surd, so the result is an exact surd, not a rounded float.
+
+| function | result |
+|----------|--------|
+| `data.center(v)` | `v` minus its mean |
+| `data.standardize(v)` | z-scores `(vᵢ − μ)/σ` (sample σ), exact surds |
+| `data.rescale(v)` | min–max rescaled to `[0, 1]` (numeric data) |
+| `data.dummy(v)` | one-hot encode a categorical column |
+| `data.groupby(keys, values)` | aggregate `values` by the levels of `keys` |
+
+`data.dummy(v)` treats each distinct entry (symbol or number) as a level and
+returns `struct(levels, indicators)` — an indicator (0/1) column per level.
+`data.groupby` returns `struct(levels, count, sum, mean)`, one row per level.
+
+```text
+>> N(data.standardize([1; 2; 3; 4; 5]))
+[ -1.26491106406735173279955741777 ]
+[ ... ]
+>> data.groupby([a; b; a; b; a], [1; 2; 3; 4; 5]).mean
+[ 3 ]
+[ 3 ]
+>> data.dummy([red; blue; red]).indicators
+[ 1  0 ]
+[ 0  1 ]
+[ 1  0 ]
+```
+
+## Model formulas: the `~` operator
+
+`response ~ term1 + term2` builds a **model formula** — a piece of data whose
+operands name columns of a data struct (a table from
+[CSV import](../getting-started.md), say, or a hand-built `struct`). Pass it to
+a `stats` model in place of an explicit `(X, y)`:
+
+```text
+>> cars := struct(mpg = [...], weight = [...], origin = [us; eu; us; ...])
+>> m := stats.regress(mpg ~ weight + origin, cars)
+```
+
+The builder looks each term up as a column, adds an intercept, and — for a
+**categorical** column (symbol-valued, like `origin`) — one-hot encodes it with
+the first level dropped as the reference. The formula's names stay symbolic, so
+a workspace binding of `weight` won't disturb `mpg ~ weight`. The same form
+works for `stats.wls`, `stats.ridge`, and `stats.logit`. (Term order follows the
+canonical ordering of the sum, and interactions like `a:b` are not yet
+supported.)

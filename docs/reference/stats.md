@@ -185,7 +185,9 @@ Ordinary least squares **with the full inferential apparatus**, returned as a
 fitted-model [struct](../language/structs.md). `X` is an n×k design matrix (or
 a length-n vector for a single predictor); `y` is the n responses. An
 intercept column is added automatically unless `X` already holds a constant
-column.
+column. You can also fit from a data table with a
+[formula](data.md#model-formulas-the-operator): `stats.regress(y ~ x1 + x2,
+data)` (the same form works for `wls`, `ridge`, and `logit`).
 
 What makes this exact where it can be: the coefficient covariance
 σ̂²·(XᵀX)⁻¹ is a *rational matrix*, so standard errors and t-statistics are

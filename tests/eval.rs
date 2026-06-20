@@ -1476,3 +1476,60 @@ fn logistic_regression() {
     assert!(ev("stats.logit([1; 2; 3], [0; 1; 2])")
         .starts_with("error: stats.logit: the response must be binary"));
 }
+
+#[test]
+fn data_namespace_transforms() {
+    // Centering and standardizing stay exact (the z-scores are surds).
+    assert_eq!(ev("data.center([1; 2; 3; 4; 5])[1]"), "-2");
+    assert_eq!(ev("data.standardize([1; 2; 3; 4; 5])[3]"), "0");
+    assert!(ev("N(data.standardize([1; 2; 3; 4; 5])[1])").starts_with("-1.264911064067"));
+    // Min–max rescaling to [0, 1], exact.
+    assert_eq!(ev("data.rescale([10; 20; 30; 40; 50])[2]"), "1/4");
+    assert!(ev("data.standardize([7; 7; 7])").starts_with("error: data.standardize"));
+}
+
+#[test]
+fn data_namespace_dummy_and_groupby() {
+    // One-hot encoding: distinct values become indicator columns.
+    assert_eq!(ev("data.dummy([a; b; a; c]).levels[2]"), "b");
+    assert_eq!(ev("data.dummy([a; b; a]).indicators[1, 1]"), "1"); // row a, column a
+    assert_eq!(ev("data.dummy([a; b; a]).indicators[1, 2]"), "0"); // row a, column b
+                                                                   // Aggregation by group, exact.
+    let g = "g := data.groupby([a; b; a; b; a], [1; 2; 3; 4; 5])";
+    assert_eq!(ev_all(&[g, "g.count[1]"]), "3"); // three a's
+    assert_eq!(ev_all(&[g, "g.sum[1]"]), "9"); // 1 + 3 + 5
+    assert_eq!(ev_all(&[g, "g.mean[2]"]), "3"); // (2 + 4)/2
+}
+
+#[test]
+fn formula_interface() {
+    // The formula form reproduces the matrix form exactly.
+    let d = "d := struct(y = [2; 4; 5; 4; 5], x = [1; 2; 3; 4; 5])";
+    assert_eq!(
+        ev_all(&[d, "stats.regress(y ~ x, d).coefficients[2]"]),
+        "3/5"
+    );
+    // A categorical predictor auto-expands to drop-first dummies; the
+    // coefficients are exactly the group-mean contrasts.
+    let dc = "d := struct(y = [1; 2; 3; 4; 5; 6], g = [a; a; b; b; c; c])";
+    assert_eq!(
+        ev_all(&[dc, "stats.regress(y ~ g, d).coefficients[1]"]),
+        "3/2"
+    ); // mean(a)
+    assert_eq!(
+        ev_all(&[dc, "stats.regress(y ~ g, d).coefficients[2]"]),
+        "2"
+    ); // mean(b) − mean(a)
+    assert_eq!(
+        ev_all(&[dc, "stats.regress(y ~ g, d).coefficients[3]"]),
+        "4"
+    ); // mean(c) − mean(a)
+       // The formula's column names stay symbolic even when bound in the workspace.
+    assert_eq!(ev_all(&["x := 99", "y ~ x + z"]), "y ~ x + z");
+    // A missing column is a clean error.
+    assert!(ev_all(&[
+        "d := struct(y = [1; 2; 3], a = [4; 5; 6])",
+        "stats.regress(y ~ b, d)"
+    ])
+    .starts_with("error: stats.regress: the data has no column 'b'"));
+}
