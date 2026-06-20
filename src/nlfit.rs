@@ -304,7 +304,7 @@ fn jac_resid(
 // -- small dense f64 linear algebra (p is the parameter count, tiny) ----------
 
 /// Solve `A x = b` by Gauss–Jordan with partial pivoting. `None` if singular.
-fn solve_linear(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
+pub(crate) fn solve_linear(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
     let n = a.len();
     let mut m = a.to_vec();
     let mut x = b.to_vec();
@@ -334,7 +334,7 @@ fn solve_linear(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
 }
 
 /// Invert a square matrix by Gauss–Jordan. `None` if singular.
-fn inverse(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+pub(crate) fn inverse(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let n = a.len();
     let mut m = a.to_vec();
     let mut inv: Vec<Vec<f64>> = (0..n)
@@ -373,13 +373,13 @@ fn inverse(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
 // -- result construction ------------------------------------------------------
 
 /// An f64 as an exact-decimal float `Expr`, rounded to honest f64 precision.
-fn float_expr(v: f64) -> Result<Expr, String> {
+pub(crate) fn float_expr(v: f64) -> Result<Expr, String> {
     let r = BigRational::from_f64(v)
         .ok_or_else(|| "stats.nlfit produced a non-finite value".to_string())?;
     numeric_eval(&rat_to_expr(r), RESULT_DIGITS)
 }
 
-fn floats(vs: &[f64]) -> Result<Vec<Expr>, String> {
+pub(crate) fn floats(vs: &[f64]) -> Result<Vec<Expr>, String> {
     vs.iter().map(|&v| float_expr(v)).collect()
 }
 

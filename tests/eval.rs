@@ -1428,3 +1428,51 @@ fn nlfit_argument_errors() {
             .starts_with("error: stats.nlfit: the model has no independent variable")
     );
 }
+
+#[test]
+fn weighted_least_squares() {
+    // Unit weights reproduce OLS exactly.
+    assert_eq!(
+        ev("stats.wls([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], [1; 1; 1; 1; 1]).coefficients[2]"),
+        "3/5"
+    );
+    // Non-trivial weights, hand-checked: (XᵀWX)⁻¹XᵀWy = [8/11, 5/11].
+    assert_eq!(
+        ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; 2]).coefficients[1]"),
+        "8/11"
+    );
+    assert_eq!(
+        ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; 2]).coefficients[2]"),
+        "5/11"
+    );
+    assert!(ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; 0])").starts_with("error: stats.wls"));
+}
+
+#[test]
+fn ridge_regression() {
+    // λ = 0 is ordinary least squares.
+    assert_eq!(
+        ev("stats.ridge([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 0).coefficients[2]"),
+        "3/5"
+    );
+    // λ = 1, hand-checked penalized normal equations → [26/11, 6/11], the
+    // intercept unpenalized; effective df drops below k = 2.
+    let r = "r := stats.ridge([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 1)";
+    assert_eq!(ev_all(&[r, "r.coefficients[1]"]), "26/11");
+    assert_eq!(ev_all(&[r, "r.coefficients[2]"]), "6/11");
+    assert_eq!(ev_all(&[r, "r.edf"]), "21/11");
+}
+
+#[test]
+fn logistic_regression() {
+    // Matches an independent IRLS implementation to ~14 digits.
+    let m = "m := stats.logit([1; 2; 3; 4; 5; 6; 7; 8], [0; 0; 0; 1; 0; 1; 1; 1])";
+    assert_eq!(ev_all(&[m, "m.converged"]), "true");
+    assert!(ev_all(&[m, "m.coefficients[1]"]).starts_with("-5.7703203522912"));
+    assert!(ev_all(&[m, "m.coefficients[2]"]).starts_with("1.2822934116202"));
+    assert!(ev_all(&[m, "m.se[2]"]).starts_with("0.8604127050525"));
+    assert!(ev_all(&[m, "m.deviance"]).starts_with("5.0060993969358"));
+    // The response must be binary.
+    assert!(ev("stats.logit([1; 2; 3], [0; 1; 2])")
+        .starts_with("error: stats.logit: the response must be binary"));
+}

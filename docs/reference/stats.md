@@ -233,6 +233,84 @@ Fields of the result:
 A perfect fit (zero residual variance), constant responses, or rank-deficient
 regressors are errors — there is no honest inference to report in those cases.
 
+## `stats.wls`
+
+```
+stats.wls(X, y, weights)
+```
+
+Weighted least squares — exactly `stats.regress`, but minimizing
+Σ wᵢ·(yᵢ − xᵢβ)² for per-observation `weights` (inverse-variance weights for
+heteroskedastic data, replication counts, …). The result is a regression model
+with all the same fields, computed from the weighted normal equations
+β̂ = (XᵀWX)⁻¹XᵀWy, still exact. Weights must be positive; with all weights
+equal it is ordinary least squares.
+
+```text
+>> stats.wls([1; 2; 3], [1; 2; 2], [1; 1; 2]).coefficients
+[ 8/11 ]
+[ 5/11 ]
+```
+
+## `stats.ridge`
+
+```
+stats.ridge(X, y, lambda)
+```
+
+Ridge regression — the L2-penalized estimator β̂ = (XᵀX + λP)⁻¹Xᵀy, which
+trades a little bias for a large drop in variance and is the standard remedy
+for multicollinearity. Exact in `lambda` (rational λ ⇒ rational coefficients).
+The intercept is never penalized. Because ridge is biased, classical standard
+errors don't apply, so the result reports point estimates and fit only:
+`coefficients`, `fitted`, `residuals`, `rss`, `r2`, `lambda`, and the effective
+degrees of freedom `edf` = trace(X(XᵀX+λP)⁻¹Xᵀ). λ = 0 recovers OLS; larger λ
+shrinks the slopes and lowers `edf` toward 1. Standardize predictors of very
+different scales first.
+
+```text
+>> r := stats.ridge([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 1)
+>> r.coefficients
+[ 26/11 ]
+[  6/11 ]
+>> r.edf
+21/11
+```
+
+## `stats.logit`
+
+```
+stats.logit(X, y)
+```
+
+Logistic regression by iteratively reweighted least squares — for a binary
+response `y` (each value 0 or 1), modeling P(y = 1) = 1/(1 + e^{−xβ}). IRLS
+iterates a weighted least squares step, so the estimates are floats; inference
+is Wald (standard errors from the information matrix (XᵀWX)⁻¹ at convergence,
+two-sided p-values from the **normal** CDF, not t).
+
+| field | meaning |
+|-------|---------|
+| `coefficients` | log-odds coefficients β̂ |
+| `se`, `zstat`, `pvalue` | Wald standard error, z-statistic, two-sided p-value |
+| `fitted`, `residuals` | fitted probabilities μ and response residuals y − μ |
+| `deviance`, `nulldeviance` | model and intercept-only deviance |
+| `pseudor2` | McFadden's pseudo-R² = 1 − deviance/nulldeviance |
+| `iterations`, `converged` | IRLS iterations and whether it converged |
+
+```text
+>> m := stats.logit([1; 2; 3; 4; 5; 6; 7; 8], [0; 0; 0; 1; 0; 1; 1; 1])
+>> m.coefficients
+[ -5.77032035229123 ]
+[  1.28229341162027 ]
+>> N(m.pvalue)
+[ 0.152781530183485 ]
+[ 0.136139154333700 ]
+```
+
+Non-binary responses, more parameters than observations, and perfectly
+separated data (a singular information matrix) are errors.
+
 ## `stats.predict`
 
 ```

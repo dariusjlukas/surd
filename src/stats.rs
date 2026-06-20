@@ -8,16 +8,18 @@
 //! everything that doesn't need ordering; `median` requires numeric data.
 
 use crate::expr::*;
+use crate::f64eval::eval_f64;
 use crate::matrix;
+use crate::nlfit;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "mean", "median", "quantile", "var", "std", "cov", "cor", "linfit", "polyfit", "polyval",
-    "lsq", "regress", "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit",
-    "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf",
-    "chisqinv", "fcdf", "fpdf", "finv",
+    "lsq", "regress", "wls", "ridge", "logit", "predict", "robustse", "anova", "bptest", "dwtest",
+    "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv",
+    "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -91,6 +93,9 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             linfit(&x, &y)
         }
         "regress" => regress(&args),
+        "wls" => wls(&args),
+        "ridge" => ridge(&args),
+        "logit" => logit(&args),
         "predict" => predict(&args),
         "robustse" => robustse(&args),
         "anova" => anova(&args),
@@ -390,11 +395,47 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         ));
     }
     let y = entries("stats.regress", &args[1])?;
+    let w = vec![int(1); y.len()];
+    fit_linear("stats.regress", &args[0], y, w)
+}
+
+/// Weighted least squares: exactly `stats.regress`, but minimizing
+/// Σ wᵢ·(yᵢ − xᵢβ)² for per-observation weights `w` (inverse-variance weights
+/// for heteroskedastic data, say). The same exact covariance machinery runs
+/// weighted, so the result is a regression model with all the usual fields.
+fn wls(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "stats.wls expects 3 argument(s) (X, y, weights), got {}",
+            args.len()
+        ));
+    }
+    let y = entries("stats.wls", &args[1])?;
+    let w = entries("stats.wls", &args[2])?;
+    if w.len() != y.len() {
+        return Err(format!(
+            "stats.wls: {} weights for {} observations",
+            w.len(),
+            y.len()
+        ));
+    }
+    if w.iter()
+        .any(|wi| numeric_value(wi).is_some_and(|v| v <= BigRational::from_integer(0.into())))
+    {
+        return Err("stats.wls: weights must be positive".into());
+    }
+    fit_linear("stats.wls", &args[0], y, w)
+}
+
+/// The shared (weighted) least-squares engine behind `regress` and `wls`. With
+/// `w` all ones it reproduces ordinary least squares exactly (`1·x → x`,
+/// `1^½ → 1`, `ln 1 → 0` all fold away), so OLS pays nothing for the generality.
+fn fit_linear(caller: &str, x: &Expr, y: Vec<Expr>, w: Vec<Expr>) -> Result<Expr, String> {
     let n = y.len();
     if n < 3 {
-        return Err("stats.regress needs at least 3 observations".into());
+        return Err(format!("{} needs at least 3 observations", caller));
     }
-    let mut rows = design_rows(&args[0], n)?;
+    let mut rows = design_rows(caller, x, n)?;
     // Record whether we prepend the intercept, so `predict`/`robustse` can
     // rebuild a matching design for new data.
     let added_intercept = !has_constant_col(&rows);
@@ -406,59 +447,95 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
     let k = rows[0].len();
     if n <= k {
         return Err(format!(
-            "stats.regress needs more observations ({}) than parameters ({})",
-            n, k
+            "{} needs more observations ({}) than parameters ({})",
+            caller, n, k
         ));
     }
     let dfmodel = k - 1;
     if dfmodel == 0 {
-        return Err("stats.regress needs at least one non-constant regressor".into());
+        return Err(format!(
+            "{} needs at least one non-constant regressor",
+            caller
+        ));
     }
     let df = n - k;
 
-    // β̂ = (XᵀX)⁻¹Xᵀy, plus (XᵀX)⁻¹ itself for the covariance.
+    // Weighted normal equations: β̂ = (XᵀWX)⁻¹XᵀWy, with W = diag(w). The
+    // weight scales each row of X and each y, then XᵀW = (WX)ᵀ.
+    let wx_rows: Vec<Vec<Expr>> = rows
+        .iter()
+        .zip(&w)
+        .map(|(row, wi)| {
+            row.iter()
+                .map(|x| mul(vec![wi.clone(), x.clone()]))
+                .collect()
+        })
+        .collect();
+    let wy: Vec<Expr> = y
+        .iter()
+        .zip(&w)
+        .map(|(yi, wi)| mul(vec![wi.clone(), yi.clone()]))
+        .collect();
+
     let xmat = Expr::Matrix(rows.clone());
-    let ycol = col(y.clone());
     let xt = matrix::transpose(&xmat);
-    let xtx = matrix::mat_mul(&xt, &xmat)?;
-    let xty = matrix::mat_mul(&xt, &ycol)?;
-    let beta = match matrix::solve(&xtx, &xty)? {
+    let wxmat = Expr::Matrix(wx_rows);
+    let xtwx = matrix::mat_mul(&xt, &wxmat)?;
+    let xtwy = matrix::mat_mul(&xt, &col(wy.clone()))?;
+    let beta = match matrix::solve(&xtwx, &xtwy)? {
         Expr::Struct(_) => {
-            return Err(
-                "stats.regress: the regressors are linearly dependent (rank-deficient)".into(),
-            )
+            return Err(format!(
+                "{}: the regressors are linearly dependent (rank-deficient)",
+                caller
+            ))
         }
         b => b,
     };
-    let xtx_inv = matrix::inverse(&xtx)?;
-    let inv_diag = diagonal(&xtx_inv)?;
+    let xtwx_inv = matrix::inverse(&xtwx)?;
+    let inv_diag = diagonal(&xtwx_inv)?;
 
     let fitted = matrix::mat_mul(&xmat, &beta)?;
-    let fitted_v = entries("stats.regress", &fitted)?;
-    let beta_v = entries("stats.regress", &beta)?;
+    let fitted_v = entries(caller, &fitted)?;
+    let beta_v = entries(caller, &beta)?;
     let resid: Vec<Expr> = y
         .iter()
         .zip(&fitted_v)
         .map(|(yi, fi)| add(vec![yi.clone(), mul(vec![int(-1), fi.clone()])]))
         .collect();
 
-    let rss = sum_products(&resid, &resid);
+    // Weighted residual sum of squares Σ wᵢrᵢ².
+    let rss = add(resid
+        .iter()
+        .zip(&w)
+        .map(|(ri, wi)| expand(&mul(vec![wi.clone(), ri.clone(), ri.clone()])))
+        .collect());
     if is_known_zero(&rss) {
-        return Err(
-            "stats.regress: residuals are exactly zero (a perfect fit leaves no residual variance \
-             to do inference with)"
-                .into(),
-        );
+        return Err(format!(
+            "{}: residuals are exactly zero (a perfect fit leaves no residual variance \
+             to do inference with)",
+            caller
+        ));
     }
     let sigma2 = mul(vec![inv_int(df), rss.clone()]);
 
-    let cy = centered(&y);
-    let ss_tot = sum_products(&cy, &cy);
+    // Weighted total sum of squares, about the weighted mean ȳ_w = Σwy/Σw.
+    let ybar = mul(vec![add(wy), pow(add(w.clone()), int(-1))]);
+    let ss_tot = add(y
+        .iter()
+        .zip(&w)
+        .map(|(yi, wi)| {
+            let c = add(vec![yi.clone(), mul(vec![int(-1), ybar.clone()])]);
+            expand(&mul(vec![wi.clone(), c.clone(), c]))
+        })
+        .collect());
     if is_known_zero(&ss_tot) {
-        return Err("stats.regress is undefined for constant observations (zero variance)".into());
+        return Err(format!(
+            "{} is undefined for constant observations (zero variance)",
+            caller
+        ));
     }
 
-    // se_j = √(σ̂²·(XᵀX)⁻¹_jj); t_j = β_j/se_j; two-sided p via the t CDF.
+    // se_j = √(σ̂²·(XᵀWX)⁻¹_jj); t_j = β_j/se_j; two-sided p via the t CDF.
     let mut se = Vec::with_capacity(k);
     let mut tstat = Vec::with_capacity(k);
     let mut pvalue = Vec::with_capacity(k);
@@ -527,19 +604,23 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         ]),
     ]);
 
-    // Leverage hᵢ (hat-matrix diagonal), internally studentized residuals, and
-    // Cook's distance — the last is exact (no radical).
-    let hat = matrix::mat_mul(&matrix::mat_mul(&xmat, &xtx_inv)?, &xt)?;
+    // Leverage hᵢ — the weighted hat-matrix diagonal, H = X·(XᵀWX)⁻¹·(WX)ᵀ —
+    // then internally studentized residuals and Cook's distance (the weight
+    // enters as √wᵢ / wᵢ respectively).
+    let xtw = matrix::transpose(&wxmat);
+    let hat = matrix::mat_mul(&matrix::mat_mul(&xmat, &xtwx_inv)?, &xtw)?;
     let lev = diagonal(&hat)?;
     let mut studentized = Vec::with_capacity(n);
     let mut cooks = Vec::with_capacity(n);
-    for (ei, hi) in resid.iter().zip(&lev) {
+    for ((ei, hi), wi) in resid.iter().zip(&lev).zip(&w) {
         let one_minus_h = add(vec![int(1), mul(vec![int(-1), hi.clone()])]);
         studentized.push(mul(vec![
             ei.clone(),
+            pow(wi.clone(), half()),
             pow(mul(vec![sigma2.clone(), one_minus_h.clone()]), neg_half()),
         ]));
         cooks.push(mul(vec![
+            wi.clone(),
             pow(ei.clone(), int(2)),
             inv_int(k),
             pow(sigma2.clone(), int(-1)),
@@ -549,13 +630,20 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
     }
 
     // Gaussian log-likelihood and the information criteria (symbolic: each
-    // carries an `ln`). loglik = -(n/2)·(ln 2π + ln(RSS/n) + 1).
-    let loglik = mul(vec![
-        rat_to_expr(BigRational::new(BigInt::from(-(n as i64)), BigInt::from(2))),
-        add(vec![
-            func("ln", vec![mul(vec![int(2), Expr::Const(Constant::Pi)])]),
-            func("ln", vec![mul(vec![inv_int(n), rss.clone()])]),
-            int(1),
+    // carries an `ln`). loglik = -(n/2)·(ln 2π + ln(RSS/n) + 1) + ½·Σ ln wᵢ;
+    // the weight term vanishes for OLS (ln 1 = 0).
+    let loglik = add(vec![
+        mul(vec![
+            rat_to_expr(BigRational::new(BigInt::from(-(n as i64)), BigInt::from(2))),
+            add(vec![
+                func("ln", vec![mul(vec![int(2), Expr::Const(Constant::Pi)])]),
+                func("ln", vec![mul(vec![inv_int(n), rss.clone()])]),
+                int(1),
+            ]),
+        ]),
+        mul(vec![
+            inv_int(2),
+            add(w.iter().map(|wi| func("ln", vec![wi.clone()])).collect()),
         ]),
     ]);
     let neg2ll = mul(vec![int(-2), loglik.clone()]);
@@ -577,7 +665,7 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         ("leverage".into(), col(lev)),
         ("studentized".into(), col(studentized)),
         ("cooks".into(), col(cooks)),
-        ("cov".into(), matrix::scalar_mul(&sigma2, &xtx_inv)),
+        ("cov".into(), matrix::scalar_mul(&sigma2, &xtwx_inv)),
         ("sigma2".into(), sigma2),
         ("rss".into(), rss),
         ("r2".into(), r2),
@@ -594,11 +682,308 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
     ])
 }
 
+/// Ridge regression: β̂ = (XᵀX + λP)⁻¹Xᵀy, the L2-penalized estimator that
+/// trades a little bias for variance — the standard cure for multicollinearity.
+/// Exact in λ (rational ⇒ rational β). The intercept is never penalized
+/// (`P` is the identity with a 0 on the intercept). The estimator is biased, so
+/// classical standard errors don't apply; the result reports the coefficients,
+/// fit, and the effective degrees of freedom trace(X(XᵀX+λP)⁻¹Xᵀ). Predictors
+/// on very different scales should be standardized first.
+fn ridge(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "stats.ridge expects 3 argument(s) (X, y, lambda), got {}",
+            args.len()
+        ));
+    }
+    let y = entries("stats.ridge", &args[1])?;
+    let n = y.len();
+    if n < 2 {
+        return Err("stats.ridge needs at least 2 observations".into());
+    }
+    let lambda = &args[2];
+    if numeric_value(lambda).is_some_and(|v| v < BigRational::from_integer(0.into())) {
+        return Err("stats.ridge: the penalty lambda must be nonnegative".into());
+    }
+    let mut rows = design_rows("stats.ridge", &args[0], n)?;
+    let added_intercept = !has_constant_col(&rows);
+    if added_intercept {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let k = rows[0].len();
+    let intercept_idx = constant_col_index(&rows);
+
+    let xmat = Expr::Matrix(rows.clone());
+    let xt = matrix::transpose(&xmat);
+    let xtx = matrix::mat_mul(&xt, &xmat)?;
+    let xty = matrix::mat_mul(&xt, &col(y.clone()))?;
+
+    // Add λ to the diagonal, skipping the intercept column.
+    let Expr::Matrix(xtx_rows) = &xtx else {
+        return Err("stats.ridge: internal error forming XᵀX".into());
+    };
+    let penalized = Expr::Matrix(
+        xtx_rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(j, e)| {
+                        if i == j && Some(i) != intercept_idx {
+                            add(vec![e.clone(), lambda.clone()])
+                        } else {
+                            e.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+
+    let beta = match matrix::solve(&penalized, &xty)? {
+        Expr::Struct(_) => return Err("stats.ridge: the penalized system is singular".into()),
+        b => b,
+    };
+    let fitted = matrix::mat_mul(&xmat, &beta)?;
+    let fitted_v = entries("stats.ridge", &fitted)?;
+    let resid: Vec<Expr> = y
+        .iter()
+        .zip(&fitted_v)
+        .map(|(yi, fi)| add(vec![yi.clone(), mul(vec![int(-1), fi.clone()])]))
+        .collect();
+    let rss = sum_products(&resid, &resid);
+
+    // Effective degrees of freedom: trace((XᵀX+λP)⁻¹·XᵀX).
+    let edf = {
+        let prod = matrix::mat_mul(&matrix::inverse(&penalized)?, &xtx)?;
+        add(diagonal(&prod)?)
+    };
+
+    let cy = centered(&y);
+    let ss_tot = sum_products(&cy, &cy);
+    let mut fields = vec![
+        ("coefficients".into(), beta),
+        ("fitted".into(), fitted),
+        ("residuals".into(), col(resid)),
+        ("rss".into(), rss.clone()),
+        ("lambda".into(), lambda.clone()),
+        ("edf".into(), edf),
+        ("intercept".into(), Expr::Bool(added_intercept)),
+        ("n".into(), int(n as i64)),
+        ("k".into(), int(k as i64)),
+    ];
+    if !is_known_zero(&ss_tot) {
+        fields.push((
+            "r2".into(),
+            add(vec![int(1), mul(vec![int(-1), rss, pow(ss_tot, int(-1))])]),
+        ));
+    }
+    structure(fields)
+}
+
+/// The index of the first constant (intercept-spanning) column, if any.
+fn constant_col_index(rows: &[Vec<Expr>]) -> Option<usize> {
+    (0..rows[0].len()).find(|&j| rows.iter().all(|r| r[j] == rows[0][j]))
+}
+
+/// Logistic regression by iteratively reweighted least squares (IRLS). The
+/// response `y` is binary (0/1); the fit models P(y = 1) = 1/(1 + e^{−xβ}).
+/// IRLS iterates — so the estimates are floats — but it's the same weighted
+/// least squares we already do, looped. Inference is Wald: standard errors from
+/// (XᵀWX)⁻¹ at convergence, two-sided p-values from the normal CDF.
+fn logit(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "stats.logit expects 2 argument(s) (X, y), got {}",
+            args.len()
+        ));
+    }
+    let y_expr = entries("stats.logit", &args[1])?;
+    let n = y_expr.len();
+    if n < 3 {
+        return Err("stats.logit needs at least 3 observations".into());
+    }
+    let mut y = Vec::with_capacity(n);
+    for yi in &y_expr {
+        let v = eval_f64(yi, &[])?;
+        if v != 0.0 && v != 1.0 {
+            return Err("stats.logit: the response must be binary (every value 0 or 1)".into());
+        }
+        y.push(v);
+    }
+    let mut rows = design_rows("stats.logit", &args[0], n)?;
+    let added_intercept = !has_constant_col(&rows);
+    if added_intercept {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let k = rows[0].len();
+    if n <= k {
+        return Err(format!(
+            "stats.logit needs more observations ({}) than parameters ({})",
+            n, k
+        ));
+    }
+    let x: Vec<Vec<f64>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|e| eval_f64(e, &[]))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let (beta, mu, wts, iters, converged) = irls(&x, &y, k)?;
+    let cov = nlfit::inverse(&xtwx_f64(&x, &wts, k)).ok_or(
+        "stats.logit: the information matrix is singular (perfect separation, or a collinear \
+         regressor)",
+    )?;
+
+    // Wald standard errors, z-statistics, and normal-tail p-values.
+    let mut se = Vec::with_capacity(k);
+    let mut zstat = Vec::with_capacity(k);
+    let mut pvalue = Vec::with_capacity(k);
+    for (j, &b) in beta.iter().enumerate() {
+        let s = cov[j][j].max(0.0).sqrt();
+        se.push(nlfit::float_expr(s)?);
+        let zv = if s > 0.0 {
+            b / s
+        } else if b == 0.0 {
+            0.0
+        } else {
+            b.signum() * 1e308
+        };
+        let ze = nlfit::float_expr(zv)?;
+        pvalue.push(mul(vec![
+            int(2),
+            add(vec![
+                int(1),
+                mul(vec![
+                    int(-1),
+                    func("normcdf", vec![func("abs", vec![ze.clone()])]),
+                ]),
+            ]),
+        ]));
+        zstat.push(ze);
+    }
+
+    let dev = deviance(&y, &mu);
+    let ybar = y.iter().sum::<f64>() / n as f64;
+    let null_dev = deviance(&y, &vec![ybar; n]);
+    let resid: Vec<f64> = y.iter().zip(&mu).map(|(yi, mi)| yi - mi).collect();
+
+    structure(vec![
+        ("coefficients".into(), col(nlfit::floats(&beta)?)),
+        ("se".into(), col(se)),
+        ("zstat".into(), col(zstat)),
+        ("pvalue".into(), col(pvalue)),
+        ("fitted".into(), col(nlfit::floats(&mu)?)),
+        ("residuals".into(), col(nlfit::floats(&resid)?)),
+        ("deviance".into(), nlfit::float_expr(dev)?),
+        ("nulldeviance".into(), nlfit::float_expr(null_dev)?),
+        ("pseudor2".into(), nlfit::float_expr(1.0 - dev / null_dev)?),
+        ("intercept".into(), Expr::Bool(added_intercept)),
+        ("iterations".into(), int(iters as i64)),
+        ("converged".into(), Expr::Bool(converged)),
+        ("n".into(), int(n as i64)),
+        ("k".into(), int(k as i64)),
+    ])
+}
+
+/// One IRLS run. Returns (β, fitted probabilities μ, IRLS weights, iterations,
+/// converged). The working response z = η + (y−μ)/w turns each step into a
+/// weighted least-squares solve.
+#[allow(clippy::type_complexity)]
+fn irls(
+    x: &[Vec<f64>],
+    y: &[f64],
+    k: usize,
+) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, usize, bool), String> {
+    let mut beta = vec![0.0_f64; k];
+    let mut dev = f64::INFINITY;
+    let mut converged = false;
+    let mut iters = 0;
+    for it in 0..100 {
+        iters = it + 1;
+        let mut h = vec![vec![0.0_f64; k]; k];
+        let mut g = vec![0.0_f64; k];
+        for (xi, &yi) in x.iter().zip(y) {
+            let eta: f64 = (0..k).map(|j| xi[j] * beta[j]).sum();
+            let m = (1.0 / (1.0 + (-eta).exp())).clamp(1e-10, 1.0 - 1e-10);
+            let w = (m * (1.0 - m)).max(1e-12);
+            let z = eta + (yi - m) / w; // working response
+            for a in 0..k {
+                g[a] += w * xi[a] * z;
+                for b in 0..k {
+                    h[a][b] += w * xi[a] * xi[b];
+                }
+            }
+        }
+        beta = nlfit::solve_linear(&h, &g).ok_or(
+            "stats.logit: the information matrix is singular (perfect separation, or a collinear \
+             regressor)",
+        )?;
+        let (mu, _) = predict_probs(x, &beta, k);
+        let new_dev = deviance(y, &mu);
+        if (dev - new_dev).abs() < 1e-12 * (new_dev.abs() + 1e-12) {
+            converged = true;
+            break;
+        }
+        dev = new_dev;
+    }
+    let (mu, wts) = predict_probs(x, &beta, k);
+    Ok((beta, mu, wts, iters, converged))
+}
+
+/// Fitted probabilities μ and IRLS weights μ(1−μ) at the given coefficients.
+fn predict_probs(x: &[Vec<f64>], beta: &[f64], k: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut mu = Vec::with_capacity(x.len());
+    let mut w = Vec::with_capacity(x.len());
+    for xi in x {
+        let eta: f64 = (0..k).map(|j| xi[j] * beta[j]).sum();
+        let m = (1.0 / (1.0 + (-eta).exp())).clamp(1e-12, 1.0 - 1e-12);
+        mu.push(m);
+        w.push((m * (1.0 - m)).max(1e-12));
+    }
+    (mu, w)
+}
+
+/// XᵀWX for the binomial weights W = diag(μ(1−μ)).
+fn xtwx_f64(x: &[Vec<f64>], w: &[f64], k: usize) -> Vec<Vec<f64>> {
+    let mut h = vec![vec![0.0_f64; k]; k];
+    for (xi, &wi) in x.iter().zip(w) {
+        for a in 0..k {
+            for b in 0..k {
+                h[a][b] += wi * xi[a] * xi[b];
+            }
+        }
+    }
+    h
+}
+
+/// Binomial deviance −2·Σ[yᵢ ln μᵢ + (1−yᵢ) ln(1−μᵢ)].
+fn deviance(y: &[f64], mu: &[f64]) -> f64 {
+    y.iter()
+        .zip(mu)
+        .map(|(&yi, mi)| {
+            let m = mi.clamp(1e-12, 1.0 - 1e-12);
+            -2.0 * (yi * m.ln() + (1.0 - yi) * (1.0 - m).ln())
+        })
+        .sum()
+}
+
 /// Interpret the regressor argument as `n` rows of predictors: an n×k design
 /// matrix as-is, or a length-n vector (row or column) as a single predictor.
-fn design_rows(x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, String> {
+fn design_rows(caller: &str, x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, String> {
     let Expr::Matrix(rows) = x else {
-        return Err("stats.regress expects a matrix or vector of regressors".into());
+        return Err(format!(
+            "{} expects a matrix or vector of regressors",
+            caller
+        ));
     };
     if rows.len() == 1 && rows[0].len() == n {
         return Ok(rows[0].iter().map(|e| vec![e.clone()]).collect());
@@ -607,7 +992,8 @@ fn design_rows(x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, String> {
         return Ok(rows.clone());
     }
     Err(format!(
-        "stats.regress: {} regressor rows but {} observations",
+        "{}: {} regressor rows but {} observations",
+        caller,
         rows.len(),
         n
     ))
@@ -806,7 +1192,7 @@ fn robustse(args: &[Expr]) -> Result<Expr, String> {
     };
 
     // Rebuild the fitted design (with intercept) to match the coefficients.
-    let mut rows = design_rows(&args[1], n)?;
+    let mut rows = design_rows("stats.robustse", &args[1], n)?;
     if intercept {
         for r in rows.iter_mut() {
             r.insert(0, int(1));
