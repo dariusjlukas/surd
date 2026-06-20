@@ -15,8 +15,9 @@ use num_traits::ToPrimitive;
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "mean", "median", "quantile", "var", "std", "cov", "cor", "linfit", "polyfit", "polyval",
-    "lsq", "regress", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv",
-    "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
+    "lsq", "regress", "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit",
+    "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf",
+    "chisqinv", "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -90,6 +91,12 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             linfit(&x, &y)
         }
         "regress" => regress(&args),
+        "predict" => predict(&args),
+        "robustse" => robustse(&args),
+        "anova" => anova(&args),
+        "bptest" => bptest(&args),
+        "dwtest" => dwtest(&args),
+        "jbtest" => jbtest(&args),
         // Distributions are symbolic until N(...): an arity check here, the
         // arbitrary-precision evaluation in `crate::special`.
         "normcdf" | "normpdf" | "norminv" => dist(name, args, &[1, 3]),
@@ -388,7 +395,10 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         return Err("stats.regress needs at least 3 observations".into());
     }
     let mut rows = design_rows(&args[0], n)?;
-    if !has_constant_col(&rows) {
+    // Record whether we prepend the intercept, so `predict`/`robustse` can
+    // rebuild a matching design for new data.
+    let added_intercept = !has_constant_col(&rows);
+    if added_intercept {
         for r in rows.iter_mut() {
             r.insert(0, int(1));
         }
@@ -470,6 +480,20 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         pvalue.push(p);
     }
 
+    // 95% confidence intervals: β_j ± t*·se_j, with t* = tinv(0.975, df).
+    let tstar = func("tinv", vec![rat(39, 40), int(df as i64)]);
+    let confint: Vec<Vec<Expr>> = beta_v
+        .iter()
+        .zip(&se)
+        .map(|(bj, sj)| {
+            let hw = mul(vec![tstar.clone(), sj.clone()]);
+            vec![
+                add(vec![bj.clone(), mul(vec![int(-1), hw.clone()])]),
+                add(vec![bj.clone(), hw]),
+            ]
+        })
+        .collect();
+
     // R², adjusted R², and the overall-significance F.
     let r2 = add(vec![
         int(1),
@@ -546,6 +570,8 @@ fn regress(args: &[Expr]) -> Result<Expr, String> {
         ("se".into(), col(se)),
         ("tstat".into(), col(tstat)),
         ("pvalue".into(), col(pvalue)),
+        ("confint".into(), Expr::Matrix(confint)),
+        ("intercept".into(), Expr::Bool(added_intercept)),
         ("fitted".into(), fitted),
         ("residuals".into(), col(resid)),
         ("leverage".into(), col(lev)),
@@ -606,6 +632,414 @@ fn diagonal(m: &Expr) -> Result<Vec<Expr>, String> {
     Ok((0..rows.len()).map(|i| rows[i][i].clone()).collect())
 }
 
+// -- post-estimation ----------------------------------------------------------
+
+/// Read a named field out of a `stats.regress` model struct.
+fn model_field<'a>(model: &'a Expr, fname: &str, caller: &str) -> Result<&'a Expr, String> {
+    let Expr::Struct(fields) = model else {
+        return Err(format!(
+            "{} expects a model struct from stats.regress",
+            caller
+        ));
+    };
+    fields
+        .iter()
+        .find(|(n, _)| n == fname)
+        .map(|(_, v)| v)
+        .ok_or_else(|| {
+            format!(
+                "{}: model has no field '{}' (is it from stats.regress?)",
+                caller, fname
+            )
+        })
+}
+
+/// A model field that should be a non-negative integer (n, k, df).
+fn field_usize(model: &Expr, fname: &str, caller: &str) -> Result<usize, String> {
+    numeric_value(model_field(model, fname, caller)?)
+        .and_then(|r| r.to_integer().to_usize())
+        .ok_or_else(|| format!("{}: field '{}' is not an integer", caller, fname))
+}
+
+/// Confidence level → tail probability (1+level)/2, as an exact rational.
+/// Defaults to 95% when omitted.
+fn tail_prob(caller: &str, level: Option<&Expr>) -> Result<Expr, String> {
+    let l = match level {
+        None => BigRational::new(BigInt::from(95), BigInt::from(100)),
+        Some(e) => numeric_value(e)
+            .filter(|r| {
+                *r > BigRational::from_integer(0.into()) && *r < BigRational::from_integer(1.into())
+            })
+            .ok_or_else(|| format!("{}: confidence level must be between 0 and 1", caller))?,
+    };
+    Ok(rat_to_expr(
+        (BigRational::from_integer(1.into()) + l) / BigRational::from_integer(2.into()),
+    ))
+}
+
+/// `stats.predict(model, Xnew[, level])`: point predictions at new regressor
+/// rows, with a confidence interval for the mean response and a (wider)
+/// prediction interval for a new observation. `Xnew` carries the same raw
+/// predictors as the design given to `regress` (the intercept is reattached
+/// automatically). Intervals are symbolic — `N(...)` for decimals.
+fn predict(args: &[Expr]) -> Result<Expr, String> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(format!(
+            "stats.predict expects 2 or 3 argument(s), got {}",
+            args.len()
+        ));
+    }
+    let model = &args[0];
+    let beta = model_field(model, "coefficients", "stats.predict")?.clone();
+    let k = entries("stats.predict", &beta)?.len();
+    let cov = model_field(model, "cov", "stats.predict")?.clone();
+    let sigma2 = model_field(model, "sigma2", "stats.predict")?.clone();
+    let df = model_field(model, "df", "stats.predict")?.clone();
+    let intercept = matches!(
+        model_field(model, "intercept", "stats.predict")?,
+        Expr::Bool(true)
+    );
+    let p_raw = if intercept { k - 1 } else { k };
+    let tstar = func("tinv", vec![tail_prob("stats.predict", args.get(2))?, df]);
+
+    let mut rows = predict_design(&args[1], p_raw)?;
+    if intercept {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let xn = Expr::Matrix(rows);
+    let fit = matrix::mat_mul(&xn, &beta)?;
+    let fit_v = entries("stats.predict", &fit)?;
+    // var of the mean response = diag(Xnew·cov·Xnewᵀ); a new draw adds σ̂².
+    let covx = matrix::mat_mul(&xn, &cov)?;
+    let vmean = diagonal(&matrix::mat_mul(&covx, &matrix::transpose(&xn))?)?;
+
+    let mut se = Vec::with_capacity(fit_v.len());
+    let mut ci = Vec::with_capacity(fit_v.len());
+    let mut pi = Vec::with_capacity(fit_v.len());
+    for (fi, vm) in fit_v.iter().zip(&vmean) {
+        let se_mean = pow(vm.clone(), half());
+        let se_pred = pow(add(vec![sigma2.clone(), vm.clone()]), half());
+        se.push(se_mean.clone());
+        ci.push(interval(fi, &mul(vec![tstar.clone(), se_mean])));
+        pi.push(interval(fi, &mul(vec![tstar.clone(), se_pred])));
+    }
+    structure(vec![
+        ("fit".into(), fit),
+        ("se".into(), col(se)),
+        ("ci".into(), Expr::Matrix(ci)),
+        ("pi".into(), Expr::Matrix(pi)),
+    ])
+}
+
+/// `[center − half, center + half]` as a 2-element interval row.
+fn interval(center: &Expr, half_width: &Expr) -> Vec<Expr> {
+    vec![
+        add(vec![center.clone(), mul(vec![int(-1), half_width.clone()])]),
+        add(vec![center.clone(), half_width.clone()]),
+    ]
+}
+
+/// Interpret new predictor data for `predict`: a length-m vector for a single-
+/// predictor model, or an m×p matrix otherwise. Returns m rows of p values.
+fn predict_design(x: &Expr, p: usize) -> Result<Vec<Vec<Expr>>, String> {
+    let Expr::Matrix(rows) = x else {
+        return Err("stats.predict expects a matrix or vector of new predictor values".into());
+    };
+    if p == 1 {
+        if rows.len() == 1 {
+            return Ok(rows[0].iter().map(|e| vec![e.clone()]).collect());
+        }
+        if rows.iter().all(|r| r.len() == 1) {
+            return Ok(rows.clone());
+        }
+        return Err(
+            "stats.predict: this model has 1 predictor; pass a vector of new values".into(),
+        );
+    }
+    if rows.iter().all(|r| r.len() == p) {
+        return Ok(rows.clone());
+    }
+    Err(format!(
+        "stats.predict: this model has {} predictors, so each new row needs {} values",
+        p, p
+    ))
+}
+
+/// `stats.robustse(model, X[, type])`: heteroskedasticity-consistent (White
+/// sandwich) standard errors, with the same `X` passed to `regress`. `type` is
+/// 0–3 for HC0–HC3 (default HC1). The meat matrix needs the design, hence the
+/// re-passed `X`; everything is exact. Returns robust se/t/p.
+fn robustse(args: &[Expr]) -> Result<Expr, String> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(format!(
+            "stats.robustse expects 2 or 3 argument(s), got {}",
+            args.len()
+        ));
+    }
+    let model = &args[0];
+    let n = field_usize(model, "n", "stats.robustse")?;
+    let df = field_usize(model, "df", "stats.robustse")?;
+    let beta = model_field(model, "coefficients", "stats.robustse")?.clone();
+    let beta_v = entries("stats.robustse", &beta)?;
+    let resid = entries(
+        "stats.robustse",
+        model_field(model, "residuals", "stats.robustse")?,
+    )?;
+    let lev = entries(
+        "stats.robustse",
+        model_field(model, "leverage", "stats.robustse")?,
+    )?;
+    let cov = model_field(model, "cov", "stats.robustse")?.clone();
+    let sigma2 = model_field(model, "sigma2", "stats.robustse")?.clone();
+    let intercept = matches!(
+        model_field(model, "intercept", "stats.robustse")?,
+        Expr::Bool(true)
+    );
+    let hc = match args.get(2) {
+        None => 1,
+        Some(e) => numeric_value(e)
+            .and_then(|r| r.to_integer().to_i64())
+            .filter(|t| (0..=3).contains(t))
+            .ok_or("stats.robustse: type must be 0, 1, 2, or 3 (HC0–HC3)")?,
+    };
+
+    // Rebuild the fitted design (with intercept) to match the coefficients.
+    let mut rows = design_rows(&args[1], n)?;
+    if intercept {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    if rows[0].len() != beta_v.len() {
+        return Err("stats.robustse: X does not match the model's regressors".into());
+    }
+
+    // (XᵀX)⁻¹ = cov / σ̂²; meat = Xᵀ·diag(ωᵢ)·X with ωᵢ a weighted squared
+    // residual; sandwich V = (XᵀX)⁻¹·meat·(XᵀX)⁻¹.
+    let xtx_inv = matrix::scalar_mul(&pow(sigma2, int(-1)), &cov);
+    let wx: Vec<Vec<Expr>> = rows
+        .iter()
+        .zip(&resid)
+        .zip(&lev)
+        .map(|((row, e), h)| {
+            let w = hc_weight(hc, e, h, n, df);
+            row.iter()
+                .map(|x| mul(vec![w.clone(), x.clone()]))
+                .collect()
+        })
+        .collect();
+    let xmat = Expr::Matrix(rows);
+    let meat = matrix::mat_mul(&matrix::transpose(&xmat), &Expr::Matrix(wx))?;
+    let vmat = matrix::mat_mul(&matrix::mat_mul(&xtx_inv, &meat)?, &xtx_inv)?;
+
+    let mut se = Vec::new();
+    let mut tstat = Vec::new();
+    let mut pvalue = Vec::new();
+    for (bj, vjj) in beta_v.iter().zip(diagonal(&vmat)?) {
+        let s = pow(vjj.clone(), half());
+        let t = mul(vec![bj.clone(), pow(vjj, neg_half())]);
+        pvalue.push(mul(vec![
+            int(2),
+            add(vec![
+                int(1),
+                mul(vec![
+                    int(-1),
+                    func("tcdf", vec![func("abs", vec![t.clone()]), int(df as i64)]),
+                ]),
+            ]),
+        ]));
+        tstat.push(t);
+        se.push(s);
+    }
+    structure(vec![
+        ("se".into(), col(se)),
+        ("tstat".into(), col(tstat)),
+        ("pvalue".into(), col(pvalue)),
+    ])
+}
+
+/// The per-observation weight ωᵢ = cᵢ·eᵢ² for the HC sandwich meat.
+fn hc_weight(hc: i64, e: &Expr, h: &Expr, n: usize, df: usize) -> Expr {
+    let e2 = pow(e.clone(), int(2));
+    let one_minus_h = || add(vec![int(1), mul(vec![int(-1), h.clone()])]);
+    match hc {
+        0 => e2,
+        1 => mul(vec![rat(n as i64, df as i64), e2]),
+        2 => mul(vec![e2, pow(one_minus_h(), int(-1))]),
+        _ => mul(vec![e2, pow(one_minus_h(), int(-2))]),
+    }
+}
+
+/// `stats.anova(reduced, full)`: an F-test comparing two nested OLS models
+/// (order-independent — the one with fewer residual degrees of freedom is the
+/// fuller model). F = [(RSSᵣ − RSSf)/Δdf] / [RSSf/dff].
+fn anova(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "stats.anova expects 2 argument(s), got {}",
+            args.len()
+        ));
+    }
+    let (rss1, df1) = (
+        model_field(&args[0], "rss", "stats.anova")?.clone(),
+        field_usize(&args[0], "df", "stats.anova")?,
+    );
+    let (rss2, df2) = (
+        model_field(&args[1], "rss", "stats.anova")?.clone(),
+        field_usize(&args[1], "df", "stats.anova")?,
+    );
+    if df1 == df2 {
+        return Err("stats.anova: the models have equal residual df (are they nested?)".into());
+    }
+    // Fewer residual df = more parameters = the fuller model.
+    let ((rss_r, df_r), (rss_f, df_f)) = if df1 > df2 {
+        ((rss1, df1), (rss2, df2))
+    } else {
+        ((rss2, df2), (rss1, df1))
+    };
+    let ddf = df_r - df_f;
+    let num = mul(vec![
+        add(vec![rss_r, mul(vec![int(-1), rss_f.clone()])]),
+        inv_int(ddf),
+    ]);
+    let den = mul(vec![rss_f, inv_int(df_f)]);
+    let fstat = mul(vec![num, pow(den, int(-1))]);
+    let pvalue = add(vec![
+        int(1),
+        mul(vec![
+            int(-1),
+            func(
+                "fcdf",
+                vec![fstat.clone(), int(ddf as i64), int(df_f as i64)],
+            ),
+        ]),
+    ]);
+    structure(vec![
+        ("fstat".into(), fstat),
+        ("pvalue".into(), pvalue),
+        ("df1".into(), int(ddf as i64)),
+        ("df2".into(), int(df_f as i64)),
+    ])
+}
+
+/// `stats.bptest(model)`: Breusch–Pagan / Koenker test for heteroskedasticity,
+/// regressing the squared residuals on the fitted values. LM = n·R² ~ χ²(1).
+fn bptest(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "stats.bptest expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let resid = entries(
+        "stats.bptest",
+        model_field(&args[0], "residuals", "stats.bptest")?,
+    )?;
+    let fitted = entries(
+        "stats.bptest",
+        model_field(&args[0], "fitted", "stats.bptest")?,
+    )?;
+    let n = resid.len();
+    let esq: Vec<Expr> = resid
+        .iter()
+        .map(|e| expand(&pow(e.clone(), int(2))))
+        .collect();
+    let var_e = variance(&esq, "stats.bptest")?;
+    let var_f = variance(&fitted, "stats.bptest")?;
+    if is_known_zero(&var_e) || is_known_zero(&var_f) {
+        return Err("stats.bptest: no variation in squared residuals or fitted values".into());
+    }
+    // R² of the auxiliary simple regression = cov(e²,ŷ)² / (var(e²)·var(ŷ)).
+    let cov_ef = covariance(&esq, &fitted)?;
+    let r2_aux = mul(vec![
+        pow(cov_ef, int(2)),
+        pow(var_e, int(-1)),
+        pow(var_f, int(-1)),
+    ]);
+    let lm = mul(vec![int(n as i64), r2_aux]);
+    chisq_test(lm, 1)
+}
+
+/// `stats.dwtest(model)`: the Durbin–Watson statistic for first-order residual
+/// autocorrelation, Σ(eᵢ−eᵢ₋₁)² / Σeᵢ² — exact, in [0,4], ≈2 meaning none.
+fn dwtest(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "stats.dwtest expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let e = entries(
+        "stats.dwtest",
+        model_field(&args[0], "residuals", "stats.dwtest")?,
+    )?;
+    if e.len() < 2 {
+        return Err("stats.dwtest needs at least 2 residuals".into());
+    }
+    let diffs: Vec<Expr> = (1..e.len())
+        .map(|i| add(vec![e[i].clone(), mul(vec![int(-1), e[i - 1].clone()])]))
+        .collect();
+    let dw = mul(vec![
+        sum_products(&diffs, &diffs),
+        pow(sum_products(&e, &e), int(-1)),
+    ]);
+    structure(vec![("statistic".into(), dw)])
+}
+
+/// `stats.jbtest(model)`: the Jarque–Bera test of residual normality from
+/// sample skewness S and kurtosis K, JB = (n/6)(S² + (K−3)²/4) ~ χ²(2). The
+/// statistic is exact (OLS residuals sum to zero, so the moments are rational).
+fn jbtest(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "stats.jbtest expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let e = entries(
+        "stats.jbtest",
+        model_field(&args[0], "residuals", "stats.jbtest")?,
+    )?;
+    let n = e.len();
+    let moment = |p: i64| {
+        mul(vec![
+            inv_int(n),
+            add(e.iter().map(|x| expand(&pow(x.clone(), int(p)))).collect()),
+        ])
+    };
+    let (m2, m3, m4) = (moment(2), moment(3), moment(4));
+    if is_known_zero(&m2) {
+        return Err("stats.jbtest: residuals have zero variance".into());
+    }
+    let skew_sq = mul(vec![pow(m3, int(2)), pow(m2.clone(), int(-3))]);
+    let kurt_excess = add(vec![mul(vec![m4, pow(m2, int(-2))]), int(-3)]);
+    let jb = mul(vec![
+        rat(n as i64, 6),
+        add(vec![
+            skew_sq,
+            mul(vec![inv_int(4), pow(kurt_excess, int(2))]),
+        ]),
+    ]);
+    chisq_test(jb, 2)
+}
+
+/// Wrap a test statistic with its upper-tail χ²(df) p-value as a struct.
+fn chisq_test(statistic: Expr, df: i64) -> Result<Expr, String> {
+    let pvalue = add(vec![
+        int(1),
+        mul(vec![
+            int(-1),
+            func("chisqcdf", vec![statistic.clone(), int(df)]),
+        ]),
+    ]);
+    structure(vec![
+        ("statistic".into(), statistic),
+        ("pvalue".into(), pvalue),
+    ])
+}
+
 /// Entries sorted by exact numeric value (floats by their exact binary
 /// value). Errors on anything unorderable.
 fn sorted_numeric(name: &str, xs: &[Expr]) -> Result<Vec<Expr>, String> {
@@ -632,6 +1066,11 @@ fn sorted_numeric(name: &str, xs: &[Expr]) -> Result<Vec<Expr>, String> {
 /// 1/n as an exact rational.
 fn inv_int(n: usize) -> Expr {
     rat_to_expr(BigRational::new(BigInt::from(1), BigInt::from(n)))
+}
+
+/// n/d as an exact rational literal.
+fn rat(n: i64, d: i64) -> Expr {
+    rat_to_expr(BigRational::new(BigInt::from(n), BigInt::from(d)))
 }
 
 fn neg_half() -> Expr {

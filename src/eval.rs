@@ -7,6 +7,7 @@ use crate::expr::*;
 use crate::interval;
 use crate::lexer::lex;
 use crate::matrix;
+use crate::nlfit;
 use crate::parser::parse;
 use crate::signal;
 use crate::stats;
@@ -410,6 +411,12 @@ impl Interpreter {
     fn eval_field_call(&mut self, base: &Node, name: &str, args: &[Node]) -> Result<Expr, String> {
         if let Node::Ident(ns) = base {
             if self.get_var(ns).is_none() && is_namespace(ns) {
+                // nlfit takes a symbolic model and parameter *names*, so its
+                // arguments must be seen before the workspace collapses them —
+                // the same treatment diff/plot give their variable argument.
+                if ns == "stats" && name == "nlfit" {
+                    return self.eval_nlfit(args);
+                }
                 let evaluated = args
                     .iter()
                     .map(|a| self.eval_node(a))
@@ -443,6 +450,59 @@ impl Interpreter {
             .map(|a| self.eval_node(a))
             .collect::<Result<Vec<_>, _>>()?;
         self.call_function(name, params, body, evaluated)
+    }
+
+    /// `stats.nlfit(model, [params], x, y[, init])`: nonlinear least squares.
+    /// The `model` and the parameter-name list are read symbolically (the
+    /// parameters are shadowed so a workspace binding doesn't collapse them);
+    /// whatever free symbol is left over is the independent variable, matched
+    /// to the `x` data.
+    fn eval_nlfit(&mut self, args: &[Node]) -> Result<Expr, String> {
+        if !(4..=5).contains(&args.len()) {
+            return Err(format!(
+                "stats.nlfit expects 4 or 5 arguments (model, [params], x, y[, init]), got {}",
+                args.len()
+            ));
+        }
+        let params = read_param_names(&args[1])?;
+        if params.is_empty() {
+            return Err("stats.nlfit: the parameter list is empty".into());
+        }
+        // The model with parameters held symbolic; constants resolve normally.
+        let model = self.eval_shadowed(&params, &args[0])?;
+        let free = nlfit::free_symbols(&model);
+        for p in &params {
+            if !free.contains(p) {
+                return Err(format!(
+                    "stats.nlfit: parameter '{}' does not appear in the model",
+                    p
+                ));
+            }
+        }
+        let indep: Vec<&String> = free.iter().filter(|s| !params.contains(s)).collect();
+        let xvar = match indep.as_slice() {
+            [v] => (*v).clone(),
+            [] => {
+                return Err(
+                    "stats.nlfit: the model has no independent variable (is it bound in \
+                            the workspace?)"
+                        .into(),
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "stats.nlfit: the model has more than one independent variable {:?}",
+                    indep
+                ))
+            }
+        };
+        let x = numeric_vector(&self.eval_node(&args[2])?)?;
+        let y = numeric_vector(&self.eval_node(&args[3])?)?;
+        let init = match args.get(4) {
+            Some(node) => numeric_vector(&self.eval_node(node)?)?,
+            None => vec![1.0; params.len()],
+        };
+        nlfit::fit(&model, &params, &xvar, &x, &y, &init)
     }
 
     /// `diff(expr, x)` / `D(expr, x)` / `subs(expr, x, val)` / `plot(expr, x,
@@ -912,6 +972,44 @@ fn call_namespace(ns: &str, name: &str, args: Vec<Expr>) -> Result<Expr, String>
         "stats" => stats::call(name, args),
         _ => unreachable!("call_namespace on a non-namespace"),
     }
+}
+
+/// Read a bracketed list of plain identifiers, e.g. the `[a, b]` parameter list
+/// of `stats.nlfit`. Taken from the syntax so the names stay names.
+fn read_param_names(node: &Node) -> Result<Vec<String>, String> {
+    let Node::Matrix(rows) = node else {
+        return Err(
+            "stats.nlfit: the second argument must be a list of parameter names, e.g. [a, b]"
+                .into(),
+        );
+    };
+    let mut names = Vec::new();
+    for cell in rows.iter().flatten() {
+        match cell {
+            Node::Ident(s) => names.push(s.clone()),
+            _ => {
+                return Err(
+                    "stats.nlfit: parameter names must be plain identifiers, e.g. [a, b]".into(),
+                )
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Collapse an evaluated vector (1×n or n×1 matrix) of numbers to `f64`s.
+fn numeric_vector(e: &Expr) -> Result<Vec<f64>, String> {
+    let entries: Vec<Expr> = match e {
+        Expr::Matrix(rows) if rows.len() == 1 => rows[0].clone(),
+        Expr::Matrix(rows) if rows.iter().all(|r| r.len() == 1) => {
+            rows.iter().map(|r| r[0].clone()).collect()
+        }
+        _ => return Err("stats.nlfit expects vectors for x, y, and initial values".into()),
+    };
+    entries
+        .iter()
+        .map(|v| crate::f64eval::eval_f64(v, &[]))
+        .collect()
 }
 
 /// Elementwise `.*` `./` `.^`: entrywise when a matrix is involved (shapes

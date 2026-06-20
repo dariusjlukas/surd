@@ -200,6 +200,7 @@ Fields of the result:
 |-------|---------|
 | `coefficients` | β̂, intercept first (column vector) |
 | `se`, `tstat`, `pvalue` | per-coefficient standard error, t-statistic, two-sided p-value |
+| `confint` | 95% confidence interval per coefficient, `[lower, upper]` rows |
 | `cov` | full coefficient covariance matrix σ̂²·(XᵀX)⁻¹ |
 | `fitted`, `residuals` | ŷ and y − ŷ |
 | `rss`, `sigma2` | residual sum of squares and its variance estimate σ̂² = RSS/df |
@@ -207,6 +208,7 @@ Fields of the result:
 | `fstat`, `fpvalue` | overall-significance F and its p-value |
 | `loglik`, `aic`, `bic` | Gaussian log-likelihood and information criteria |
 | `leverage`, `studentized`, `cooks` | hat-matrix diagonal, internally studentized residuals, Cook's distance |
+| `intercept` | whether `regress` added an intercept column (so `predict` can match it) |
 | `n`, `k`, `df`, `dfmodel` | observations, parameters, residual and model degrees of freedom |
 
 ```text
@@ -230,6 +232,145 @@ Fields of the result:
 
 A perfect fit (zero residual variance), constant responses, or rank-deficient
 regressors are errors — there is no honest inference to report in those cases.
+
+## `stats.predict`
+
+```
+stats.predict(model, Xnew)
+stats.predict(model, Xnew, level)
+```
+
+Predict the response at new regressor rows from a `stats.regress` model.
+`Xnew` carries the same raw predictors you gave `regress` (a length-m vector
+for a single-predictor model, otherwise an m×k matrix); the intercept is
+reattached automatically. The optional `level` is the confidence level
+(default `0.95`). Returns a struct:
+
+| field | meaning |
+|-------|---------|
+| `fit` | point predictions ŷ = Xnew·β̂ |
+| `se` | standard error of the **mean** response per row |
+| `ci` | confidence interval for the mean response, `[lower, upper]` rows |
+| `pi` | prediction interval for a **new observation** (wider — adds σ̂²) |
+
+```text
+>> m := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])
+>> p := stats.predict(m, [6; 7])
+>> p.fit
+[ 29/5 ]
+[ 32/5 ]
+>> N(p.ci[1])
+[ 2.81460073898108864334454228784  8.78539926101891135665545771216 ]
+>> N(p.pi[1])
+[ 1.67507814177002750418315696512  9.92492185822997249581684303488 ]
+```
+
+## `stats.robustse`
+
+```
+stats.robustse(model, X)
+stats.robustse(model, X, type)
+```
+
+Heteroskedasticity-consistent (White sandwich) standard errors, for inference
+that doesn't assume constant error variance. Pass the same `X` you gave
+`regress` (the sandwich's *meat* needs the design matrix). `type` selects the
+small-sample correction: `0`–`3` for HC0–HC3, default **HC1**. Everything stays
+exact — the robust covariance is a rational matrix, the standard errors exact
+surds. Returns `se`, `tstat`, `pvalue` recomputed robustly.
+
+```text
+>> m := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])
+>> stats.robustse(m, [1; 2; 3; 4; 5]).se
+[ 1/5*sqrt(229/10) ]
+[  1/5*sqrt(43/30) ]
+```
+
+## `stats.anova`
+
+```
+stats.anova(reduced, full)
+```
+
+Compare two **nested** OLS models with an F-test — does the fuller model
+explain significantly more variance? Order-independent: the model with fewer
+residual degrees of freedom is treated as the fuller one.
+F = [(RSSᵣ − RSS_f)/Δdf] / [RSS_f/df_f]. Returns `fstat`, `pvalue` (carrying an
+`fcdf`), and the two degrees of freedom `df1`, `df2`.
+
+```text
+>> red  := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])
+>> full := stats.regress([1, 1; 2, 4; 3, 9; 4, 16; 5, 25], [2; 4; 5; 4; 5])
+>> stats.anova(red, full).fstat
+20/11
+```
+
+## Regression assumption tests
+
+Each takes a `stats.regress` model and returns a struct. The test statistics
+are exact rationals (built from the residuals); the p-values stay symbolic.
+
+| function | tests for | statistic ~ |
+|----------|-----------|-------------|
+| `stats.dwtest(model)` | first-order autocorrelation (Durbin–Watson, ≈2 means none) | — (`statistic` only) |
+| `stats.bptest(model)` | heteroskedasticity (Breusch–Pagan / Koenker, vs. fitted) | χ²(1) |
+| `stats.jbtest(model)` | non-normal residuals (Jarque–Bera, skew + kurtosis) | χ²(2) |
+
+```text
+>> m := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])
+>> stats.dwtest(m).statistic
+121/60
+>> stats.jbtest(m).statistic
+3283/5760
+>> N(stats.jbtest(m).pvalue)
+0.752027310235741287995200868876
+```
+
+## `stats.nlfit`
+
+```
+stats.nlfit(model, [params], x, y)
+stats.nlfit(model, [params], x, y, initial)
+```
+
+Nonlinear least squares — fit an arbitrary model `y ≈ f(x; θ)` by
+Levenberg–Marquardt. `model` is any expression in an independent variable and
+the parameters; `[params]` lists the parameter names to fit (held symbolic, so
+a workspace binding won't collapse them); the remaining free symbol is the
+independent variable, matched to `x`. `initial` is one starting guess per
+parameter (default `1`); good guesses matter for nonlinear fits.
+
+The distinctive part: the Jacobian ∂f/∂θⱼ is built by **exact symbolic
+differentiation** — the true derivative, not a finite-difference approximation
+— so steps stay accurate where difference-based fitters degrade. The result
+exposes that Jacobian in symbolic form. The fit iterates, so the *estimates*
+are floats (reported to f64 precision); the asymptotic standard errors come
+from the linearized covariance σ̂²·(JᵀJ)⁻¹ at the solution.
+
+| field | meaning |
+|-------|---------|
+| `coefficients` | fitted parameters, in the order of `[params]` |
+| `se`, `tstat`, `pvalue` | asymptotic standard error, t-statistic, two-sided p-value |
+| `residuals`, `rss`, `sigma2` | residuals, residual sum of squares, σ̂² = RSS/(n−p) |
+| `jacobian` | the **exact symbolic** derivatives ∂f/∂θⱼ used by the fit |
+| `iterations`, `converged` | iterations taken and whether the step/cost tolerance was met |
+
+```text
+>> f := stats.nlfit(a*exp(b*x), [a, b], [0; 1; 2; 3; 4],
+                    [2; 3.29744; 5.43656; 8.96338; 14.7781], [1, 1])
+>> f.coefficients
+[ 2.00000040860740 ]
+[ 0.49999977885331 ]
+>> f.jacobian
+[     exp(b*x) ]
+[ a*x*exp(b*x) ]
+>> f.converged
+true
+```
+
+Constants resolve from the workspace, so `c := 2; stats.nlfit(a*x^c, [a], …)`
+fits `a` with the exponent fixed at 2. A parameter that never appears in the
+model, more than one leftover free variable, or a divergent start are errors.
 
 ## Probability distributions
 

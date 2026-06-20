@@ -1346,3 +1346,85 @@ fn regress_uses_an_existing_intercept_column() {
         ev("stats.regress([1; 2], [3; 4])").starts_with("error: stats.regress needs at least 3")
     );
 }
+
+const FIT: &str = "m := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])";
+
+#[test]
+fn regress_confidence_intervals() {
+    // 95% CIs: β ± tinv(39/40, df)·se, kept symbolic; N gives the bounds
+    // (verified by hand: slope 0.6 ± 3.1824·0.2828).
+    assert_eq!(ev_all(&[FIT, "m.intercept"]), "true");
+    assert!(ev_all(&[FIT, "N(m.confint[2, 1])"]).starts_with("-0.30013174529"));
+    assert!(ev_all(&[FIT, "N(m.confint[2, 2])"]).starts_with("1.50013174529"));
+}
+
+#[test]
+fn predict_with_intervals() {
+    // Point predictions reattach the intercept automatically.
+    assert_eq!(ev_all(&[FIT, "stats.predict(m, [6; 7]).fit[1]"]), "29/5");
+    assert_eq!(ev_all(&[FIT, "stats.predict(m, [6; 7]).fit[2]"]), "32/5");
+    // The prediction interval is wider than the confidence interval — it
+    // carries the extra σ̂² for a fresh observation.
+    assert!(ev_all(&[FIT, "N(stats.predict(m, [6; 7]).ci[1, 1])"]).starts_with("2.8146007"));
+    assert!(ev_all(&[FIT, "N(stats.predict(m, [6; 7]).pi[1, 1])"]).starts_with("1.6750781"));
+}
+
+#[test]
+fn regression_assumption_tests() {
+    // All three statistics are exact rationals from the residuals.
+    assert_eq!(ev_all(&[FIT, "stats.dwtest(m).statistic"]), "121/60"); // Durbin–Watson ≈ 2
+    assert_eq!(ev_all(&[FIT, "stats.jbtest(m).statistic"]), "3283/5760"); // Jarque–Bera
+    assert_eq!(ev_all(&[FIT, "stats.bptest(m).statistic"]), "25/18"); // Breusch–Pagan
+    assert!(ev_all(&[FIT, "N(stats.jbtest(m).pvalue)"]).starts_with("0.7520273"));
+}
+
+#[test]
+fn robust_se_and_nested_f_test() {
+    // HC1 robust slope se equals the textbook sandwich √(43/750) exactly.
+    assert_eq!(
+        ev_all(&[FIT, "stats.robustse(m, [1; 2; 3; 4; 5]).se[2]"]),
+        "1/5*sqrt(43/30)"
+    );
+    // Nested model F-test: y ~ x vs y ~ x + x².
+    let red = "red := stats.regress([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])";
+    let full = "full := stats.regress([1, 1; 2, 4; 3, 9; 4, 16; 5, 25], [2; 4; 5; 4; 5])";
+    assert_eq!(
+        ev_all(&[red, full, "stats.anova(red, full).fstat"]),
+        "20/11"
+    );
+    assert_eq!(ev_all(&[red, full, "stats.anova(red, full).df1"]), "1");
+    assert_eq!(ev_all(&[red, full, "stats.anova(red, full).df2"]), "2");
+}
+
+#[test]
+fn nlfit_recovers_parameters_with_exact_jacobian() {
+    // y = a·exp(b·x), a = 2, b = 1/2 — the fit recovers both.
+    let f = "f := stats.nlfit(a*exp(b*x), [a, b], [0; 1; 2; 3; 4], \
+             [2; 3.29744; 5.43656; 8.96338; 14.7781], [1, 1])";
+    assert_eq!(ev_all(&[f, "f.converged"]), "true");
+    assert!(ev_all(&[f, "f.coefficients[1]"]).starts_with("2.0000"));
+    assert!(ev_all(&[f, "f.coefficients[2]"]).starts_with("0.4999"));
+    // The Jacobian columns are the exact analytic ∂f/∂θ, not finite differences.
+    assert_eq!(ev_all(&[f, "f.jacobian[1]"]), "exp(b*x)");
+    assert_eq!(ev_all(&[f, "f.jacobian[2]"]), "a*x*exp(b*x)");
+}
+
+#[test]
+fn nlfit_linear_model_matches_ols() {
+    // A linear model fit by nonlinear least squares reproduces OLS (2.2, 0.6).
+    let f = "stats.nlfit(a + b*x, [a, b], [1; 2; 3; 4; 5], [2; 4; 5; 4; 5], [0, 0])";
+    assert!(ev(&format!("{}.coefficients[1]", f)).starts_with("2.19999999"));
+    assert!(ev(&format!("{}.coefficients[2]", f)).starts_with("0.60000000"));
+}
+
+#[test]
+fn nlfit_argument_errors() {
+    // A parameter that never appears in the model is caught.
+    assert!(ev("stats.nlfit(a*x, [a, b], [1; 2; 3], [1; 2; 3], [1, 1])")
+        .starts_with("error: stats.nlfit: parameter 'b' does not appear"));
+    // A bound independent variable leaves nothing to fit against.
+    assert!(
+        ev_all(&["x := 3", "stats.nlfit(a*x, [a], [1; 2; 3], [1; 2; 3], [1])"])
+            .starts_with("error: stats.nlfit: the model has no independent variable")
+    );
+}
