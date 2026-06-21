@@ -1,9 +1,15 @@
 # Build the surd desktop app (Tauri) for macOS, Windows, and Linux and attach
 # the installers to a GitHub Release.
 #
-# Trigger: push a tag like `v0.1.0` (or run manually). Each runner builds the
-# Rust engine → wasm and the Vite bundle (Tauri's beforeBuildCommand), then
-# compiles the desktop shell and packages the native installer.
+# Trigger: push a tag like `v0.1.0` (or run manually). The easy path is
+# `scripts/bump-version.sh <version> --tag && git push --follow-tags`, which
+# keeps every manifest in step and creates the tag this workflow fires on.
+#
+# Flow: `verify` fails fast if the version fields disagree or the tag doesn't
+# match them; each matrix runner builds the Rust engine → wasm and the Vite
+# bundle (Tauri's beforeBuildCommand), compiles the desktop shell, packages the
+# native installer, and uploads it to a DRAFT release; once all three finish,
+# `publish` flips that draft to a public release on the repo's Releases page.
 #
 # Signing:
 #   macOS  — OPT-IN and OFF by default, so builds are unsigned (users
@@ -37,7 +43,27 @@ permissions:
   contents: write
 
 jobs:
+  # Fail fast before the (slow) matrix build if the five version fields disagree
+  # or a pushed tag doesn't match them — catches "tagged v0.2.0 but forgot to
+  # bump the manifests" before three runners spend ~15 min each.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version consistency across manifests
+        run: scripts/check-version.sh
+      - name: Tag matches the manifest version
+        if: github.ref_type == 'tag'
+        run: |
+          VERSION=$(grep -m1 '"version"' app/src-tauri/tauri.conf.json \
+            | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+          if [ "${{ github.ref_name }}" != "v${VERSION}" ]; then
+            echo "::error::tag ${{ github.ref_name }} != manifest v${VERSION}. Bump with scripts/bump-version.sh." >&2
+            exit 1
+          fi
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -171,3 +197,29 @@ jobs:
           done
           cat SHA256SUMS.txt
           gh release upload "$TAG" SHA256SUMS.txt --clobber
+
+  # Every matrix leg uploads to a DRAFT release (so the public release is never
+  # seen half-built, and the Linux checksums land before anyone downloads).
+  # After all three platforms finish, flip the draft to a published release —
+  # this is the step that makes it appear on the repo's Releases page and marks
+  # it "Latest".
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(grep -m1 '"version"' app/src-tauri/tauri.conf.json \
+              | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+            TAG="v${VERSION}"
+          fi
+          echo "Publishing release $TAG"
+          gh release edit "$TAG" --draft=false --latest

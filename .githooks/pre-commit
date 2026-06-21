@@ -1,12 +1,16 @@
 #!/bin/sh
-# Pre-commit: check Rust formatting, run the backend test suite, then the
-# frontend smoke test against a freshly built wasm bundle.
+# Pre-commit: confirm the version is in sync across manifests, check Rust
+# formatting, run the backend test suite, then the frontend smoke test against
+# a freshly built wasm bundle.
 #
 # Enabled per clone with: git config core.hooksPath .githooks
 # Bypass for a single commit with: git commit --no-verify
 set -e
 
 cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-commit] versions in sync across manifests"
+scripts/check-version.sh
 
 echo "[pre-commit] backend: cargo fmt --check"
 cargo fmt --all --check

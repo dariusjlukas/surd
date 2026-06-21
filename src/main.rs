@@ -10,6 +10,17 @@ use surd::lexer::{is_blank, is_incomplete};
 use surd::Interpreter;
 
 fn main() {
+    // `surd --version` / `-V` prints the version and exits, matching the
+    // convention every other CLI follows (and what `cargo`/package managers
+    // probe). Handled before the REPL thread spins up so it works when piped.
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        println!("surd {}", surd::VERSION);
+        return;
+    }
+
     // Run the whole REPL on a large-stack thread so deep recursion/nesting hits
     // the evaluator's depth guards (graceful errors) rather than the OS stack.
     surd::run_with_stack(|| {
@@ -24,7 +35,10 @@ fn main() {
 }
 
 fn banner() {
-    println!("surd — an exact-by-default CAS REPL (prototype)");
+    println!(
+        "surd v{} — an exact-by-default CAS REPL (prototype)",
+        surd::VERSION
+    );
     println!("  ':=' assigns, '=' is an equation, 'N(x)' goes to float.");
     println!("  if/while/function are blocks ended with 'end'.");
     println!("  try:  fact(n) := if n == 0 then 1 else n*fact(n-1) end   then   fact(20)");

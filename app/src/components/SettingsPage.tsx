@@ -111,6 +111,18 @@ export function SettingsPage() {
             locally in your browser (IndexedDB). Nothing leaves your machine —
             export a notebook from the sidebar to back it up.
           </p>
+          <p className="mt-3 text-xs text-faint">
+            Version{' '}
+            <span className="font-mono text-muted">{__APP_VERSION__}</span> ·{' '}
+            <a
+              href="https://github.com/dariusjlukas/surd/releases"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent hover:underline"
+            >
+              releases &amp; downloads
+            </a>
+          </p>
         </Section>
       </div>
     </div>

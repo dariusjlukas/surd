@@ -606,6 +606,14 @@ pub fn is_blank(src: &str) -> bool {
     surd::lexer::is_blank(src)
 }
 
+/// The engine version, so the JS side can report which build of the CAS core
+/// it loaded (the app UI surfaces its own version separately via Vite). Tracks
+/// the `surd` core crate, not this binding crate, so they can never disagree.
+#[wasm_bindgen]
+pub fn version() -> String {
+    surd::VERSION.to_string()
+}
+
 #[derive(Serialize)]
 struct Symbols {
     /// Workspace names this cell binds (unconditional top-level `:=` / function

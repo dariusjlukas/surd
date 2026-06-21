@@ -156,13 +156,38 @@ through a native **Save** dialog (the `save_export` command in
 Installers for macOS (universal `.dmg`), Windows (`.msi`/`.exe`), and Linux
 (`.rpm` for Fedora, plus `.AppImage` and `.deb`) are built by
 `.github/workflows/release.yml` — push a `v*` tag (or run it manually) and it
-attaches them to a draft GitHub Release.
+builds each installer, attaches them to a draft Release, then publishes that
+Release once all three platforms finish (see [Versioning and releases](#versioning-and-releases)).
 Builds are **unsigned by default** (macOS Gatekeeper / Windows SmartScreen will
 warn). macOS signing + notarization is opt-in: set the `MACOS_SIGNING`
 repository variable to `true` and add the `APPLE_*` secrets, and the workflow
 signs the build. Linux builds ship a `SHA256SUMS.txt` for verification. The
 workflow header documents the required secrets and the Windows signing options
 (SignPath / Azure Trusted Signing).
+
+## Versioning and releases
+
+surd follows [semantic versioning](https://semver.org/). One version number is
+shared by every artifact (the `surd` engine, the `surd-wasm` binding, the
+`surd-desktop` shell, and the web/desktop app), and it's surfaced where you'd
+look for it: `surd --version` on the CLI, the REPL banner, and **Settings →
+About** in the app. `CHANGELOG.md` records what changed in each release.
+
+The version lives in five manifests. They must stay equal — `scripts/check-version.sh`
+enforces it in the pre-commit hook and as the first step of the release
+workflow — so never edit them by hand. To cut a release, bump them all at once:
+
+```sh
+# rewrites the 5 manifests + lockfiles, rolls CHANGELOG's [Unreleased] section,
+# and (with --tag) makes the release commit + annotated tag
+scripts/bump-version.sh 0.2.0 --tag
+git push --follow-tags
+```
+
+Pushing the `vX.Y.Z` tag fires `.github/workflows/release.yml`, which builds the
+macOS/Windows/Linux installers and publishes them as the GitHub Release for that
+tag. (Omit `--tag` to just edit the files and review the diff first — the script
+prints the commit/tag/push commands to finish by hand.)
 
 ## What works today
 

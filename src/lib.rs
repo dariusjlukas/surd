@@ -34,6 +34,13 @@ pub mod stats;
 
 pub use eval::Interpreter;
 
+/// The engine version, taken from this crate's `Cargo.toml` at compile time.
+/// This is the single source of truth the CLI banner and the wasm `version()`
+/// binding report; the desktop/web app and the other manifests are kept in
+/// step with it by `scripts/bump-version.sh` (and checked by
+/// `scripts/check-version.sh`).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Run `f` on a thread with a large stack, giving deeply recursive evaluation
 /// room before the depth guards trip (debug builds use ~4 KB stack frames per
 /// `eval_node`, and test threads only get 2 MB by default). Native embedders —
