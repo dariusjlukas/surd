@@ -123,6 +123,17 @@ jobs:
         run: npm ci
         working-directory: app
 
+      # The offline docs are bundled into the app by Tauri's beforeBuildCommand
+      # (scripts/build-offline-docs.mjs), which shells out to MkDocs. Install it
+      # on every runner so official builds always ship the docs; without it the
+      # script warns, skips, and the app falls back to the hosted site.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs (offline docs bundled into the app)
+        run: pip install mkdocs-material
+
       # macOS signing is opt-in (see header). Runs only when the MACOS_SIGNING
       # repository variable is "true", injecting the APPLE_* signing env into
       # $GITHUB_ENV for the build step below. When it doesn't run those vars

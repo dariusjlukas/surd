@@ -1,0 +1,16 @@
+# Offline docs build for the desktop app.
+#
+# Same site as the hosted one (mkdocs.yml), with two changes that make it a
+# self-contained bundle the Tauri webview can serve with no network:
+#   - use_directory_urls: false — every internal link is an explicit `.html`
+#     file, so it resolves under Tauri's asset protocol (and even file://)
+#     without a server to map `/foo/` -> `/foo/index.html`.
+#   - theme.font: false — use the system font stack instead of fetching
+#     Google Fonts, which would otherwise hang/fail with no network.
+#
+# Built into app/dist/docs by scripts/build-offline-docs.mjs, which Tauri's
+# beforeBuildCommand runs after the Vite bundle (see app/src-tauri/tauri.conf.json).
+INHERIT: mkdocs.yml
+use_directory_urls: false
+theme:
+  font: false

@@ -8,6 +8,46 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 
 export { isTauri }
 
+// The hosted MkDocs site. Used by the web build, and as the desktop build's
+// fallback when a build shipped without the bundled offline copy.
+const HOSTED_DOCS_URL = 'https://dariusjlukas.github.io/surd/docs/'
+
+/** Open the documentation. The desktop build prefers the offline copy bundled
+ * into the app (app/dist/docs, built by scripts/build-offline-docs.mjs) and
+ * shows it in its own window so the notebook stays put; it falls back to the
+ * hosted site when those assets aren't present — e.g. `tauri dev`, or a build
+ * made without MkDocs. The web build opens the hosted site in a new tab. */
+export async function openDocs(): Promise<void> {
+  if (!isTauri()) {
+    window.open(HOSTED_DOCS_URL, '_blank', 'noopener,noreferrer')
+    return
+  }
+  // Probe the bundled docs (a same-origin asset under Tauri's protocol). When
+  // they're absent the request fails or 404s and we fall back to the hosted
+  // site via the system browser.
+  const bundled = await fetch('/docs/index.html')
+    .then((r) => r.ok)
+    .catch(() => false)
+  if (!bundled) {
+    await import('@tauri-apps/plugin-opener').then((m) =>
+      m.openUrl(HOSTED_DOCS_URL),
+    )
+    return
+  }
+  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+  const existing = await WebviewWindow.getByLabel('docs')
+  if (existing) {
+    await existing.setFocus()
+    return
+  }
+  new WebviewWindow('docs', {
+    url: '/docs/index.html',
+    title: 'surd — documentation',
+    width: 1000,
+    height: 760,
+  })
+}
+
 /** Trigger the classic blob/anchor download (web build). */
 function browserDownload(suggestedName: string, blob: Blob) {
   const url = URL.createObjectURL(blob)

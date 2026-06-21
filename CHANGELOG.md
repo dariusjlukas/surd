@@ -11,6 +11,10 @@ section into a dated, versioned release.
 
 ### Added
 
+- Offline documentation in the desktop app: the Help button now opens a copy
+  of the docs bundled into the build (in its own window, no network), falling
+  back to the hosted site only when a build shipped without them. The web build
+  still links to the hosted docs.
 - Version reporting: `surd --version` on the CLI, a `version()` binding in the
   wasm engine, and a version line (with a link to the releases page) in the
   desktop/web app's Settings → About.
