@@ -512,7 +512,8 @@ impl Interpreter {
             Some(node) => numeric_vector(&self.eval_node(node)?)?,
             None => vec![1.0; params.len()],
         };
-        nlfit::fit(&model, &params, &xvar, &x, &y, &init)
+        let result = nlfit::fit(&model, &params, &xvar, &x, &y, &init)?;
+        attach_predict(result, &model, &params, &xvar)
     }
 
     /// `diff(expr, x)` / `D(expr, x)` / `subs(expr, x, val)` / `plot(expr, x,
@@ -564,6 +565,11 @@ impl Interpreter {
             if evaluated.iter().all(|e| matches!(e, Expr::Signal(_))) {
                 return Ok(Expr::Func("plotsignal".to_string(), evaluated));
             }
+            // All data series and no window: draw the points over a window
+            // derived from the data (the wasm side pads the x-extent).
+            if evaluated.iter().all(is_scatter) {
+                return Ok(Expr::Func("plotscatter".to_string(), evaluated));
+            }
         }
         if args.len() < 4 {
             return Err(format!(
@@ -579,6 +585,25 @@ impl Interpreter {
             if matches!(curve, Expr::Signal(_)) {
                 return Err("signals plot without a window — plot(s), not plot(s, x, a, b)".into());
             }
+            // A bare function value — a fit's `predict`, or any user function —
+            // plots as its body: apply it to the plot variable to get the curve.
+            let curve = match curve {
+                Expr::Function { params, body } => {
+                    if params.len() != 1 {
+                        return Err(format!(
+                            "plot: a function curve must take one argument, but this takes {}",
+                            params.len()
+                        ));
+                    }
+                    self.call_function(
+                        "the plotted function",
+                        params,
+                        body,
+                        vec![Expr::Symbol(var.clone())],
+                    )?
+                }
+                other => other,
+            };
             out.push(curve);
         }
         out.push(Expr::Symbol(var));
@@ -714,6 +739,29 @@ impl Interpreter {
             "beta" => {
                 arity(name, &args, 2)?;
                 Ok(func("beta", args))
+            }
+            "scatter" => {
+                arity(name, &args, 2)?;
+                let x = vector_entries("scatter", &args[0])?;
+                let y = vector_entries("scatter", &args[1])?;
+                if x.len() != y.len() {
+                    return Err(format!(
+                        "scatter expects two vectors of the same length, got {} and {}",
+                        x.len(),
+                        y.len()
+                    ));
+                }
+                if x.is_empty() {
+                    return Err("scatter expects non-empty vectors".into());
+                }
+                // A scatter is a static data series: keep the two columns as
+                // row vectors and carry them as a tagged value the plot path
+                // (`call_plot`, wasm `plot_data`) recognizes and draws as
+                // markers. It is not a function, so it is never sampled.
+                Ok(func(
+                    "scatter",
+                    vec![Expr::Matrix(vec![x]), Expr::Matrix(vec![y])],
+                ))
             }
             "conj" => {
                 arity(name, &args, 1)?;
@@ -1378,6 +1426,64 @@ fn as_usize(e: &Expr) -> Result<usize, String> {
         }
     }
     Err("expected a non-negative integer".into())
+}
+
+/// Entries of a vector argument (a 1×n or n×1 matrix), in order.
+fn vector_entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
+    let Expr::Matrix(rows) = e else {
+        return Err(format!("{} expects vectors (1×n or n×1 matrices)", name));
+    };
+    if rows.len() == 1 {
+        Ok(rows[0].clone())
+    } else if rows.iter().all(|r| r.len() == 1) {
+        Ok(rows.iter().map(|r| r[0].clone()).collect())
+    } else {
+        Err(format!("{} expects vectors (1×n or n×1 matrices)", name))
+    }
+}
+
+/// A `scatter(x, y)` data value, carried symbolically into a plot.
+fn is_scatter(e: &Expr) -> bool {
+    matches!(e, Expr::Func(name, _) if name.as_str() == "scatter")
+}
+
+/// Wrap a closed expression in `var` as a one-argument function value — how a
+/// fit hands back its curve as a real `predict` function (`m.predict(x)`
+/// evaluates it; `plot(m.predict, x, a, b)` draws it). Built by round-tripping
+/// the expression's re-parseable text into a function body, so the result is
+/// an ordinary `Expr::Function`, indistinguishable from one written `f(x) := …`.
+pub(crate) fn function_from_expr(var: &str, body: &Expr) -> Result<Expr, String> {
+    let node = parse(lex(&format!("{}", body))?)?;
+    Ok(Expr::Function {
+        params: vec![var.to_string()],
+        body: Rc::new(node),
+    })
+}
+
+/// Add a `predict` field — the fitted curve as a function of the predictor — to
+/// an `nlfit` result, by substituting the fitted coefficients into the model.
+fn attach_predict(
+    result: Expr,
+    model: &Expr,
+    params: &[String],
+    xvar: &str,
+) -> Result<Expr, String> {
+    let Expr::Struct(mut fields) = result else {
+        return Ok(result);
+    };
+    let Some(coefs) = fields.iter().find(|(n, _)| n == "coefficients") else {
+        return Ok(Expr::Struct(fields));
+    };
+    let coefs = vector_entries("nlfit", &coefs.1)?;
+    if coefs.len() != params.len() {
+        return Ok(Expr::Struct(fields));
+    }
+    let mut body = model.clone();
+    for (p, c) in params.iter().zip(coefs.iter()) {
+        body = substitute(&body, p, c);
+    }
+    fields.push(("predict".to_string(), function_from_expr(xvar, &body)?));
+    structure(fields)
 }
 
 fn arity(name: &str, args: &[Expr], n: usize) -> Result<(), String> {

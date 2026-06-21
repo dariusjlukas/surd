@@ -130,6 +130,41 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Hover-revealed row actions.
+ *
+ * Cell and list-row controls stay out of the way until you point at the row
+ * or tab into it (keyboard). But a hover-gated control is simply unreachable
+ * on a touch device that has no hover at all, so force them visible there.
+ *
+ * `.row-actions` (cell clusters) toggles visibility — CellView already
+ * reserves the cluster's box, so this is layout-neutral. Sidebar rows hide
+ * each button with display:none to keep the name full-width at rest, so only
+ * `.nb-row-action` is un-hidden on touch. (These rules are unlayered, so they
+ * win over Tailwind's `invisible`/`hidden` utilities.)
+ * ------------------------------------------------------------------------- */
+.row-actions {
+  visibility: hidden;
+}
+.group:hover .row-actions,
+.group:focus-within .row-actions {
+  visibility: visible;
+}
+/* Sidebar buttons hide with display:none (to keep the name full-width), so a
+   focus-within rule is what lets a keyboard user reach them after tabbing
+   onto the row. */
+.group:focus-within .nb-row-action {
+  display: block;
+}
+@media (hover: none) {
+  .row-actions {
+    visibility: visible;
+  }
+  .nb-row-action {
+    display: block;
+  }
+}
+
 /* KaTeX display math is centered by default; a notebook reads left-aligned.
  * Both the outer wrapper and the inner .katex block carry text-align: center
  * in KaTeX's stylesheet — override both or the inner one still centers. */

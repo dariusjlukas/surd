@@ -6,12 +6,12 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { openDocs } from '../platform/desktop'
-import { useSettings } from '../state/settings'
 import {
   useActiveNotebook,
   useNotebook,
   type EngineStatus,
 } from '../state/store'
+import { useIsNarrow } from '../state/useMediaQuery'
 
 const LABEL: Record<EngineStatus, string> = {
   booting: 'loading engine…',
@@ -58,22 +58,34 @@ function IconButton({
 export function StatusBar() {
   const engineStatus = useNotebook((s) => s.engineStatus)
   const cancel = useNotebook((s) => s.cancel)
-  const clearNotebook = useNotebook((s) => s.clearNotebook)
   const showWorkspace = useNotebook((s) => s.showWorkspace)
   const toggleWorkspace = useNotebook((s) => s.toggleWorkspace)
   const showSidebar = useNotebook((s) => s.showSidebar)
   const toggleSidebar = useNotebook((s) => s.toggleSidebar)
   const showSettings = useNotebook((s) => s.showSettings)
   const toggleSettings = useNotebook((s) => s.toggleSettings)
-  const confirmDelete = useSettings((s) => s.confirmDelete)
+  const mobileDrawer = useNotebook((s) => s.mobileDrawer)
+  const toggleMobileDrawer = useNotebook((s) => s.toggleMobileDrawer)
   const active = useActiveNotebook()
+  const isNarrow = useIsNarrow()
+
+  // On a phone the panels are overlay drawers (one at a time), driven by a
+  // separate session state; on desktop they're the persisted pinned columns.
+  const sidebarOpen = isNarrow ? mobileDrawer === 'sidebar' : showSidebar
+  const workspaceOpen = isNarrow ? mobileDrawer === 'workspace' : showWorkspace
+  const onToggleSidebar = isNarrow
+    ? () => toggleMobileDrawer('sidebar')
+    : toggleSidebar
+  const onToggleWorkspace = isNarrow
+    ? () => toggleMobileDrawer('workspace')
+    : toggleWorkspace
 
   return (
     <header className="flex items-center gap-2 border-b border-edge bg-surface/50 px-2 py-1.5 sm:px-3">
       <IconButton
-        onClick={toggleSidebar}
-        title={showSidebar ? 'hide notebooks' : 'show notebooks'}
-        active={showSidebar}
+        onClick={onToggleSidebar}
+        title={sidebarOpen ? 'hide notebooks' : 'show notebooks'}
+        active={sidebarOpen}
       >
         <FontAwesomeIcon icon={faBars} className="h-4 w-4" />
       </IconButton>
@@ -98,31 +110,14 @@ export function StatusBar() {
           cancel
         </button>
       )}
-      {!showSettings && (
-        <button
-          onClick={() => {
-            if (
-              !confirmDelete ||
-              window.confirm(
-                `Clear "${active.name}" — its cells and workspace?`,
-              )
-            ) {
-              clearNotebook()
-            }
-          }}
-          className="rounded-md border border-edge px-2.5 py-0.5 text-xs text-muted hover:border-edge-strong hover:text-ink"
-        >
-          clear
-        </button>
-      )}
       <IconButton
-        onClick={toggleWorkspace}
+        onClick={onToggleWorkspace}
         title={
-          showWorkspace
+          workspaceOpen
             ? 'hide workspace variables'
             : 'show workspace variables'
         }
-        active={showWorkspace}
+        active={workspaceOpen}
       >
         <FontAwesomeIcon icon={faTableList} className="h-4 w-4" />
       </IconButton>

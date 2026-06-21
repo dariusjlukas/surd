@@ -22,8 +22,8 @@ Irrational values stay symbolic instead of rounding:
 2
 >> 2*pi + pi
 3*π
->> sqrt(8)            # no hidden float — and no square-factor extraction (yet)
-sqrt(8)
+>> sqrt(8)            # no hidden float — square factors extract
+2*sqrt(2)
 ```
 
 Construction applies *bounded* canonicalization: rationals fold, like terms

@@ -61,6 +61,7 @@ const BUILTINS: Builtin[] = [
     params: ['x'],
     doc: 'Absolute value (modulus for complex x).',
   },
+  { name: 'beta', params: ['a', 'b'], doc: 'Beta function B(a, b).' },
   {
     name: 'charpoly',
     params: ['M', 'var?'],
@@ -91,6 +92,12 @@ const BUILTINS: Builtin[] = [
   },
   { name: 'eigenvalues', params: ['M'], doc: 'Eigenvalues of a matrix.' },
   { name: 'eigenvectors', params: ['M'], doc: 'Eigenvectors of a matrix.' },
+  { name: 'erf', params: ['x'], doc: 'Error function.' },
+  {
+    name: 'erfc',
+    params: ['x'],
+    doc: 'Complementary error function, 1 − erf(x).',
+  },
   { name: 'exp', params: ['x'], doc: 'Exponential function.' },
   {
     name: 'expand',
@@ -107,6 +114,11 @@ const BUILTINS: Builtin[] = [
   { name: 'imag', params: ['z'], doc: 'Imaginary part.' },
   { name: 'inv', params: ['M'], doc: 'Matrix inverse.' },
   {
+    name: 'gamma',
+    params: ['x'],
+    doc: 'Gamma function (factorial on positive integers).',
+  },
+  {
     name: 'hcat',
     params: ['a', 'b'],
     doc: 'Stack matrices horizontally; accepts any number of pieces.',
@@ -122,6 +134,7 @@ const BUILTINS: Builtin[] = [
     params: ['v'],
     doc: 'Entries of a vector; rows of a matrix.',
   },
+  { name: 'lgamma', params: ['x'], doc: 'Log-gamma, ln Γ(x), for x > 0.' },
   {
     name: 'linspace',
     params: ['a', 'b', 'n'],
@@ -148,13 +161,18 @@ const BUILTINS: Builtin[] = [
   {
     name: 'plot',
     params: ['f', 'x', 'a', 'b'],
-    doc: 'Plot f over x in [a, b] (overlay: more functions before x) — or plot(s) for signals.',
+    doc: 'Plot f over x in [a, b] (overlay more functions, or scatter(x, y) data, before x) — or plot(s) for signals.',
     variadic: true,
   },
   {
     name: 'plot3d',
     params: ['f', 'x', 'a', 'b', 'y', 'c', 'd'],
     doc: 'Surface z = f(x, y) over [a, b] × [c, d].',
+  },
+  {
+    name: 'scatter',
+    params: ['x', 'y'],
+    doc: 'Data points (x, y) as markers; overlay in plot(…) to compare with a curve, or plot(scatter(x, y)) alone.',
   },
   {
     name: 'precision',
@@ -211,7 +229,7 @@ const BUILTINS: Builtin[] = [
 
 /** A built-in namespace (see is_namespace / call_namespace in src/eval.rs);
  * members mirror the dispatch in the namespace's module (src/dsp.rs,
- * src/stats.rs). */
+ * src/stats.rs, src/data.rs). */
 interface Namespace {
   name: string
   doc: string
@@ -312,7 +330,7 @@ const NAMESPACES: Namespace[] = [
       {
         name: 'linfit',
         params: ['x', 'y'],
-        doc: 'Exact least-squares line → struct(intercept, slope).',
+        doc: 'Exact least-squares line → struct(intercept, slope, predict).',
       },
       {
         name: 'lsq',
@@ -352,6 +370,156 @@ const NAMESPACES: Namespace[] = [
         doc: 'Sample standard deviation (an exact surd).',
       },
       { name: 'var', params: ['v'], doc: 'Sample variance (n−1 denominator).' },
+      // Regression models, inference, and diagnostics. A multi-predictor X is a
+      // design matrix; these models also accept a `y ~ x1 + x2` formula plus a
+      // data struct in place of (X, y).
+      {
+        name: 'regress',
+        params: ['X', 'y'],
+        doc: 'Ordinary least squares with full inference → fitted-model struct.',
+      },
+      {
+        name: 'wls',
+        params: ['X', 'y', 'weights'],
+        doc: 'Weighted least squares (per-observation weights).',
+      },
+      {
+        name: 'ridge',
+        params: ['X', 'y', 'lambda'],
+        doc: 'L2-penalized (ridge) regression; exact in lambda.',
+      },
+      {
+        name: 'logit',
+        params: ['X', 'y'],
+        doc: 'Logistic regression by IRLS, for a binary 0/1 response y.',
+      },
+      {
+        name: 'nlfit',
+        params: ['model', 'params', 'x', 'y', 'init?'],
+        doc: 'Nonlinear least squares; params is a [list] of names, Jacobian exact.',
+      },
+      {
+        name: 'predict',
+        params: ['model', 'Xnew', 'level?'],
+        doc: 'Predict from a model, with confidence and prediction intervals.',
+      },
+      {
+        name: 'robustse',
+        params: ['model', 'X', 'type?'],
+        doc: 'Heteroskedasticity-consistent (HC0–HC3) standard errors.',
+      },
+      {
+        name: 'anova',
+        params: ['reduced', 'full'],
+        doc: 'F-test comparing two nested regression models.',
+      },
+      {
+        name: 'dwtest',
+        params: ['model'],
+        doc: 'Durbin–Watson test for residual autocorrelation.',
+      },
+      {
+        name: 'bptest',
+        params: ['model'],
+        doc: 'Breusch–Pagan test for heteroskedasticity.',
+      },
+      {
+        name: 'jbtest',
+        params: ['model'],
+        doc: 'Jarque–Bera test for non-normal residuals.',
+      },
+      // Probability distributions: each symbolic until N(...). CDF, PDF, inverse.
+      {
+        name: 'normcdf',
+        params: ['x', 'mu?', 'sigma?'],
+        doc: 'Normal CDF (default mean 0, std 1).',
+      },
+      {
+        name: 'normpdf',
+        params: ['x', 'mu?', 'sigma?'],
+        doc: 'Normal PDF (default mean 0, std 1).',
+      },
+      {
+        name: 'norminv',
+        params: ['p', 'mu?', 'sigma?'],
+        doc: 'Normal inverse CDF / quantile (default mean 0, std 1).',
+      },
+      {
+        name: 'tcdf',
+        params: ['t', 'nu'],
+        doc: 'Student-t CDF with nu degrees of freedom.',
+      },
+      {
+        name: 'tpdf',
+        params: ['t', 'nu'],
+        doc: 'Student-t PDF with nu degrees of freedom.',
+      },
+      {
+        name: 'tinv',
+        params: ['p', 'nu'],
+        doc: 'Student-t inverse CDF / quantile.',
+      },
+      {
+        name: 'chisqcdf',
+        params: ['x', 'k'],
+        doc: 'Chi-square CDF with k degrees of freedom.',
+      },
+      {
+        name: 'chisqpdf',
+        params: ['x', 'k'],
+        doc: 'Chi-square PDF with k degrees of freedom.',
+      },
+      {
+        name: 'chisqinv',
+        params: ['p', 'k'],
+        doc: 'Chi-square inverse CDF / quantile.',
+      },
+      {
+        name: 'fcdf',
+        params: ['x', 'd1', 'd2'],
+        doc: 'F CDF with (d1, d2) degrees of freedom.',
+      },
+      {
+        name: 'fpdf',
+        params: ['x', 'd1', 'd2'],
+        doc: 'F PDF with (d1, d2) degrees of freedom.',
+      },
+      {
+        name: 'finv',
+        params: ['p', 'd1', 'd2'],
+        doc: 'F inverse CDF / quantile.',
+      },
+    ],
+  },
+  {
+    name: 'data',
+    doc: 'Data preparation for the stats models.',
+    members: [
+      {
+        name: 'center',
+        params: ['v'],
+        doc: 'Subtract the mean (mean-centered column).',
+      },
+      {
+        name: 'dummy',
+        params: ['v'],
+        doc: 'One-hot encode a categorical column → struct(levels, indicators).',
+      },
+      {
+        name: 'groupby',
+        params: ['keys', 'values'],
+        doc: 'Aggregate values by levels of keys → struct(levels, count, sum, mean).',
+      },
+      {
+        name: 'rescale',
+        params: ['v'],
+        doc: 'Min–max rescale numeric data to [0, 1].',
+      },
+      {
+        name: 'standardize',
+        params: ['v'],
+        doc: 'Z-scores (vᵢ − μ)/σ as exact surds (sample σ).',
+      },
     ],
   },
 ]
@@ -409,7 +577,7 @@ const surdStream = StreamLanguage.define<void>({
       }
       return 'variableName'
     }
-    if (stream.match(/^(:=|==|!=|<=|>=|[+\-*/^=<>.])/)) return 'operator'
+    if (stream.match(/^(:=|==|!=|<=|>=|[+\-*/^=<>.~])/)) return 'operator'
     if (stream.match(/^[[\](){},;]/)) return 'bracket'
     stream.next()
     return null
@@ -456,13 +624,42 @@ const STATIC_COMPLETIONS: Completion[] = [
   ...CONSTANTS.map((c) => ({ label: c, type: 'constant' })),
 ]
 
+/** Top-level fields of a struct, parsed from its workspace `text`, which the
+ * engine renders as `struct(name = value, …)` (see Expr::Struct's render in
+ * src/expr.rs). Bracket depth keeps nested structs, matrices, and parenthesized
+ * equation-valued fields from leaking their own `name =` pairs or commas. */
+function structFields(text: string): { name: string; value: string }[] {
+  if (!text.startsWith('struct(') || !text.endsWith(')')) return []
+  const inner = text.slice('struct('.length, -1)
+  const fields: { name: string; value: string }[] = []
+  let depth = 0
+  let start = 0
+  const push = (seg: string) => {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*([\s\S]*)$/.exec(seg)
+    if (m) fields.push({ name: m[1], value: m[2].trim() })
+  }
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') depth--
+    else if (ch === ',' && depth === 0) {
+      push(inner.slice(start, i))
+      start = i + 1
+    }
+  }
+  push(inner.slice(start))
+  return fields
+}
+
 /** Builtins + keywords + whatever is bound in the live workspace. */
 function completionSource(context: CompletionContext): CompletionResult | null {
-  // Right of a namespace dot, complete its members (and only those).
+  // Right of a dot, complete members: a namespace's functions, or — for a
+  // struct bound in the workspace — its fields (and only those).
   const member = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]*/)
   if (member) {
     const dot = member.text.indexOf('.')
-    const ns = NAMESPACE_BY_NAME.get(member.text.slice(0, dot))
+    const qualifier = member.text.slice(0, dot)
+    const ns = NAMESPACE_BY_NAME.get(qualifier)
     if (ns) {
       return {
         from: member.from + dot + 1,
@@ -475,6 +672,26 @@ function completionSource(context: CompletionContext): CompletionResult | null {
           }),
         ),
         validFor: /^[A-Za-z_][A-Za-z0-9_]*$/,
+      }
+    }
+    const entry = useNotebook
+      .getState()
+      .workspace.find((e) => e.name === qualifier && e.kind === 'struct')
+    if (entry) {
+      const fields = structFields(entry.text)
+      if (fields.length) {
+        return {
+          from: member.from + dot + 1,
+          options: fields.map((f) => {
+            const value = f.value.replace(/\s+/g, ' ')
+            return {
+              label: f.name,
+              type: 'property',
+              detail: value.length > 24 ? value.slice(0, 24) + '…' : value,
+            }
+          }),
+          validFor: /^[A-Za-z_][A-Za-z0-9_]*$/,
+        }
       }
     }
   }

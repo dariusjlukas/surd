@@ -1,7 +1,8 @@
 # surd
 
-**surd** is an exact-by-default computer algebra system — the engine for a
-browser-based, no-install mathematical scratchpad. Try it live at
+**surd** is an exact-by-default computer algebra system — the engine behind a
+mathematical scratchpad that runs in the browser (nothing to install) or as a
+fully offline desktop app. Try it live at
 **<https://dariusjlukas.github.io/surd/>**.
 
 A *surd* is an irrational root kept in exact symbolic form — `sqrt(2)` the
@@ -43,7 +44,8 @@ exact until *you* ask for a float.
 
 ## Where to start
 
-- [Getting started](getting-started.md) — run the REPL or the web app.
+- [Getting started](getting-started.md) — run the REPL, the web app, or the
+  offline desktop app.
 - [Syntax](language/syntax.md) — literals, operators, precedence, statements.
 - [Exact numbers and floats](language/numbers.md) — the exact/approximate
   boundary, arbitrary precision, comparisons.

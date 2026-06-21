@@ -16,9 +16,12 @@ export interface PlotSeries {
    * convergence test on this window — the curve may alias, and the UI says
    * so. Absent in pre-adaptive persisted notebooks (treat as false). */
   undersampled?: boolean
-  /** True for static data series (signals): every point is already present
-   * and `text` cannot be resampled — pan/zoom re-windows client-side. */
+  /** True for static data series (signals, scatter): every point is already
+   * present and `text` cannot be resampled — pan/zoom re-windows client-side. */
   fixed?: boolean
+  /** True for scatter series: drawn as discrete markers instead of a connected
+   * line. Always `fixed` too. Absent (treat as false) for curves and signals. */
+  scatter?: boolean
   points: SamplePoint[]
 }
 

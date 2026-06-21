@@ -331,7 +331,8 @@ exact Gauss-Jordan routine.
 
 Builtins: `sqrt`, `sin`, `cos`, `tan`, `exp`, `ln`, `diff`/`D`, `subs`, `expand`,
 `N`, `precision`, `conj`, `re`, `im`, `abs`; data ops `map`, `len`, `size`,
-`slice`, `dot`, `vcat`/`hcat`, `linspace`, `plot`/`plot3d`, `struct`, `signal`,
+`slice`, `dot`, `vcat`/`hcat`, `linspace`, `plot`/`plot3d`/`scatter`, `struct`,
+`signal`,
 `mid`, `bound`; and matrix ops `det`, `inv`, `transpose`/`T`, `solve`, `rref`,
 `rank`, `nullspace`/`kernel`, `lu`, `qr`, `eye`/`identity`, `charpoly`,
 `eigenvalues`/`eig`, `eigenvectors`. Domain toolkits live behind **namespaces**
@@ -449,9 +450,15 @@ float noise.
 sqrt(5/3)
 >> stats.cor([1; 2; 3], [2; 4; 6])
 1
->> stats.linfit([0; 1; 2], [1; 2; 4])   # exact least-squares line
-struct(intercept = 5/6, slope = 3/2)
+>> m := stats.linfit([0; 1; 2], [1; 2; 4])   # exact least-squares line
+struct(intercept = 5/6, predict = <function(x)>, slope = 3/2)
+>> m.predict(4)                         # the fit is a function: predict, or plot
+41/6
 ```
+
+A single-predictor fit (`linfit`, `nlfit`) hands its curve back as a `predict`
+function, so it drops straight into a plot against the data:
+`plot(scatter(xs, ys), m.predict, x, a, b)`.
 
 Also `median`, `var`, `cov`, `quantile`, `rmse`/`r2`, and exact least-squares
 `polyfit`/`polyval`/`lsq` — Vandermonde *conditioning* is a float problem, and
@@ -504,7 +511,9 @@ values in the engine (the plot variable is quoted, like `diff`'s); the web
 frontend samples them at f64 and draws interactive curves and surfaces that
 **resample at full resolution** as you pan and zoom — sampling is the one
 deliberate exception to arbitrary precision, since pixels are already
-approximate and results never are.
+approximate and results never are. `scatter(x, y)` overlays measured data as
+markers in the same `plot` — `plot(scatter(xs, ys), fit, x, a, b)` — for
+comparing a regression against the points it was fit to.
 
 ### It's a language, not just a calculator
 

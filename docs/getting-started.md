@@ -55,6 +55,31 @@ cd app && npm install && npm run dev      # → http://localhost:5173
 In the web app, [`plot(...)`](reference/plotting.md) results are drawn as
 interactive plots that resample at full resolution as you pan and zoom.
 
+## The desktop app (offline)
+
+The same frontend also ships as a fully offline desktop app, built with
+[Tauri](https://tauri.app/): the engine runs as WebAssembly inside the
+operating system's own webview, so nothing talks to a server and the app — its
+documentation included, behind the in-app **Help** button — works with no
+network at all. Installers for macOS, Windows, and Linux are attached to each
+[GitHub release](https://github.com/dariusjlukas/surd/releases).
+
+To build it yourself (a [Rust toolchain](https://rustup.rs) and Node are the
+only requirements):
+
+```sh
+cd app
+npm install
+npm run tauri:dev      # dev window with hot reload (builds the wasm engine first)
+npm run tauri:build    # native installer in app/src-tauri/target/release/bundle/
+```
+
+surd follows [semantic versioning](https://semver.org/), with one version shared
+by the engine, the wasm binding, and the app. It's surfaced wherever you'd look:
+`surd --version` and the REPL banner on the CLI, and **Settings → About** in the
+app; [`CHANGELOG.md`](https://github.com/dariusjlukas/surd/blob/main/CHANGELOG.md)
+records what changed in each release.
+
 ## A two-minute tour
 
 ```text

@@ -57,8 +57,8 @@ first.
 12
 >> subs(x^2 + y, x, y)
 y + y^2
->> subs(sin(x) + x^2, x, pi)
-π^2 + sin(π)
+>> subs(sin(x) + x^2, x, 2)
+4 + sin(2)
 >> subs(diff(x^3, x), x, 2)      # evaluate a derivative at a point
 12
 ```

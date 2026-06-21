@@ -1,6 +1,6 @@
 [package]
 name = "surd-wasm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "wasm-bindgen bindings for the Surd CAS engine (browser frontend)"
 

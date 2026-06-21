@@ -186,9 +186,19 @@ fn linfit(x: &[Expr], y: &[Expr]) -> Result<Expr, String> {
         mean_of(y),
         mul(vec![int(-1), slope.clone(), mean_of(x)]),
     ]);
+    // The fitted line as a real function `x ↦ intercept + slope·x`, so it can
+    // be evaluated (`m.predict(2.5)`) and plotted (`plot(m.predict, x, a, b)`).
+    let predict = crate::eval::function_from_expr(
+        "x",
+        &add(vec![
+            intercept.clone(),
+            mul(vec![slope.clone(), Expr::Symbol("x".to_string())]),
+        ]),
+    )?;
     structure(vec![
         ("intercept".to_string(), intercept),
         ("slope".to_string(), slope),
+        ("predict".to_string(), predict),
     ])
 }
 

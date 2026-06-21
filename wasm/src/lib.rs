@@ -79,11 +79,20 @@ struct Series {
     /// True when even the finest sampling resolution failed its convergence
     /// test on this window — the curve may alias and the UI must say so.
     undersampled: bool,
-    /// True for static data series (signals): all points are already here,
-    /// and `text` cannot be resampled — the frontend re-windows client-side.
+    /// True for static data series (signals, scatter): all points are already
+    /// here, and `text` cannot be resampled — the frontend re-windows
+    /// client-side.
     fixed: bool,
+    /// True for scatter series: the frontend draws discrete markers instead of
+    /// a connected line. Omitted (defaults false) for curves and signals.
+    #[serde(skip_serializing_if = "is_false")]
+    scatter: bool,
     /// Sampled (x, y) pairs; y is null at poles / domain gaps.
     points: Vec<(f64, Option<f64>)>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize)]
@@ -158,36 +167,29 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
     if !(a.is_finite() && b.is_finite() && a < b) {
         return Err("plot: bounds must be finite with a < b".into());
     }
-    let mut exprs: Vec<&Expr> = Vec::new();
+    let mut series: Vec<Series> = Vec::new();
     for target in &args[..var_idx] {
         match target {
-            Expr::Matrix(rows) => exprs.extend(rows.iter().flatten()),
-            other => exprs.push(other),
+            // A scatter overlay: static (x, y) markers, drawn over the same
+            // window as the curves but never sampled.
+            Expr::Func(name, _) if name == "scatter" => {
+                series.push(scatter_series(target)?.0);
+            }
+            // A matrix flattens into one curve per entry.
+            Expr::Matrix(rows) => {
+                for expr in rows.iter().flatten() {
+                    series.push(sample_series(expr, var, a, b)?);
+                }
+            }
+            other => series.push(sample_series(other, var, a, b)?),
         }
-    }
-    if exprs.len() > MAX_SERIES {
-        return Err(format!(
-            "plot: too many curves ({}, max {})",
-            exprs.len(),
-            MAX_SERIES
-        ));
-    }
-    let mut series = Vec::with_capacity(exprs.len());
-    for expr in exprs {
-        let curve = f64eval::sample_adaptive(expr, var, a, b, PLOT_SAMPLES, PLOT_SAMPLES_MAX);
-        if curve.points.iter().all(|(_, y)| y.is_none()) {
+        if series.len() > MAX_SERIES {
             return Err(format!(
-                "plot: '{}' never evaluates to a real number on this interval",
-                expr
+                "plot: too many curves ({}, max {})",
+                series.len(),
+                MAX_SERIES
             ));
         }
-        series.push(Series {
-            latex: latex::to_latex(expr),
-            text: format!("{}", expr),
-            undersampled: curve.undersampled,
-            fixed: false,
-            points: curve.points,
-        });
     }
     Ok(PlotData {
         var: var.to_string(),
@@ -196,6 +198,132 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
         sig: None,
         series,
     })
+}
+
+/// Sample one function expression into a curve series over `[a, b]`.
+fn sample_series(expr: &Expr, var: &str, a: f64, b: f64) -> Result<Series, String> {
+    let curve = f64eval::sample_adaptive(expr, var, a, b, PLOT_SAMPLES, PLOT_SAMPLES_MAX);
+    if curve.points.iter().all(|(_, y)| y.is_none()) {
+        return Err(format!(
+            "plot: '{}' never evaluates to a real number on this interval",
+            expr
+        ));
+    }
+    Ok(Series {
+        latex: latex::to_latex(expr),
+        text: format!("{}", expr),
+        undersampled: curve.undersampled,
+        fixed: false,
+        scatter: false,
+        points: curve.points,
+    })
+}
+
+/// Build a static marker series from a `scatter(xvec, yvec)` value. Also
+/// returns the (min, max) of its x values, for deriving a bare-scatter window.
+fn scatter_series(tag: &Expr) -> Result<(Series, f64, f64), String> {
+    let Expr::Func(_, sargs) = tag else {
+        return Err("plot: malformed scatter value".into());
+    };
+    if sargs.len() != 2 {
+        return Err("plot: malformed scatter value".into());
+    }
+    let xs = mat_entries(&sargs[0])?;
+    let ys = mat_entries(&sargs[1])?;
+    let mut points = Vec::with_capacity(xs.len());
+    let mut xlo = f64::INFINITY;
+    let mut xhi = f64::NEG_INFINITY;
+    for (xe, ye) in xs.iter().zip(ys.iter()) {
+        let x = f64eval::eval_f64(xe, &[])
+            .map_err(|e| format!("scatter: x value is not a number ({})", e))?;
+        if !x.is_finite() {
+            return Err("scatter: x values must be finite".into());
+        }
+        // A non-finite y is a gap (no marker), mirroring poles in curves.
+        let y = f64eval::eval_f64(ye, &[]).ok().filter(|v| v.is_finite());
+        xlo = xlo.min(x);
+        xhi = xhi.max(x);
+        points.push((x, y));
+    }
+    Ok((
+        Series {
+            latex: r"\{(x_i,\,y_i)\}".to_string(),
+            text: "scatter".to_string(),
+            undersampled: false,
+            fixed: true,
+            scatter: true,
+            points,
+        },
+        xlo,
+        xhi,
+    ))
+}
+
+/// Entries of a vector value (a 1×n or n×1 matrix), in order.
+fn mat_entries(e: &Expr) -> Result<Vec<Expr>, String> {
+    let Expr::Matrix(rows) = e else {
+        return Err("scatter expects vectors (1×n or n×1 matrices)".into());
+    };
+    if rows.len() == 1 {
+        Ok(rows[0].clone())
+    } else if rows.iter().all(|r| r.len() == 1) {
+        Ok(rows.iter().map(|r| r[0].clone()).collect())
+    } else {
+        Err("scatter expects vectors (1×n or n×1 matrices)".into())
+    }
+}
+
+/// A drawing window for a bare scatter: the x-extent with 5% padding, with a
+/// unit of breathing room when every point shares one x.
+fn pad_window(lo: f64, hi: f64) -> (f64, f64) {
+    if lo < hi {
+        let m = (hi - lo) * 0.05;
+        (lo - m, hi + m)
+    } else {
+        let p = if lo.abs() > 0.0 { lo.abs() * 0.5 } else { 1.0 };
+        (lo - p, lo + p)
+    }
+}
+
+/// A `plot(d1, ..., dk)` over scatter data only: the points are the data,
+/// drawn as markers over a window derived from their x-extent. `None` if `e`
+/// isn't one.
+fn plot_scatter_data(e: &Expr) -> Option<Result<PlotData, String>> {
+    let Expr::Func(name, args) = e else {
+        return None;
+    };
+    if name != "plotscatter" || args.is_empty() {
+        return None;
+    }
+    Some((|| {
+        if args.len() > MAX_SERIES {
+            return Err(format!(
+                "plot: too many series ({}, max {})",
+                args.len(),
+                MAX_SERIES
+            ));
+        }
+        let mut series = Vec::with_capacity(args.len());
+        let mut xlo = f64::INFINITY;
+        let mut xhi = f64::NEG_INFINITY;
+        for arg in args {
+            let (s, lo, hi) = scatter_series(arg)?;
+            xlo = xlo.min(lo);
+            xhi = xhi.max(hi);
+            series.push(s);
+        }
+        if !(xlo.is_finite() && xhi.is_finite()) {
+            return Err("scatter: no finite points to plot".into());
+        }
+        let (a, b) = pad_window(xlo, xhi);
+        Ok(PlotData {
+            var: "x".to_string(),
+            a,
+            b,
+            sig: None,
+            series,
+        })
+    })())
 }
 
 /// A `plot(s1, ..., sk)` over signals: the samples are the data — no
@@ -234,6 +362,7 @@ fn plot_signal_data(
             text: format!("{}", arg),
             undersampled: surd::signal::plot_decimated(s, PLOT_SAMPLES_MAX),
             fixed: true,
+            scatter: false,
             points: surd::signal::plot_points(s, PLOT_SAMPLES_MAX),
         });
     }
@@ -500,6 +629,7 @@ impl Session {
                 };
                 let curve = plot_data(&value)
                     .map(|r| r.map(|p| (p, Vec::new())))
+                    .or_else(|| plot_scatter_data(&value).map(|r| r.map(|p| (p, Vec::new()))))
                     .or_else(|| plot_signal_data(&value, self.next_plot_id));
                 match (curve, plot3d_data(&value)) {
                     (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
@@ -879,6 +1009,75 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot(a*x, a*x^2, x, 0, 1)")).unwrap();
         assert_eq!(v["plot"]["series"][0]["text"], "2*x");
+    }
+
+    #[test]
+    fn scatter_data_overlays_and_auto_windows() {
+        let mut s = Session::new();
+        s.eval("xs := [1, 2, 3, 4]");
+        s.eval("ys := [2, 4, 6, 8]");
+
+        // Bare scatter draws markers over a window padded around the x-extent.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("plot(scatter(xs, ys))")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["kind"], "plot");
+        let series = v["plot"]["series"].as_array().unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0]["scatter"], true);
+        assert_eq!(series[0]["fixed"], true);
+        let pts = series[0]["points"].as_array().unwrap();
+        assert_eq!(pts.len(), 4);
+        assert_eq!(pts[0][0].as_f64().unwrap(), 1.0);
+        assert_eq!(pts[3][1].as_f64().unwrap(), 8.0);
+        // 5% padding on a span of 3 → [0.85, 4.15].
+        assert!((v["plot"]["a"].as_f64().unwrap() - 0.85).abs() < 1e-9);
+        assert!((v["plot"]["b"].as_f64().unwrap() - 4.15).abs() < 1e-9);
+
+        // A scatter overlaid with a fitted curve: two series on shared axes,
+        // one marker series and one (sampled) line series.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot(scatter(xs, ys), 2*x, x, 0, 5)")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        let series = v["plot"]["series"].as_array().unwrap();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0]["scatter"], true);
+        // The curve series carries no scatter flag (omitted) and is sampled.
+        assert!(series[1].get("scatter").is_none());
+        assert_eq!(series[1]["text"], "2*x");
+        assert!(series[1]["points"].as_array().unwrap().len() >= 601);
+    }
+
+    #[test]
+    fn fit_predict_overlays_on_its_data() {
+        let mut s = Session::new();
+        s.eval("xs := [0, 1, 2, 3]");
+        s.eval("ys := [1, 3, 5, 7]");
+        s.eval("m := stats.linfit(xs, ys)");
+
+        // A fit's `predict` is a real function: it plots both applied to the
+        // variable, m.predict(x), and bare, m.predict (inlined as its body).
+        for curve in ["m.predict(x)", "m.predict"] {
+            let v: serde_json::Value =
+                serde_json::from_str(&s.eval(&format!("plot(scatter(xs, ys), {curve}, x, 0, 3)")))
+                    .unwrap();
+            assert_eq!(v["ok"], true, "{}: {}", curve, v["error"]);
+            let series = v["plot"]["series"].as_array().unwrap();
+            assert_eq!(series.len(), 2, "{curve}");
+            assert_eq!(series[0]["scatter"], true, "{curve}");
+            // The fitted line y = 1 + 2x passes through (0,1) and (3,7).
+            let pts = series[1]["points"].as_array().unwrap();
+            assert!((pts[0][1].as_f64().unwrap() - 1.0).abs() < 1e-9, "{curve}");
+            let last = pts.last().unwrap();
+            assert!((last[1].as_f64().unwrap() - 7.0).abs() < 1e-9, "{curve}");
+        }
+    }
+
+    #[test]
+    fn scatter_rejects_mismatched_vectors() {
+        let mut s = Session::new();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot(scatter([1, 2, 3], [1, 2]))")).unwrap();
+        assert_eq!(v["ok"], false);
     }
 
     #[test]

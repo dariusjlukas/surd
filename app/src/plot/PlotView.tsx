@@ -47,6 +47,12 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   const yManualRef = useRef(false)
 
   const initialPoints = useMemo(() => plot.series.map((s) => s.points), [plot])
+  /** Per-series marker flags (see PlotSeries.scatter) — drives the painter and
+   * the probe's snap mode; stable for the life of a plot. */
+  const scatterFlags = useMemo(
+    () => plot.series.map((s) => s.scatter ?? false),
+    [plot],
+  )
   const [points, setPoints] = useState<SamplePoint[][]>(initialPoints)
   /** Per-series honesty flags (see PlotSeries.undersampled), updated with
    * every resample. */
@@ -95,8 +101,8 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   }, [])
 
   useEffect(() => {
-    painterRef.current?.setData(points)
-  }, [points, themeKey])
+    painterRef.current?.setData(points, scatterFlags)
+  }, [points, scatterFlags, themeKey])
 
   useEffect(() => {
     painterRef.current?.setView(
@@ -109,22 +115,32 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
   // -- pan / zoom → debounced engine resample -------------------------------
   const requestResample = useCallback(
     (a: number, b: number) => {
-      const allFixed = plot.series.every((s) => s.fixed)
-      // Signal plots with a live registry id refine by re-decimating the
-      // zoomed window from the original data; without one (session restarted,
-      // registry evicted, old persisted plot) the shipped envelope stands.
-      if (allFixed && plot.sig == null) return
+      // Fixed series (signals, scatter) never resample by text. A signal plot
+      // with a live registry id re-decimates the zoomed window from the
+      // original data; scatter (and evicted/old signal plots) keep their points
+      // and re-window the camera only. So the engine is needed only for sampled
+      // curves or a live signal registry — otherwise pan/zoom is camera-only.
+      const needsEngine = plot.series.some((s) => !s.fixed) || plot.sig != null
+      if (!needsEngine) return
       window.clearTimeout(debounceRef.current)
       debounceRef.current = window.setTimeout(() => {
-        const sampled = allFixed
-          ? plot.series.map((_, i) => resampleSignal(plot.sig!, i, a, b))
-          : plot.series.map((s) => resample(s.text, plot.var, a, b))
+        const sampled = plot.series.map((s, i) => {
+          if (s.fixed)
+            return plot.sig != null
+              ? resampleSignal(plot.sig, i, a, b)
+              : Promise.resolve({
+                  ok: true,
+                  points: initialPoints[i],
+                  undersampled: false,
+                })
+          return resample(s.text, plot.var, a, b)
+        })
         Promise.all(sampled)
           .then((all) => {
-            setPoints(all.map((r) => r.points))
-            setUndersampled(all.map((r) => r.undersampled))
+            setPoints(all.map((r) => r.points ?? []))
+            setUndersampled(all.map((r) => r.undersampled ?? false))
             if (!yManualRef.current)
-              setYWin(quantileDomain(all.flatMap((r) => r.points)))
+              setYWin(quantileDomain(all.flatMap((r) => r.points ?? [])))
           })
           .catch(() => {
             // engine busy or restarted — stale samples stay visible, the next
@@ -132,7 +148,7 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
           })
       }, RESAMPLE_DEBOUNCE_MS)
     },
-    [plot, resample, resampleSignal],
+    [plot, resample, resampleSignal, initialPoints],
   )
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -154,6 +170,22 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
     const py = e.clientY - rect.top
     const xData = win.a + (px / size.w) * (win.b - win.a)
     const candidates = points.flatMap((pts, si) => {
+      if (pts.length === 0) return []
+      // Scatter: snap to the nearest actual marker by 2-D screen distance —
+      // the points are few and unevenly spaced, so the x-index shortcut below
+      // (which assumes uniform sampling) doesn't apply.
+      if (scatterFlags[si]) {
+        let best: { x: number; y: number; si: number; dPx: number } | null =
+          null
+        for (const [xs, ys] of pts) {
+          if (ys === null) continue
+          const sx = ((xs - win.a) / (win.b - win.a)) * size.w
+          const sy = size.h - ((ys - yWin[0]) / (yWin[1] - yWin[0])) * size.h
+          const dPx = Math.hypot(sx - px, sy - py)
+          if (best === null || dPx < best.dPx) best = { x: xs, y: ys, si, dPx }
+        }
+        return best ? [best] : []
+      }
       if (pts.length < 2) return []
       const span = pts[pts.length - 1][0] - pts[0][0]
       const idx = Math.round(((xData - pts[0][0]) / span) * (pts.length - 1))

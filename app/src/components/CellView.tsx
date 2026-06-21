@@ -245,13 +245,24 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
         ) : (
           <pre
             onClick={open}
-            className="min-w-0 flex-1 cursor-text whitespace-pre-wrap font-mono text-sm text-muted"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                open()
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            title="edit (or press Enter)"
+            className="min-w-0 flex-1 cursor-text whitespace-pre-wrap rounded font-mono text-sm text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
           >
-            <span className="select-none text-accent">&gt;&gt; </span>
+            <span aria-hidden="true" className="select-none text-accent">
+              &gt;&gt;{' '}
+            </span>
             {cell.src}
           </pre>
         )}
-        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
+        <span className="row-actions flex shrink-0 gap-1">
           {ready && (
             <CellButton
               label={
@@ -412,7 +423,7 @@ function DataCell({ cell }: { cell: Cell }) {
           <span className="select-none text-accent">⇣ </span>
           {cell.src}
         </pre>
-        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
+        <span className="row-actions flex shrink-0 gap-1">
           {ready && (
             <CellButton
               label="re-import this data and re-evaluate everything below"
@@ -492,7 +503,7 @@ function MarkdownCell({ cell }: { cell: Cell }) {
         >
           <MarkdownView src={cell.src} />
         </div>
-        <span className="invisible flex shrink-0 gap-1 group-hover:visible">
+        <span className="row-actions flex shrink-0 gap-1">
           <CellButton
             label="edit (double-click also works)"
             onClick={() => setEditing(true)}

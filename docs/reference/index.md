@@ -18,6 +18,20 @@ bare names.
 | [`tan(x)`](elementary.md#sin-cos-tan) | Tangent |
 | [`abs(x)`](elementary.md#abs) | Absolute value (modulus for complex `x`) |
 
+## Special functions
+
+Exposed globally alongside `sin`/`exp`. They fold to exact values where one
+exists (`gamma` of a positive integer is a factorial, of a half-integer a
+multiple of √π) and otherwise evaluate under [`N(...)`](numeric.md#n). See
+[special functions](stats.md#special-functions).
+
+| Function | Description |
+| --- | --- |
+| [`erf(x)` / `erfc(x)`](stats.md#special-functions) | Error function and its complement |
+| [`gamma(x)`](stats.md#special-functions) | Gamma function |
+| [`lgamma(x)`](stats.md#special-functions) | Log-gamma (`x > 0`) |
+| [`beta(a, b)`](stats.md#special-functions) | Beta function |
+
 ## Calculus and symbolic manipulation
 
 | Function | Description |
@@ -69,7 +83,7 @@ see [Signals](signals.md).
 | [`mid(s)`](signals.md#the-boundary-is-explicit) | Midpoints, back to exact-land |
 | [`bound(s, i?)`](signals.md#the-boundary-is-explicit) | Certified max │true − mid│ |
 | [`dsp.fft(s)` / `dsp.ifft(f)`](signals.md#operations) | Certified radix-2 FFT |
-| [`dsp.pad(s, n)`](signals.md#operations) | Zero-pad to a power of two |
+| [`dsp.pad(s, n)`](signals.md#operations) | Zero-pad a signal (never truncates) |
 | [`dsp.peak(s)` / `dsp.rms(s)`](signals.md#operations) | Certified reductions |
 
 ## Linear algebra
@@ -116,19 +130,57 @@ see [Signals](signals.md).
 | [`stats.std(v)`](stats.md#statsvar-statsstd) | Sample standard deviation (an exact surd) |
 | [`stats.cov(a, b)`](stats.md#statscov-statscor) | Sample covariance |
 | [`stats.cor(a, b)`](stats.md#statscov-statscor) | Pearson correlation (exactly ±1 for linear data) |
-| [`stats.linfit(x, y)`](stats.md#statslinfit) | Exact least-squares line → `struct(intercept, slope)` |
+| [`stats.linfit(x, y)`](stats.md#statslinfit) | Exact least-squares line → `struct(intercept, slope, predict)` |
 | [`stats.quantile(v, q)`](stats.md#statsquantile) | q-th quantile, exact interpolation |
 | [`stats.rmse(a, b)`](stats.md#statsrmse-statsr2) | Root mean squared error (exact surd) |
 | [`stats.r2(y, yhat)`](stats.md#statsrmse-statsr2) | Coefficient of determination, exact |
 | [`stats.polyfit(x, y, deg)`](stats.md#statspolyfit-statspolyval) | Exact least-squares polynomial |
 | [`stats.polyval(c, t)`](stats.md#statspolyfit-statspolyval) | Evaluate a coefficient vector (scalar, symbol, or elementwise) |
 | [`stats.lsq(A, b)`](stats.md#statslsq) | General exact least squares |
+| [`stats.regress(X, y)`](stats.md#statsregress) | OLS with full inference → fitted-model struct |
+| [`stats.wls(X, y, w)`](stats.md#statswls) | Weighted least squares |
+| [`stats.ridge(X, y, lambda)`](stats.md#statsridge) | L2-penalized (ridge) regression |
+| [`stats.logit(X, y)`](stats.md#statslogit) | Logistic regression (IRLS) |
+| [`stats.nlfit(model, [params], x, y, init?)`](stats.md#statsnlfit) | Nonlinear least squares (exact symbolic Jacobian) |
+| [`stats.predict(model, Xnew, level?)`](stats.md#statspredict) | Predictions with confidence / prediction intervals |
+| [`stats.robustse(model, X, type?)`](stats.md#statsrobustse) | Heteroskedasticity-consistent (HC0–HC3) standard errors |
+| [`stats.anova(reduced, full)`](stats.md#statsanova) | Nested-model F-test |
+| [`stats.dwtest(model)`](stats.md#regression-assumption-tests) | Durbin–Watson autocorrelation test |
+| [`stats.bptest(model)`](stats.md#regression-assumption-tests) | Breusch–Pagan heteroskedasticity test |
+| [`stats.jbtest(model)`](stats.md#regression-assumption-tests) | Jarque–Bera normality test |
+
+Fit from a data table with a [formula](data.md#model-formulas-the-operator)
+(`stats.regress(y ~ x1 + x2, data)`) instead of an explicit `(X, y)`.
+
+## Probability distributions (the `stats` namespace)
+
+Normal, Student-t, χ², and F — each a CDF, PDF, and inverse CDF (quantile),
+symbolic until [`N(...)`](numeric.md#n). See
+[distributions](stats.md#probability-distributions).
+
+| Function | Description |
+| --- | --- |
+| [`stats.normcdf` / `normpdf` / `norminv`](stats.md#probability-distributions) | Normal (default mean 0, std 1) |
+| [`stats.tcdf` / `tpdf` / `tinv`](stats.md#probability-distributions) | Student-t (df ν) |
+| [`stats.chisqcdf` / `chisqpdf` / `chisqinv`](stats.md#probability-distributions) | Chi-square (df k) |
+| [`stats.fcdf` / `fpdf` / `finv`](stats.md#probability-distributions) | F (df d1, d2) |
+
+## Data preparation (the `data` namespace)
+
+| Function | Description |
+| --- | --- |
+| [`data.center(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | Subtract the mean |
+| [`data.standardize(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | Z-scores `(vᵢ − μ)/σ`, exact surds |
+| [`data.rescale(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | Min–max rescale to `[0, 1]` |
+| [`data.dummy(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | One-hot encode a categorical column |
+| [`data.groupby(keys, values)`](data.md#the-data-namespace-preparing-data-for-a-model) | Aggregate `values` by levels of `keys` |
 
 ## Plotting
 
 | Function | Description |
 | --- | --- |
 | [`plot(f1, ..., fk, x, a, b)`](plotting.md#plot) | One or more curves in `x` over `[a, b]` |
+| [`scatter(x, y)`](plotting.md#scatter) | Data points as markers, to overlay on a plot |
 | [`plot3d(f, x, a, b, y, c, d)`](plotting.md#plot3d) | Surface z = f(x, y) over `[a, b]` × `[c, d]` |
 
 ## Structs

@@ -91,10 +91,13 @@ Scoped out of the prototype on purpose — this is where an exact CAS balloons:
   evaluation replays them).
 - **No indexed assignment** — `v[1] := 5` is not a thing; values are
   immutable. Build with `map`, `vcat`, `hcat`.
-- **More statistics** — the [`stats` namespace](reference/stats.md) covers
-  the univariate basics, quantiles, fit metrics, and exact least squares
-  (`linfit`/`polyfit`/`lsq`); weighted regression and anything iterative
-  (logistic, optimizers) are future work.
+- **More statistics** — the [`stats` namespace](reference/stats.md) now covers
+  the univariate basics, quantiles, fit metrics, exact least squares
+  (`linfit`/`polyfit`/`lsq`), OLS with full inference (`regress`), weighted and
+  penalized regression (`wls`/`ridge`), logistic regression (`logit`), nonlinear
+  least squares (`nlfit`), the standard probability distributions, and
+  regression diagnostics; mixed/hierarchical models and time-series methods are
+  still future work.
 
 ## Testing philosophy
 

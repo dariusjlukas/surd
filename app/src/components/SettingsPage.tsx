@@ -6,6 +6,7 @@ import { faArrowLeft } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { ACCENT_THEMES, useSettings, type ThemeMode } from '../state/settings'
 import { useNotebook } from '../state/store'
+import { ShortcutsList } from './ShortcutsList'
 
 const MODES: { id: ThemeMode; label: string }[] = [
   { id: 'light', label: 'Light' },
@@ -95,6 +96,10 @@ export function SettingsPage() {
             value={settings.autoScroll}
             onChange={settings.setAutoScroll}
           />
+        </Section>
+
+        <Section title="Keyboard shortcuts">
+          <ShortcutsList />
         </Section>
 
         <Section title="About">

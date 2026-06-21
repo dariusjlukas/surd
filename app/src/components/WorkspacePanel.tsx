@@ -37,7 +37,15 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin)
 }
 
-export function WorkspacePanel({ width }: { width: number }) {
+export function WorkspacePanel({
+  width,
+  mobile,
+}: {
+  width: number
+  /** Render as a fixed overlay drawer (phone layout) instead of a pinned,
+   * resizable column. */
+  mobile?: boolean
+}) {
   const workspace = useNotebook((s) => s.workspace)
   const importData = useNotebook((s) => s.importData)
   const exportData = useNotebook((s) => s.exportData)
@@ -113,8 +121,12 @@ export function WorkspacePanel({ width }: { width: number }) {
 
   return (
     <aside
-      style={{ width }}
-      className="flex shrink-0 flex-col border-l border-edge"
+      style={mobile ? undefined : { width }}
+      className={`flex flex-col border-l border-edge ${
+        mobile
+          ? 'fixed inset-y-0 right-0 z-40 w-[min(20rem,85vw)] bg-app shadow-xl'
+          : 'shrink-0'
+      }`}
     >
       <div className="flex items-center justify-between border-b border-edge px-4 py-2">
         <span className="text-xs font-medium uppercase tracking-wide text-faint">

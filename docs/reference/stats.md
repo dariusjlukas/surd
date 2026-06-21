@@ -86,17 +86,38 @@ Zero-variance data is an error (the correlation is undefined).
 stats.linfit(x, y)
 ```
 
-Exact least-squares line `y = intercept + slope·x`, as a struct.
+Exact least-squares line `y = intercept + slope·x`, as a struct with fields
+`intercept`, `slope`, and `predict` — the fitted line as a function (see
+[Fitted models](#fitted-models)).
 
 ```text
->> stats.linfit([0; 1; 2], [1; 2; 4])
-struct(intercept = 5/6, slope = 3/2)
 >> fit := stats.linfit([1; 2; 3; 4], [3; 5; 7; 9])
+struct(intercept = 1, predict = <function(x)>, slope = 2)
 >> fit.slope
 2
+>> fit.predict(10)        # the line at x = 10
+21
 ```
 
 All x values equal is an error (the line is vertical).
+
+### Fitted models
+
+A single-predictor fit — `stats.linfit` and `stats.nlfit` — returns a `predict`
+field holding the fitted curve as an ordinary **function** of the predictor.
+That makes the model directly usable two ways:
+
+```text
+>> m := stats.linfit(xs, ys)
+>> m.predict(2.5)                                  # predict at a new point
+>> plot(scatter(xs, ys), m.predict, x, 0, 10)      # overlay on the data
+```
+
+`m.predict` plots like any curve (bare, or applied as `m.predict(x)`). For
+`nlfit` the fitted coefficients are f64, so `predict` carries their exact
+rational form — wrap a point prediction in `N(…)` for a decimal. The
+multi-predictor models (`regress`, `wls`, `ridge`, `logit`) instead predict
+through [`stats.predict`](#statspredict), which takes a design matrix.
 
 ## `stats.quantile`
 
@@ -433,6 +454,7 @@ from the linearized covariance σ̂²·(JᵀJ)⁻¹ at the solution.
 | `se`, `tstat`, `pvalue` | asymptotic standard error, t-statistic, two-sided p-value |
 | `residuals`, `rss`, `sigma2` | residuals, residual sum of squares, σ̂² = RSS/(n−p) |
 | `jacobian` | the **exact symbolic** derivatives ∂f/∂θⱼ used by the fit |
+| `predict` | the fitted model as a function of the predictor (see [Fitted models](#fitted-models)) |
 | `iterations`, `converged` | iterations taken and whether the step/cost tolerance was met |
 
 ```text

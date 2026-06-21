@@ -15,6 +15,28 @@ import type { SamplePoint } from '../engine/types'
  * extrudes screen-space quads and antialiases like any other triangle. */
 const CURVE_WIDTH_PX = 2
 
+/** Scatter marker diameter in CSS pixels. */
+const MARKER_PX = 7
+
+/** A soft-edged disc texture for round markers, built once and shared by every
+ * scatter material (PointsMaterial draws textured square sprites; the alpha
+ * disc is what makes them read as circles). */
+let discTexture: THREE.Texture | null = null
+function discSprite(): THREE.Texture {
+  if (discTexture) return discTexture
+  const s = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = s
+  const ctx = canvas.getContext('2d')!
+  ctx.beginPath()
+  ctx.arc(s / 2, s / 2, s / 2 - 1, 0, Math.PI * 2)
+  ctx.fillStyle = '#fff'
+  ctx.fill()
+  const tex = new THREE.CanvasTexture(canvas)
+  discTexture = tex
+  return tex
+}
+
 export interface ViewWindow {
   a: number // x min
   b: number // x max
@@ -68,8 +90,11 @@ export class LinePlot {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
     this.renderer.setSize(width, height, false)
     this.size.set(width, height)
+    // Only fat-line materials track the canvas resolution; scatter markers are
+    // sized in pixels and need no update.
     for (const child of this.curve.children) {
-      ;((child as Line2).material as LineMaterial).resolution.copy(this.size)
+      if (child instanceof Line2)
+        (child.material as LineMaterial).resolution.copy(this.size)
     }
     this.render()
   }
@@ -88,13 +113,36 @@ export class LinePlot {
   }
 
   /** Replace the curves — one entry per series, colored by the shared
-   * palette (see seriesColorToken). Samples split into continuous runs at
-   * nulls so poles and domain gaps break the line instead of bridging it. */
-  setData(series: SamplePoint[][]) {
+   * palette (see seriesColorToken). A series flagged in `scatter` is drawn as
+   * discrete markers; the rest split into continuous runs at nulls so poles
+   * and domain gaps break the line instead of bridging it. */
+  setData(series: SamplePoint[][], scatter: boolean[] = []) {
     disposeChildren(this.curve)
     series.forEach((points, i) => {
+      const color = themeColor(seriesColorToken(i), 0x7dd3fc).getHex()
+      if (scatter[i]) {
+        const positions: number[] = []
+        for (const [x, y] of points) if (y !== null) positions.push(x, y, 0)
+        if (positions.length) {
+          const g = new THREE.BufferGeometry()
+          g.setAttribute(
+            'position',
+            new THREE.Float32BufferAttribute(positions, 3),
+          )
+          const m = new THREE.PointsMaterial({
+            color,
+            size: MARKER_PX * (window.devicePixelRatio || 1),
+            sizeAttenuation: false,
+            map: discSprite(),
+            alphaTest: 0.5,
+            transparent: true,
+          })
+          this.curve.add(new THREE.Points(g, m))
+        }
+        return
+      }
       const material = new LineMaterial({
-        color: themeColor(seriesColorToken(i), 0x7dd3fc).getHex(),
+        color,
         linewidth: CURVE_WIDTH_PX,
       })
       material.resolution.copy(this.size)

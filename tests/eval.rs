@@ -803,12 +803,25 @@ fn correlation_of_linear_data_is_exactly_one() {
 fn linfit_is_exact_least_squares() {
     assert_eq!(
         ev("stats.linfit([1; 2; 3; 4], [3; 5; 7; 9])"),
-        "struct(intercept = 1, slope = 2)"
+        "struct(intercept = 1, predict = <function(x)>, slope = 2)"
     );
     // Hand-checked OLS: x̄=1, ȳ=7/3, Sxx=2, Sxy=3.
     assert_eq!(
         ev("stats.linfit([0; 1; 2], [1; 2; 4])"),
-        "struct(intercept = 5/6, slope = 3/2)"
+        "struct(intercept = 5/6, predict = <function(x)>, slope = 3/2)"
+    );
+    // `predict` is the fitted line as a real function: it evaluates exactly…
+    assert_eq!(
+        ev_all(&[
+            "m := stats.linfit([1; 2; 3; 4], [3; 5; 7; 9])",
+            "m.predict(10)",
+        ]),
+        "21"
+    );
+    // …and a symbolic argument gives back the line, so it plots like any curve.
+    assert_eq!(
+        ev_all(&["m := stats.linfit([0; 1; 2], [1; 2; 4])", "m.predict(x)"]),
+        "5/6 + 3/2*x"
     );
 }
 
@@ -1415,6 +1428,20 @@ fn nlfit_linear_model_matches_ols() {
     let f = "stats.nlfit(a + b*x, [a, b], [1; 2; 3; 4; 5], [2; 4; 5; 4; 5], [0, 0])";
     assert!(ev(&format!("{}.coefficients[1]", f)).starts_with("2.19999999"));
     assert!(ev(&format!("{}.coefficients[2]", f)).starts_with("0.60000000"));
+}
+
+#[test]
+fn nlfit_predict_is_the_fitted_curve() {
+    // The fitted a·exp(b·x) (a≈2, b≈1/2) comes back as a `predict` function:
+    // at x = 0 it is a·exp(0) = a ≈ 2…
+    let f = "m := stats.nlfit(a*exp(b*x), [a, b], [0; 1; 2; 3; 4], \
+             [2; 3.29744; 5.43656; 8.96338; 14.7781], [1, 1])";
+    assert_eq!(
+        ev_all(&[f, "m.predict(0) > 19/10 and m.predict(0) < 21/10"]),
+        "true"
+    );
+    // …and a symbolic argument reconstructs the fitted model expression.
+    assert!(ev_all(&[f, "m.predict(x)"]).contains("exp("));
 }
 
 #[test]

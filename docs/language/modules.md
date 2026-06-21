@@ -60,4 +60,5 @@ with arguments: dsp.dft(...)
 | Namespace | Contents |
 | --- | --- |
 | [`dsp`](../reference/dsp.md) | Exact digital signal processing: DFT, convolution |
-| [`stats`](../reference/stats.md) | Exact statistics: mean through least-squares fits |
+| [`stats`](../reference/stats.md) | Exact statistics: mean through regression and distributions |
+| [`data`](../reference/data.md) | Data preparation for models: standardize, dummy-encode, group-by |

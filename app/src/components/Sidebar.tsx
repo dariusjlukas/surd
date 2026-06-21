@@ -16,7 +16,15 @@ import { useSettings } from '../state/settings'
 import { untitledName, useNotebook, type Notebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
 
-export function Sidebar({ width }: { width: number }) {
+export function Sidebar({
+  width,
+  mobile,
+}: {
+  width: number
+  /** Render as a fixed overlay drawer (phone layout) instead of a pinned,
+   * resizable column. */
+  mobile?: boolean
+}) {
   const notebooks = useNotebook((s) => s.notebooks)
   const activeId = useNotebook((s) => s.activeId)
   const createNotebook = useNotebook((s) => s.createNotebook)
@@ -40,8 +48,12 @@ export function Sidebar({ width }: { width: number }) {
 
   return (
     <aside
-      style={{ width }}
-      className="flex shrink-0 flex-col border-r border-edge bg-surface/40"
+      style={mobile ? undefined : { width }}
+      className={`flex flex-col border-r border-edge ${
+        mobile
+          ? 'fixed inset-y-0 left-0 z-40 w-[min(18rem,85vw)] bg-app shadow-xl'
+          : 'shrink-0 bg-surface/40'
+      }`}
     >
       <div className="flex items-center justify-between border-b border-edge px-3 py-2">
         <span className="text-xs font-medium uppercase tracking-wide text-faint">
@@ -134,8 +146,17 @@ function NotebookRow({ nb, active }: { nb: Notebook; active: boolean }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-current={active ? 'page' : undefined}
       onClick={() => selectNotebook(nb.id)}
       onDoubleClick={startRename}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          selectNotebook(nb.id)
+        }
+      }}
       onContextMenu={(e) =>
         openContextMenu(e, [
           {
@@ -150,7 +171,7 @@ function NotebookRow({ nb, active }: { nb: Notebook; active: boolean }) {
         ])
       }
       title={`${nb.cells.length} cell${nb.cells.length === 1 ? '' : 's'} — double-click to rename`}
-      className={`group mx-1 flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
+      className={`group mx-1 flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 ${
         active
           ? 'bg-accent/10 font-medium text-accent'
           : 'text-muted hover:bg-hover/60 hover:text-ink'
@@ -186,7 +207,7 @@ function RowButton({
         e.stopPropagation() // don't also select the notebook
         onClick()
       }}
-      className="hidden rounded px-1 text-xs text-faint hover:bg-hover hover:text-ink group-hover:block"
+      className="nb-row-action hidden rounded px-1 text-xs text-faint hover:bg-hover hover:text-ink group-hover:block"
     >
       {children}
     </button>

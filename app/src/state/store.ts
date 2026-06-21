@@ -128,9 +128,16 @@ interface NotebookState {
   showSidebar: boolean
   /** Settings view replaces the notebook area. Not persisted. */
   showSettings: boolean
+  /** Which side panel is open as an overlay on phone-width screens. The
+   * desktop `showSidebar`/`showWorkspace` prefs are pinned columns and don't
+   * apply on mobile, so this is a separate, session-only (unpersisted) state
+   * that starts closed — a phone gets a clean single column on first load. */
+  mobileDrawer: 'sidebar' | 'workspace' | null
   toggleWorkspace(): void
   toggleSidebar(): void
   toggleSettings(): void
+  toggleMobileDrawer(which: 'sidebar' | 'workspace'): void
+  closeMobileDrawer(): void
 
   boot(): Promise<void>
   submit(src: string): Promise<void>
@@ -345,10 +352,16 @@ export const useNotebook = create<NotebookState>()(
         showWorkspace: true,
         showSidebar: true,
         showSettings: false,
+        mobileDrawer: null,
         toggleWorkspace: () =>
           set((s) => ({ showWorkspace: !s.showWorkspace })),
         toggleSidebar: () => set((s) => ({ showSidebar: !s.showSidebar })),
         toggleSettings: () => set((s) => ({ showSettings: !s.showSettings })),
+        toggleMobileDrawer: (which) =>
+          set((s) => ({
+            mobileDrawer: s.mobileDrawer === which ? null : which,
+          })),
+        closeMobileDrawer: () => set({ mobileDrawer: null }),
 
         async boot() {
           const transcript = transcriptOf(active().cells)
