@@ -9,6 +9,8 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-22
+
 ### Added
 
 - 3D scatter plots: `scatter3d(x, y, z)` draws three equal-length vectors as
@@ -51,6 +53,7 @@ First tagged release. Exact-by-default computer-algebra engine with:
 - Numerical tooling: GLMs, penalized/weighted regression, nonlinear least
   squares with an exact symbolic Jacobian, plus DSP and statistics namespaces.
 
-[Unreleased]: https://github.com/dariusjlukas/surd/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dariusjlukas/surd/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.3.0
 [0.2.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.2.0
 [0.1.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.1.0
