@@ -112,7 +112,12 @@ struct Plot3dData {
     /// on this window — the surface may alias and the UI must say so.
     undersampled: bool,
     /// Row-major heights (y outer, x inner); null at poles / domain gaps.
+    /// Empty (with `nx` = 0) for a points-only plot.
     heights: Vec<Option<f64>>,
+    /// 3D scatter markers `(x, y, z)` in data coordinates; omitted when none.
+    /// Static data — the frontend boxes and re-windows them without resampling.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scatter: Vec<(f64, f64, f64)>,
 }
 
 fn error_result(msg: String) -> EvalResult {
@@ -384,52 +389,186 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
     let Expr::Func(name, args) = e else {
         return None;
     };
-    if name != "plot3d" || args.len() != 7 {
-        return None;
+    match name.as_str() {
+        "plot3dscatter" => Some(plot3d_scatter_inner(args)),
+        "plot3d" if args.len() >= 7 => {
+            // The trailing six args are x, a, b, y, c, d; the rest are drawables.
+            let base = args.len() - 6;
+            let (Expr::Symbol(xvar), Expr::Symbol(yvar)) = (&args[base], &args[base + 3]) else {
+                return Some(Err("plot3d: the variable arguments must be names".into()));
+            };
+            Some(plot3d_surface_inner(args, base, xvar, yvar))
+        }
+        _ => None,
     }
-    let (Expr::Symbol(xvar), Expr::Symbol(yvar)) = (&args[1], &args[4]) else {
-        return Some(Err("plot3d: the variable arguments must be names".into()));
-    };
-    let inner = || -> Result<Plot3dData, String> {
-        let a = bound_f64(&args[2], "plot3d", "lower x")?;
-        let b = bound_f64(&args[3], "plot3d", "upper x")?;
-        let c = bound_f64(&args[5], "plot3d", "lower y")?;
-        let d = bound_f64(&args[6], "plot3d", "upper y")?;
-        if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
-            return Err("plot3d: bounds must be finite with a < b and c < d".into());
+}
+
+/// `plot3d(d1, ..., dk, x, a, b, y, c, d)` — a surface and/or scatter3d data
+/// over an explicit window. At most one drawable is a surface; the rest are
+/// scatter3d markers.
+fn plot3d_surface_inner(
+    args: &[Expr],
+    base: usize,
+    xvar: &str,
+    yvar: &str,
+) -> Result<Plot3dData, String> {
+    let a = bound_f64(&args[base + 1], "plot3d", "lower x")?;
+    let b = bound_f64(&args[base + 2], "plot3d", "upper x")?;
+    let c = bound_f64(&args[base + 4], "plot3d", "lower y")?;
+    let d = bound_f64(&args[base + 5], "plot3d", "upper y")?;
+    if !(a.is_finite() && b.is_finite() && a < b && c.is_finite() && d.is_finite() && c < d) {
+        return Err("plot3d: bounds must be finite with a < b and c < d".into());
+    }
+    let mut surface_expr: Option<&Expr> = None;
+    let mut scatter: Vec<(f64, f64, f64)> = Vec::new();
+    for drawable in &args[..base] {
+        if let Expr::Func(n, _) = drawable {
+            if n == "scatter3d" {
+                scatter.extend(scatter3d_points(drawable)?.0);
+                continue;
+            }
         }
-        let surface = f64eval::sample2d_adaptive(
-            &args[0],
-            xvar,
-            yvar,
-            a,
-            b,
-            c,
-            d,
-            SURFACE_GRID,
-            SURFACE_GRID_MAX,
-        );
-        if surface.heights.iter().all(|h| h.is_none()) {
-            return Err(
-                "plot3d: the expression never evaluates to a real number on this domain".into(),
+        if surface_expr.is_some() {
+            return Err("plot3d draws a single surface; pass one f(x, y)".into());
+        }
+        surface_expr = Some(drawable);
+    }
+    let (latex, text, nx, ny, undersampled, heights) = match surface_expr {
+        Some(expr) => {
+            let s = f64eval::sample2d_adaptive(
+                expr,
+                xvar,
+                yvar,
+                a,
+                b,
+                c,
+                d,
+                SURFACE_GRID,
+                SURFACE_GRID_MAX,
             );
+            if s.heights.iter().all(|h| h.is_none()) {
+                return Err(
+                    "plot3d: the expression never evaluates to a real number on this domain".into(),
+                );
+            }
+            (
+                latex::to_latex(expr),
+                format!("{}", expr),
+                s.n,
+                s.n,
+                s.undersampled,
+                s.heights,
+            )
         }
-        Ok(Plot3dData {
-            latex: latex::to_latex(&args[0]),
-            text: format!("{}", args[0]),
-            xvar: xvar.clone(),
-            a,
-            b,
-            yvar: yvar.clone(),
-            c,
-            d,
-            nx: surface.n,
-            ny: surface.n,
-            undersampled: surface.undersampled,
-            heights: surface.heights,
-        })
+        // Scatter only, but framed by an explicit window.
+        None => (
+            r"\{(x_i,\,y_i,\,z_i)\}".to_string(),
+            "scatter3d".to_string(),
+            0,
+            0,
+            false,
+            Vec::new(),
+        ),
     };
-    Some(inner())
+    Ok(Plot3dData {
+        latex,
+        text,
+        xvar: xvar.to_string(),
+        a,
+        b,
+        yvar: yvar.to_string(),
+        c,
+        d,
+        nx,
+        ny,
+        undersampled,
+        heights,
+        scatter,
+    })
+}
+
+/// `plot3d(s1, ..., sk)` over scatter3d data only: the points are the data,
+/// boxed by their x/y-extent (z is ranged by the frontend). No surface.
+fn plot3d_scatter_inner(args: &[Expr]) -> Result<Plot3dData, String> {
+    if args.is_empty() {
+        return Err("plot3d: nothing to draw".into());
+    }
+    let mut scatter = Vec::new();
+    let (mut xlo, mut xhi, mut ylo, mut yhi) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for arg in args {
+        let (pts, (axlo, axhi, aylo, ayhi)) = scatter3d_points(arg)?;
+        xlo = xlo.min(axlo);
+        xhi = xhi.max(axhi);
+        ylo = ylo.min(aylo);
+        yhi = yhi.max(ayhi);
+        scatter.extend(pts);
+    }
+    if !(xlo.is_finite() && ylo.is_finite()) {
+        return Err("scatter3d: no finite points to plot".into());
+    }
+    let (a, b) = pad_window(xlo, xhi);
+    let (c, d) = pad_window(ylo, yhi);
+    Ok(Plot3dData {
+        latex: r"\{(x_i,\,y_i,\,z_i)\}".to_string(),
+        text: "scatter3d".to_string(),
+        xvar: "x".to_string(),
+        a,
+        b,
+        yvar: "y".to_string(),
+        c,
+        d,
+        nx: 0,
+        ny: 0,
+        undersampled: false,
+        heights: Vec::new(),
+        scatter,
+    })
+}
+
+/// Extract a `scatter3d(x, y, z)` value into `(points, (xlo, xhi, ylo, yhi))`;
+/// points with any non-finite coordinate are dropped.
+fn scatter3d_points(tag: &Expr) -> Result<(Vec<(f64, f64, f64)>, (f64, f64, f64, f64)), String> {
+    let Expr::Func(_, a) = tag else {
+        return Err("plot3d: malformed scatter3d value".into());
+    };
+    if a.len() != 3 {
+        return Err("plot3d: malformed scatter3d value".into());
+    }
+    let xs = mat_entries(&a[0])?;
+    let ys = mat_entries(&a[1])?;
+    let zs = mat_entries(&a[2])?;
+    let mut pts = Vec::with_capacity(xs.len());
+    let (mut xlo, mut xhi, mut ylo, mut yhi) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for ((xe, ye), ze) in xs.iter().zip(ys.iter()).zip(zs.iter()) {
+        let x =
+            f64eval::eval_f64(xe, &[]).map_err(|e| format!("scatter3d: not a number ({})", e))?;
+        let y =
+            f64eval::eval_f64(ye, &[]).map_err(|e| format!("scatter3d: not a number ({})", e))?;
+        let z =
+            f64eval::eval_f64(ze, &[]).map_err(|e| format!("scatter3d: not a number ({})", e))?;
+        if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+            continue;
+        }
+        xlo = xlo.min(x);
+        xhi = xhi.max(x);
+        ylo = ylo.min(y);
+        yhi = yhi.max(y);
+        pts.push((x, y, z));
+    }
+    if pts.is_empty() {
+        return Err("scatter3d: no finite points".into());
+    }
+    Ok((pts, (xlo, xhi, ylo, yhi)))
 }
 
 #[wasm_bindgen]
@@ -1009,6 +1148,55 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot(a*x, a*x^2, x, 0, 1)")).unwrap();
         assert_eq!(v["plot"]["series"][0]["text"], "2*x");
+    }
+
+    #[test]
+    fn scatter3d_point_cloud_and_surface_overlay() {
+        let mut s = Session::new();
+        s.eval("xs := [0, 1, 2, 3]");
+        s.eval("ys := [0, 1, 0, 1]");
+        s.eval("zs := [1, 2, 3, 4]");
+
+        // Bare 3D scatter: points only, boxed from the data, no surface grid.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(scatter3d(xs, ys, zs))")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["kind"], "plot3d");
+        assert_eq!(v["plot3d"]["nx"], 0); // no surface
+        assert!(v["plot3d"]["heights"].as_array().unwrap().is_empty());
+        let pts = v["plot3d"]["scatter"].as_array().unwrap();
+        assert_eq!(pts.len(), 4);
+        assert_eq!(pts[3], serde_json::json!([3.0, 1.0, 4.0]));
+        // window padded around x ∈ [0, 3]
+        assert!(v["plot3d"]["a"].as_f64().unwrap() < 0.0);
+        assert!(v["plot3d"]["b"].as_f64().unwrap() > 3.0);
+
+        // Overlay on a surface: both a grid and the markers come back.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x + y, scatter3d(xs, ys, zs), x, 0, 3, y, 0, 1)"))
+                .unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        let p = &v["plot3d"];
+        assert!(p["nx"].as_u64().unwrap() >= 81); // surface present
+        assert_eq!(p["text"], "x + y");
+        assert_eq!(p["scatter"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            p["heights"].as_array().unwrap().len() as u64,
+            p["nx"].as_u64().unwrap() * p["ny"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
+    fn scatter3d_rejects_mismatched_vectors() {
+        let mut s = Session::new();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(scatter3d([1, 2, 3], [1, 2], [1, 2, 3]))"))
+                .unwrap();
+        assert_eq!(v["ok"], false);
+        // Two surfaces is an error — plot3d draws a single mesh.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("plot3d(x, y, x, 0, 1, y, 0, 1)")).unwrap();
+        assert_eq!(v["ok"], false);
     }
 
     #[test]

@@ -612,33 +612,57 @@ impl Interpreter {
         Ok(Expr::Func("plot".to_string(), out))
     }
 
-    /// `plot3d(f, x, a, b, y, c, d)` — a surface z = f(x, y) over
-    /// [a, b]×[c, d]. Stays symbolic, like `plot`.
+    /// `plot3d(f, x, a, b, y, c, d)` — a surface z = f(x, y) over [a, b]×[c, d].
+    /// `scatter3d(x, y, z)` data may be overlaid before the window args (one
+    /// surface at most), and `plot3d(scatter3d(...))` draws points alone over a
+    /// window derived from the data. Stays symbolic, like `plot`.
     fn call_plot3d(&mut self, args: &[Node]) -> Result<Expr, String> {
-        if args.len() != 7 {
+        // Bare 3D scatter: all data and no window — box it from the data.
+        if !args.is_empty() && args.len() < 7 {
+            let evaluated = args
+                .iter()
+                .map(|a| self.eval_node(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            if evaluated.iter().all(is_scatter3d) {
+                return Ok(Expr::Func("plot3dscatter".to_string(), evaluated));
+            }
+        }
+        if args.len() < 7 {
             return Err(format!(
-                "plot3d expects plot3d(f, x, a, b, y, c, d), got {} argument(s)",
+                "plot3d expects plot3d(f, x, a, b, y, c, d) — or plot3d(scatter3d(x, y, z)) \
+                 for data — got {} argument(s)",
                 args.len()
             ));
         }
-        let xvar = self.var_name(&args[1])?;
-        let yvar = self.var_name(&args[4])?;
+        // The trailing six args are always x, a, b, y, c, d; everything before
+        // them is a drawable (the surface, and/or scatter3d overlays).
+        let base = args.len() - 6;
+        let xvar = self.var_name(&args[base])?;
+        let yvar = self.var_name(&args[base + 3])?;
         if xvar == yvar {
             return Err("plot3d: the two plot variables must differ".into());
         }
-        let target = self.eval_shadowed(&[xvar.clone(), yvar.clone()], &args[0])?;
-        Ok(Expr::Func(
-            "plot3d".to_string(),
-            vec![
-                target,
-                Expr::Symbol(xvar),
-                self.eval_node(&args[2])?,
-                self.eval_node(&args[3])?,
-                Expr::Symbol(yvar),
-                self.eval_node(&args[5])?,
-                self.eval_node(&args[6])?,
-            ],
-        ))
+        let mut out = Vec::with_capacity(args.len());
+        let mut surfaces = 0;
+        for d in &args[..base] {
+            let drawable = self.eval_shadowed(&[xvar.clone(), yvar.clone()], d)?;
+            if !is_scatter3d(&drawable) {
+                surfaces += 1;
+                if surfaces > 1 {
+                    return Err("plot3d draws a single surface; pass one f(x, y) \
+                                (plus any scatter3d data)"
+                        .into());
+                }
+            }
+            out.push(drawable);
+        }
+        out.push(Expr::Symbol(xvar));
+        out.push(self.eval_node(&args[base + 1])?);
+        out.push(self.eval_node(&args[base + 2])?);
+        out.push(Expr::Symbol(yvar));
+        out.push(self.eval_node(&args[base + 4])?);
+        out.push(self.eval_node(&args[base + 5])?);
+        Ok(Expr::Func("plot3d".to_string(), out))
     }
 
     /// `struct(name = value, ...)` — each argument must literally be
@@ -761,6 +785,33 @@ impl Interpreter {
                 Ok(func(
                     "scatter",
                     vec![Expr::Matrix(vec![x]), Expr::Matrix(vec![y])],
+                ))
+            }
+            "scatter3d" => {
+                arity(name, &args, 3)?;
+                let x = vector_entries("scatter3d", &args[0])?;
+                let y = vector_entries("scatter3d", &args[1])?;
+                let z = vector_entries("scatter3d", &args[2])?;
+                if !(x.len() == y.len() && y.len() == z.len()) {
+                    return Err(format!(
+                        "scatter3d expects three vectors of the same length, got {}, {}, {}",
+                        x.len(),
+                        y.len(),
+                        z.len()
+                    ));
+                }
+                if x.is_empty() {
+                    return Err("scatter3d expects non-empty vectors".into());
+                }
+                // A 3D scatter is static data carried as a tagged value the
+                // plot3d path recognizes and draws as markers — never sampled.
+                Ok(func(
+                    "scatter3d",
+                    vec![
+                        Expr::Matrix(vec![x]),
+                        Expr::Matrix(vec![y]),
+                        Expr::Matrix(vec![z]),
+                    ],
                 ))
             }
             "conj" => {
@@ -1445,6 +1496,11 @@ fn vector_entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
 /// A `scatter(x, y)` data value, carried symbolically into a plot.
 fn is_scatter(e: &Expr) -> bool {
     matches!(e, Expr::Func(name, _) if name.as_str() == "scatter")
+}
+
+/// A `scatter3d(x, y, z)` data value, carried symbolically into a plot3d.
+fn is_scatter3d(e: &Expr) -> bool {
+    matches!(e, Expr::Func(name, _) if name.as_str() == "scatter3d")
 }
 
 /// Wrap a closed expression in `var` as a one-argument function value — how a

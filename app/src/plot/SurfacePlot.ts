@@ -15,7 +15,10 @@
 // geometry pushed outside the box is clipped at the frame.
 
 import * as THREE from 'three'
-import { themeColor } from './LinePlot'
+import { discSprite, themeColor } from './LinePlot'
+
+/** Scatter marker diameter in CSS pixels (matches the 2D plot). */
+const MARKER_PX = 7
 
 /** Height of the z band relative to the unit footprint — surfaces read
  * better slightly flattened. Exported for the label overlay's scene math. */
@@ -51,13 +54,17 @@ export function clampOrbit(o: Orbit): Orbit {
   }
 }
 
-/** Robust z-range: 2%–98% quantiles of the finite heights, padded — one pole
- * spike must not flatten the rest of the surface (values beyond the range
- * clamp to the top/bottom of the box). */
-export function zRange(heights: (number | null)[]): [number, number] {
-  const zs = heights
-    .filter((h): h is number => h !== null)
-    .sort((a, b) => a - b)
+/** Robust z-range: 2%–98% quantiles of the finite heights (plus any scatter
+ * z's, so overlaid points share the box), padded — one pole spike must not
+ * flatten the rest of the surface (values beyond the range clamp to the
+ * top/bottom of the box). */
+export function zRange(
+  heights: (number | null)[],
+  extra: number[] = [],
+): [number, number] {
+  const zs = [...heights.filter((h): h is number => h !== null), ...extra].sort(
+    (a, b) => a - b,
+  )
   if (zs.length === 0) return [-1, 1]
   let lo = zs[Math.floor(zs.length * 0.02)]
   let hi = zs[Math.min(zs.length - 1, Math.floor(zs.length * 0.98))]
@@ -105,6 +112,7 @@ export class SurfacePlot {
   private surface = new THREE.Group()
   private frame = new THREE.Group()
   private mesh: THREE.Mesh | null = null
+  private points: THREE.Points | null = null
   private raycaster = new THREE.Raycaster()
   /** Clip stale geometry at the frame: pan/zoom moves the surface before the
    * resample lands, and whatever leaves the box must not paint over it. */
@@ -158,58 +166,90 @@ export class SurfacePlot {
     ny: number,
     zlo: number,
     zhi: number,
+    scatter: [number, number, number][] = [],
   ) {
     disposeGroup(this.surface)
     disposeGroup(this.frame)
+    this.mesh = null
+    this.points = null
 
-    const positions = new Float32Array(nx * ny * 3)
-    const colors = new Float32Array(nx * ny * 3)
-    const c = new THREE.Color()
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        const idx = j * nx + i
-        const h = heights[idx]
-        const t =
-          h === null ? 0 : Math.min(1, Math.max(0, (h - zlo) / (zhi - zlo)))
-        // data (x, y, z) → THREE (x, z, -y): z-up data on a y-up stage
-        positions[idx * 3] = -1 + (2 * i) / (nx - 1)
-        positions[idx * 3 + 1] = (2 * t - 1) * Z_SCALE
-        positions[idx * 3 + 2] = -(-1 + (2 * j) / (ny - 1))
-        c.setHSL(HUE_LO + (HUE_HI - HUE_LO) * t, 0.8, 0.55)
-        colors[idx * 3] = c.r
-        colors[idx * 3 + 1] = c.g
-        colors[idx * 3 + 2] = c.b
-      }
-    }
-
-    // index quads whose four corners are all real samples
-    const indices: number[] = []
-    for (let j = 0; j < ny - 1; j++) {
-      for (let i = 0; i < nx - 1; i++) {
-        const p00 = j * nx + i
-        const p10 = p00 + 1
-        const p01 = p00 + nx
-        const p11 = p01 + 1
-        if ([p00, p10, p01, p11].every((p) => heights[p] !== null)) {
-          indices.push(p00, p01, p10, p10, p01, p11)
+    // A surface mesh, when there is one (a points-only plot passes nx = 0).
+    if (nx >= 2 && ny >= 2) {
+      const positions = new Float32Array(nx * ny * 3)
+      const colors = new Float32Array(nx * ny * 3)
+      const c = new THREE.Color()
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const idx = j * nx + i
+          const h = heights[idx]
+          const t =
+            h === null ? 0 : Math.min(1, Math.max(0, (h - zlo) / (zhi - zlo)))
+          // data (x, y, z) → THREE (x, z, -y): z-up data on a y-up stage
+          positions[idx * 3] = -1 + (2 * i) / (nx - 1)
+          positions[idx * 3 + 1] = (2 * t - 1) * Z_SCALE
+          positions[idx * 3 + 2] = -(-1 + (2 * j) / (ny - 1))
+          c.setHSL(HUE_LO + (HUE_HI - HUE_LO) * t, 0.8, 0.55)
+          colors[idx * 3] = c.r
+          colors[idx * 3 + 1] = c.g
+          colors[idx * 3 + 2] = c.b
         }
       }
+
+      // index quads whose four corners are all real samples
+      const indices: number[] = []
+      for (let j = 0; j < ny - 1; j++) {
+        for (let i = 0; i < nx - 1; i++) {
+          const p00 = j * nx + i
+          const p10 = p00 + 1
+          const p01 = p00 + nx
+          const p11 = p01 + 1
+          if ([p00, p10, p01, p11].every((p) => heights[p] !== null)) {
+            indices.push(p00, p01, p10, p10, p01, p11)
+          }
+        }
+      }
+
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+      geometry.setIndex(indices)
+      geometry.computeVertexNormals()
+      this.mesh = new THREE.Mesh(
+        geometry,
+        new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          clippingPlanes: this.clipPlanes,
+        }),
+      )
+      this.surface.add(this.mesh)
     }
 
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-    geometry.setIndex(indices)
-    geometry.computeVertexNormals()
-    this.mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshLambertMaterial({
-        vertexColors: true,
-        side: THREE.DoubleSide,
-        clippingPlanes: this.clipPlanes,
-      }),
-    )
-    this.surface.add(this.mesh)
+    // Scatter markers (already mapped to scene coordinates by the caller),
+    // drawn as round sprites that depth-test against the surface.
+    if (scatter.length) {
+      const pos = new Float32Array(scatter.length * 3)
+      for (let k = 0; k < scatter.length; k++) {
+        pos[k * 3] = scatter[k][0]
+        pos[k * 3 + 1] = scatter[k][1]
+        pos[k * 3 + 2] = scatter[k][2]
+      }
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      this.points = new THREE.Points(
+        g,
+        new THREE.PointsMaterial({
+          color: themeColor('--accent', 0x7dd3fc).getHex(),
+          size: MARKER_PX * (window.devicePixelRatio || 1),
+          sizeAttenuation: false,
+          map: discSprite(),
+          alphaTest: 0.5,
+          transparent: true,
+          clippingPlanes: this.clipPlanes,
+        }),
+      )
+      this.surface.add(this.points)
+    }
 
     this.buildFrame()
     this.render()
@@ -234,6 +274,16 @@ export class SurfacePlot {
     return this.raycaster.intersectObject(this.mesh)[0]?.point ?? null
   }
 
+  /** Index of the scatter marker nearest the pointer ray (within a small
+   * screen-space tolerance), or null. The raycaster works in world space, so
+   * it honors the surface group's pan/zoom transform automatically. */
+  pickPoint(ndcX: number, ndcY: number): number | null {
+    if (!this.points) return null
+    this.raycaster.params.Points.threshold = 0.06
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
+    return this.raycaster.intersectObject(this.points)[0]?.index ?? null
+  }
+
   /** Where that ray crosses the floor plane (y = −Z_SCALE), or null when the
    * ray runs away from it. Domain panning grabs the floor: it always hits,
    * even where the surface has gaps. */
@@ -254,6 +304,7 @@ export class SurfacePlot {
     disposeGroup(this.surface)
     disposeGroup(this.frame)
     this.mesh = null
+    this.points = null
     this.renderer.dispose()
   }
 

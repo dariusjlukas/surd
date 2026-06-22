@@ -167,12 +167,18 @@ const BUILTINS: Builtin[] = [
   {
     name: 'plot3d',
     params: ['f', 'x', 'a', 'b', 'y', 'c', 'd'],
-    doc: 'Surface z = f(x, y) over [a, b] × [c, d].',
+    doc: 'Surface z = f(x, y) over [a, b] × [c, d] (overlay scatter3d(x, y, z) data before x) — or plot3d(scatter3d(…)) alone.',
+    variadic: true,
   },
   {
     name: 'scatter',
     params: ['x', 'y'],
     doc: 'Data points (x, y) as markers; overlay in plot(…) to compare with a curve, or plot(scatter(x, y)) alone.',
+  },
+  {
+    name: 'scatter3d',
+    params: ['x', 'y', 'z'],
+    doc: '3D data points (x, y, z) as markers; overlay in plot3d(…) over a surface, or plot3d(scatter3d(x, y, z)) alone.',
   },
   {
     name: 'precision',

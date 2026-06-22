@@ -9,6 +9,16 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- 3D scatter plots: `scatter3d(x, y, z)` draws three equal-length vectors as
+  markers in the surface view. Overlay it in `plot3d(...)` to compare a fitted
+  surface against measured `(x, y, z)` data —
+  e.g. `plot3d(b0 + b1*x + b2*y, scatter3d(xs, ys, zs), x, 0, 10, y, 0, 10)` —
+  or `plot3d(scatter3d(xs, ys, zs))` on its own, auto-boxed to the data. Points
+  are static (orbit/zoom without resampling) and the hover probe snaps to the
+  nearest marker.
+
 ## [0.2.0] - 2026-06-21
 
 ### Added

@@ -22,7 +22,7 @@ const MARKER_PX = 7
  * scatter material (PointsMaterial draws textured square sprites; the alpha
  * disc is what makes them read as circles). */
 let discTexture: THREE.Texture | null = null
-function discSprite(): THREE.Texture {
+export function discSprite(): THREE.Texture {
   if (discTexture) return discTexture
   const s = 64
   const canvas = document.createElement('canvas')

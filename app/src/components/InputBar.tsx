@@ -84,7 +84,10 @@ export function InputBar() {
   return (
     <div className="border-t border-edge bg-surface/30 px-4 py-3 sm:px-6">
       <div className="flex items-start gap-2">
-        <span className="select-none pt-0.5 font-mono text-accent">
+        {/* Match the editor's text metrics (CodeMirror renders at 14px /
+            line-height 1.4, with 2px top padding on .cm-content) so the prompt's
+            first-line box lines up with the input text under items-start. */}
+        <span className="select-none pt-0.5 font-mono text-sm leading-[1.4] text-accent">
           &gt;&gt;
         </span>
         <CodeEditor

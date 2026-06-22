@@ -155,7 +155,32 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     d: plot.d,
   })
   const [surf, setSurf] = useState<Sampled>(() => sampledOf(plot))
-  const [zlo, zhi] = useMemo(() => zRange(surf.heights), [surf.heights])
+  /** 3D scatter markers in data coords (static — never resampled). */
+  const scatterData = useMemo(() => plot.scatter ?? [], [plot])
+  const scatterZs = useMemo(() => scatterData.map((p) => p[2]), [scatterData])
+  const [zlo, zhi] = useMemo(
+    () => zRange(surf.heights, scatterZs),
+    [surf.heights, scatterZs],
+  )
+  /** No surface to sample (a points-only plot): skip resampling, box the view
+   * from the data, and probe only the markers. */
+  const pointsOnly = plot.nx < 2
+  /** Scatter data → scene coords, mapped over the SAMPLE window so the
+   * painter's setView slides the markers in lockstep with the (possibly stale)
+   * mesh on pan/zoom — identity once a resample lands. */
+  const sceneScatter = useMemo(
+    () =>
+      scatterData.map(([px, py, pz]) => {
+        const t = Math.min(1, Math.max(0, (pz - zlo) / (zhi - zlo)))
+        const sw = surf.win
+        return [
+          -1 + (2 * (px - sw.a)) / (sw.b - sw.a),
+          (2 * t - 1) * Z_SCALE,
+          1 - (2 * (py - sw.c)) / (sw.d - sw.c),
+        ] as [number, number, number]
+      }),
+    [scatterData, surf.win, zlo, zhi],
+  )
   /** Measurement cursor: the grid node under the pointer. `z` is the true
    * sampled height (the mesh clamps spikes to the box; the readout doesn't);
    * `scene` is where the marker sits, on the (clamped) mesh. */
@@ -200,6 +225,7 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   /** One resample in flight; the newest window fires as soon as the previous
    * answer lands. Stale heights stay visible meanwhile, like the 2D plot. */
   const requestResample = (target: Win) => {
+    if (pointsOnly) return // no surface expression to sample
     latestWinRef.current = target
     if (inFlightRef.current) return
     inFlightRef.current = true
@@ -271,7 +297,26 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   /** Raycast the pointer into the mesh and snap to the nearest grid node —
    * node values are the honest sampled data (no interpolation invented). */
   const updateProbe = (e: React.PointerEvent) => {
-    const hit = painterRef.current?.pick(...ndcOf(e))
+    const ndc = ndcOf(e)
+    // Scatter markers take precedence: snap to the nearest one under the ray
+    // and read off its exact (x, y, z).
+    const pi = painterRef.current?.pickPoint(...ndc)
+    if (pi != null && scatterData[pi]) {
+      const [px, py, pz] = scatterData[pi]
+      const t = Math.min(1, Math.max(0, (pz - zlo) / (zhi - zlo)))
+      setProbe({
+        x: px,
+        y: py,
+        z: pz,
+        scene: [
+          -1 + (2 * (px - win.a)) / (win.b - win.a),
+          (2 * t - 1) * Z_SCALE,
+          1 - (2 * (py - win.c)) / (win.d - win.c),
+        ],
+      })
+      return
+    }
+    const hit = painterRef.current?.pick(...ndc)
     if (!hit) {
       setProbe(null)
       return
@@ -409,8 +454,15 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
   }, [])
 
   useEffect(() => {
-    painterRef.current?.setData(surf.heights, surf.nx, surf.ny, zlo, zhi)
-  }, [surf, zlo, zhi, themeKey])
+    painterRef.current?.setData(
+      surf.heights,
+      surf.nx,
+      surf.ny,
+      zlo,
+      zhi,
+      sceneScatter,
+    )
+  }, [surf, zlo, zhi, themeKey, sceneScatter])
 
   // Pan/zoom updates `win` immediately; the heights catch up when the
   // resample lands. Until then the stale mesh (built over surf.win) is slid/

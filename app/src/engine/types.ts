@@ -53,8 +53,12 @@ export interface Plot3dData {
    * test on this window — the surface may alias, and the UI says so. Absent
    * in pre-adaptive persisted notebooks (treat as false). */
   undersampled?: boolean
-  /** Row-major heights (y outer, x inner); null at poles / domain gaps. */
+  /** Row-major heights (y outer, x inner); null at poles / domain gaps.
+   * Empty (with `nx` = 0) for a points-only plot. */
   heights: (number | null)[]
+  /** 3D scatter markers `(x, y, z)` in data coordinates; absent when none.
+   * Static data — re-windowed client-side, never resampled. */
+  scatter?: [number, number, number][]
 }
 
 export type ResultKind =

@@ -95,10 +95,19 @@ fn render_inner(e: &Expr) -> (u8, String) {
                 })
                 .collect::<Vec<_>>()
                 .join(r" \\ ");
-            (
-                PREC_ATOM,
-                format!(r"\begin{{bmatrix}} {} \end{{bmatrix}}", body),
-            )
+            // At the default array row spacing, stacked fractions in adjacent
+            // rows sit only ~0.015em apart and appear to overlap. When any cell
+            // is a fraction, stretch the rows so they breathe. The change is
+            // wrapped in a group so it stays local to this matrix.
+            let matrix = if body.contains(r"\frac") {
+                format!(
+                    r"{{\def\arraystretch{{1.4}}\begin{{bmatrix}} {} \end{{bmatrix}}}}",
+                    body
+                )
+            } else {
+                format!(r"\begin{{bmatrix}} {} \end{{bmatrix}}", body)
+            };
+            (PREC_ATOM, matrix)
         }
         Expr::Complex(re, im) => render_complex(re, im),
         Expr::Bool(b) => (
@@ -308,6 +317,21 @@ mod tests {
         );
         assert_eq!(lx("2 + 3*I"), r"2 + 3\, i");
         assert_eq!(lx("sqrt(-1)"), "i");
+    }
+
+    #[test]
+    fn matrices_with_fractions_get_row_spacing() {
+        // Stacked fractions otherwise nearly touch — the row stretch keeps them
+        // legible, and is scoped to the one matrix.
+        assert_eq!(
+            lx("[1/2;1/3]"),
+            r"{\def\arraystretch{1.4}\begin{bmatrix} \frac{1}{2} \\ \frac{1}{3} \end{bmatrix}}"
+        );
+        // A fraction produced by a product (x/y) also triggers the stretch.
+        assert_eq!(
+            lx("[x/y,1]"),
+            r"{\def\arraystretch{1.4}\begin{bmatrix} \frac{x}{y} & 1 \end{bmatrix}}"
+        );
     }
 
     #[test]

@@ -90,6 +90,18 @@ expect(
   surf.plot3d.nx * surf.plot3d.ny,
 );
 
+// 3D scatter: a bare point cloud (no surface), and overlaid on a surface.
+const sc3 = ev("plot3d(scatter3d([0, 1, 2, 3], [0, 1, 0, 1], [1, 2, 3, 4]))");
+expect("scatter3d kind", sc3.kind, "plot3d");
+expect("scatter3d has no surface", sc3.plot3d.nx, 0);
+expect("scatter3d point count", sc3.plot3d.scatter.length, 4);
+expect("scatter3d point value", sc3.plot3d.scatter[3], [3, 1, 4]);
+const over3 = ev(
+  "plot3d(x + y, scatter3d([0, 1, 2, 3], [0, 1, 0, 1], [1, 2, 3, 4]), x, 0, 3, y, 0, 1)",
+);
+expect("overlay3d surface present", over3.plot3d.nx >= 81, true);
+expect("overlay3d points present", over3.plot3d.scatter.length, 4);
+
 // Raw-data import (CSV → struct of exact column vectors) + grouped export.
 const imp = JSON.parse(s.import_data("t, val\n0, 0.5\n1, 2e1\n", "sensor"));
 expect("csv import ok", imp.ok, true);

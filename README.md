@@ -331,7 +331,8 @@ exact Gauss-Jordan routine.
 
 Builtins: `sqrt`, `sin`, `cos`, `tan`, `exp`, `ln`, `diff`/`D`, `subs`, `expand`,
 `N`, `precision`, `conj`, `re`, `im`, `abs`; data ops `map`, `len`, `size`,
-`slice`, `dot`, `vcat`/`hcat`, `linspace`, `plot`/`plot3d`/`scatter`, `struct`,
+`slice`, `dot`, `vcat`/`hcat`, `linspace`,
+`plot`/`plot3d`/`scatter`/`scatter3d`, `struct`,
 `signal`,
 `mid`, `bound`; and matrix ops `det`, `inv`, `transpose`/`T`, `solve`, `rref`,
 `rank`, `nullspace`/`kernel`, `lu`, `qr`, `eye`/`identity`, `charpoly`,
@@ -513,7 +514,8 @@ frontend samples them at f64 and draws interactive curves and surfaces that
 deliberate exception to arbitrary precision, since pixels are already
 approximate and results never are. `scatter(x, y)` overlays measured data as
 markers in the same `plot` — `plot(scatter(xs, ys), fit, x, a, b)` — for
-comparing a regression against the points it was fit to.
+comparing a regression against the points it was fit to, and `scatter3d(x, y, z)`
+does the same in 3D, overlaying a point cloud on a `plot3d` surface.
 
 ### It's a language, not just a calculator
 

@@ -119,3 +119,34 @@ In the web app:
   zooms** it about the cursor. Both domain moves resample through the same
   adaptive policy as the 2D plot's pan/zoom; alt+wheel dollies the camera
   instead of touching the window.
+
+## `scatter3d`
+
+```
+scatter3d(x, y, z)
+```
+
+The 3D sibling of [`scatter`](#scatter): three equal-length vectors drawn as
+markers in the surface view. `scatter3d` is a data value, not a plot on its
+own; `plot3d` draws it, alone or overlaid on a surface:
+
+```text
+>> plot3d(scatter3d(xs, ys, zs))                      # a point cloud, auto-boxed
+>> plot3d(b0 + b1*x + b2*y, scatter3d(xs, ys, zs), x, 0, 10, y, 0, 10)
+```
+
+The overlay form is the natural way to check a fitted surface against the data
+it was fit to — the markers and the surface share one box, just as a 2D
+`scatter` overlays a curve.
+
+In the web app:
+
+- Markers are **static data** — they orbit, dolly, pan and zoom with the box
+  but never resample. A bare `plot3d(scatter3d(...))` boxes the view from the
+  data's x/y-extent (with padding); the z-range covers the points (and the
+  surface, when overlaid).
+- The hover probe **snaps to the nearest marker** and reads off its exact
+  `(x, y, z)`; markers behind the surface are occluded, as depth expects.
+- Points with a non-finite coordinate are dropped. Coordinates evaluate to f64
+  for drawing, like every plotted value — the data stays exact in the
+  workspace.
