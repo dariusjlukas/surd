@@ -8,6 +8,7 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { closeCompletion, completionKeymap } from '@codemirror/autocomplete'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import {
+  drawSelection,
   EditorView,
   keymap,
   placeholder as placeholderExt,
@@ -35,30 +36,16 @@ interface Props {
   onBlur?: () => void
 }
 
-// WKWebView (the macOS Tauri webview) sometimes leaves a "ghost" of the
-// previous caret position painted on screen after an edit: WebKit doesn't always
-// invalidate the old caret's pixels when the selection moves, so typing a
-// character then backspacing leaves the post-keystroke caret behind next to the
-// real one. drawSelection() (CM's own caret) is not an option here — in WebKit
-// it fails to paint at all on an empty line, which is the REPL prompt's usual
-// state. Instead we keep the native caret and, after each caret-moving change,
-// force the content layer to repaint so it paints over the stale pixels.
-// Chromium (the web build) invalidates the caret correctly and doesn't need it.
-const isWebKit =
-  typeof navigator !== 'undefined' &&
-  /AppleWebKit/.test(navigator.userAgent) &&
-  !/Chrome|Chromium/.test(navigator.userAgent)
-
-const repaintCaretOnWebKit = EditorView.updateListener.of((u) => {
-  if (!u.docChanged && !u.selectionSet) return
-  const el = u.view.contentDOM
-  // A zero-distance transform forces a repaint of this layer without moving
-  // anything; cleared on the next frame so nothing persists at rest.
-  el.style.transform = 'translateZ(0)'
-  requestAnimationFrame(() => {
-    el.style.transform = ''
-  })
-})
+// WKWebView (the macOS Tauri webview) paints the *native* caret on its own
+// blink timer, so it only repositions the caret on the next blink tick — typing
+// or backspacing quickly leaves the caret lagging a character behind the real
+// cursor. (It also sometimes leaves a "ghost" of the old caret behind.) So we
+// stop relying on the native caret and let CodeMirror draw its own: drawSelection
+// re-measures and repositions a DOM caret synchronously on every transaction, and
+// hides the native one. The blink is a CSS opacity animation, independent of
+// position. The one WebKit quirk drawSelection hits is an empty line, where
+// coordsAtPos reports a zero-height rect and the caret div would get height:0px
+// (invisible) — the .cm-cursor min-height below backstops that.
 
 // All colors come from the theme tokens in index.css, so the editor follows
 // data-mode/data-theme without rebuilding the view.
@@ -67,12 +54,13 @@ const baseTheme = EditorView.theme({
   '.cm-content': {
     fontFamily:
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-    caretColor: 'var(--ink)',
     padding: '2px 0',
   },
   '.cm-line': { padding: '0 2px 0 0' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-cursor': { borderLeftColor: 'var(--ink)' },
+  // borderLeftColor colors the drawn caret; min-height keeps it visible on
+  // empty lines where WebKit measures a zero-height cursor rect (see above).
+  '.cm-cursor': { borderLeftColor: 'var(--ink)', minHeight: '1.2em' },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
     backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)',
   },
@@ -178,12 +166,14 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(
               placeholder ? placeholderExt(placeholder) : [],
             ),
             baseTheme,
+            // CM draws and positions its own caret synchronously per transaction
+            // and hides the native one, so the caret can't lag behind on WebKit.
+            drawSelection(),
             EditorView.lineWrapping,
             editableComp.current.of(EditorView.editable.of(editable)),
             EditorView.updateListener.of((u) => {
               if (u.docChanged) onDocChangeRef.current?.(u.state.doc.toString())
             }),
-            ...(isWebKit ? [repaintCaretOnWebKit] : []),
             EditorView.domEventHandlers({
               blur: () => {
                 if (alive) onBlurRef.current?.()

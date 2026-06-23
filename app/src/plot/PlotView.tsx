@@ -20,6 +20,7 @@ import { useSettings } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
+import { nameToLatex } from '../engine/nameLatex'
 import { LinePlot, seriesColorToken } from './LinePlot'
 import { formatTick, niceTicks, quantileDomain } from './scales'
 import { saveDataUrl } from '../platform/desktop'
@@ -360,7 +361,8 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
         <canvas ref={canvasRef} className="block h-full w-full" />
         <div className="pointer-events-none absolute right-1.5 top-1 text-right font-mono text-[10px] leading-4 text-faint">
           <div>
-            {plot.var} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
+            <MathInline latex={nameToLatex(plot.var)} fallback={plot.var} /> ∈ [
+            {formatTick(win.a)}, {formatTick(win.b)}]
           </div>
           <div>
             y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}

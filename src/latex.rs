@@ -255,18 +255,85 @@ fn latex_float(s: &str) -> String {
     }
 }
 
-/// Multi-character names render upright; Greek-letter names get their symbol.
+/// A bare symbol → LaTeX. Underscores split into nested subscripts and each
+/// segment renders as an atom: `beta_0` → `\beta_{0}`, `x_i_j` → `x_{i_{j}}`,
+/// `v_max` → `v_{\mathrm{max}}`. A degenerate name (a leading, trailing, or
+/// doubled underscore leaves an empty segment) falls back to one upright token
+/// so KaTeX never chokes on a bare `_`.
+///
+/// Mirrored by `nameToLatex` in the web UI (app/src/engine/nameLatex.ts), which
+/// renders variable *names* the same way; keep the two in sync.
 fn latex_symbol(s: &str) -> String {
+    let parts: Vec<&str> = s.split('_').collect();
+    if parts.len() == 1 || parts.iter().any(|p| p.is_empty()) {
+        return latex_atom(s);
+    }
+    // Build the subscript chain from the inside out: a_b_c → a_{b_{c}}.
+    let mut acc = latex_atom(parts[parts.len() - 1]);
+    for p in parts[..parts.len() - 1].iter().rev() {
+        acc = format!("{}_{{{}}}", latex_atom(p), acc);
+    }
+    acc
+}
+
+/// One underscore-free token → its LaTeX atom. Greek-letter names (lower-,
+/// upper-case, and the `var*` variants) get their command; a lone character
+/// stays as-is; everything else is set upright. Every Greek command is just a
+/// backslash before the name, so one list serves all three.
+fn latex_atom(s: &str) -> String {
     const GREEK: &[&str] = &[
-        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
-        "lambda", "mu", "nu", "xi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega",
+        // lowercase
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "iota",
+        "kappa",
+        "lambda",
+        "mu",
+        "nu",
+        "xi",
+        "pi",
+        "rho",
+        "sigma",
+        "tau",
+        "upsilon",
+        "phi",
+        "chi",
+        "psi",
+        "omega", // lowercase variants
+        "varepsilon",
+        "vartheta",
+        "varpi",
+        "varphi",
+        "varrho",
+        "varsigma",
+        "varkappa",
+        // uppercase (only those with a distinct glyph / command)
+        "Gamma",
+        "Delta",
+        "Theta",
+        "Lambda",
+        "Xi",
+        "Pi",
+        "Sigma",
+        "Upsilon",
+        "Phi",
+        "Psi",
+        "Omega",
     ];
     if GREEK.contains(&s) {
         format!(r"\{}", s)
     } else if s.chars().count() == 1 {
         s.to_string()
     } else {
-        format!(r"\mathrm{{{}}}", s)
+        // The escape only bites in the degenerate fallback (clean splits never
+        // hand an underscore-bearing token here).
+        format!(r"\mathrm{{{}}}", s.replace('_', r"\_"))
     }
 }
 
@@ -286,6 +353,24 @@ mod tests {
         assert_eq!(lx("pi"), r"\pi");
         assert_eq!(lx("sqrt(2)"), r"\sqrt{2}");
         assert_eq!(lx("lambda"), r"\lambda");
+    }
+
+    #[test]
+    fn greek_names_and_subscripts() {
+        // Lower-, upper-case, and variant Greek names all map to their command.
+        assert_eq!(lx("beta"), r"\beta");
+        assert_eq!(lx("Omega"), r"\Omega");
+        assert_eq!(lx("varphi"), r"\varphi");
+        // An unknown multi-letter name stays upright; a lone letter is italic.
+        assert_eq!(lx("foo"), r"\mathrm{foo}");
+        assert_eq!(lx("k"), "k");
+        // Underscores become subscripts, the base mapped like any atom.
+        assert_eq!(lx("x_1"), r"x_{1}");
+        assert_eq!(lx("beta_0"), r"\beta_{0}");
+        assert_eq!(lx("v_max"), r"v_{\mathrm{max}}");
+        assert_eq!(lx("a_i_j"), r"a_{i_{j}}");
+        // Degenerate underscores fall back to one upright, escaped token.
+        assert_eq!(lx("_x"), r"\mathrm{\_x}");
     }
 
     #[test]

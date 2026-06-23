@@ -17,6 +17,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import type { ImportFormat, WorkspaceEntry } from '../engine/types'
+import { nameToLatex } from '../engine/nameLatex'
 import { useNotebook } from '../state/store'
 import { downloadDataFile } from '../state/dataFile'
 import { openContextMenu } from '../state/contextMenu'
@@ -281,8 +282,8 @@ function Row({
           />
         </td>
       )}
-      <td className="w-1 whitespace-nowrap px-4 py-1.5 font-mono text-accent">
-        {entry.name}
+      <td className="w-1 whitespace-nowrap px-4 py-1.5 text-accent">
+        <MathInline latex={nameToLatex(entry.name)} fallback={entry.name} />
       </td>
       <td className="px-2 py-1.5 text-muted">
         <Value entry={entry} />

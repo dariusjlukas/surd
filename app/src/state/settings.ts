@@ -14,6 +14,9 @@ import { persist } from 'zustand/middleware'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+/** How 3D surfaces are drawn: opaque shaded, semi-transparent, or wireframe. */
+export type SurfaceRender = 'solid' | 'glass' | 'wire'
+
 export interface AccentTheme {
   id: string
   label: string
@@ -42,6 +45,9 @@ interface SettingsState {
   workspaceWidth: number
   confirmDelete: boolean
   autoScroll: boolean
+  /** Draw style for 3D surface plots — a display preference shared by every
+   * surface, like the theme accent. */
+  surfaceRender: SurfaceRender
 
   setMode(mode: ThemeMode): void
   setAccent(accent: string): void
@@ -49,6 +55,7 @@ interface SettingsState {
   setWorkspaceWidth(px: number): void
   setConfirmDelete(v: boolean): void
   setAutoScroll(v: boolean): void
+  setSurfaceRender(v: SurfaceRender): void
 }
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -64,6 +71,7 @@ export const useSettings = create<SettingsState>()(
       workspaceWidth: WORKSPACE_WIDTH.default,
       confirmDelete: true,
       autoScroll: true,
+      surfaceRender: 'solid',
 
       setMode: (mode) => set({ mode }),
       setAccent: (accent) => set({ accent }),
@@ -75,6 +83,7 @@ export const useSettings = create<SettingsState>()(
         }),
       setConfirmDelete: (confirmDelete) => set({ confirmDelete }),
       setAutoScroll: (autoScroll) => set({ autoScroll }),
+      setSurfaceRender: (surfaceRender) => set({ surfaceRender }),
     }),
     {
       name: 'exact.settings.v1',
@@ -85,6 +94,7 @@ export const useSettings = create<SettingsState>()(
         workspaceWidth: s.workspaceWidth,
         confirmDelete: s.confirmDelete,
         autoScroll: s.autoScroll,
+        surfaceRender: s.surfaceRender,
       }),
     },
   ),

@@ -15,7 +15,12 @@
 // geometry pushed outside the box is clipped at the frame.
 
 import * as THREE from 'three'
+import type { SurfaceRender } from '../state/settings'
 import { discSprite, themeColor } from './LinePlot'
+
+/** Opacity of a 'glass' (semi-transparent) surface — low enough to read the
+ * grid and far side through it, high enough to keep the colormap legible. */
+const GLASS_OPACITY = 0.55
 
 /** Scatter marker diameter in CSS pixels (matches the 2D plot). */
 const MARKER_PX = 7
@@ -54,10 +59,17 @@ export function clampOrbit(o: Orbit): Orbit {
   }
 }
 
-/** Robust z-range: 2%–98% quantiles of the finite heights (plus any scatter
- * z's, so overlaid points share the box), padded — one pole spike must not
- * flatten the rest of the surface (values beyond the range clamp to the
- * top/bottom of the box). */
+/** Robust z-range over the finite heights (plus any scatter z's, so overlaid
+ * points share the box), padded — values beyond the range clamp to the
+ * top/bottom of the box.
+ *
+ * The job is to ignore a pole spike (one cell near a singularity must not
+ * flatten the rest) *without* clipping a smooth surface's legitimate extremes
+ * — a plain z = x + y reaches its min/max in the corners, and a hard 2%–98%
+ * cut would fold those corners flat. So we keep the true [min, max] and only
+ * rein an end in when it sits more than a full core-span (the 2%–98% width)
+ * beyond the bulk: a smooth surface's extreme is a fraction of a core-span
+ * past p98, a real spike is many core-spans past it. */
 export function zRange(
   heights: (number | null)[],
   extra: number[] = [],
@@ -66,8 +78,15 @@ export function zRange(
     (a, b) => a - b,
   )
   if (zs.length === 0) return [-1, 1]
-  let lo = zs[Math.floor(zs.length * 0.02)]
-  let hi = zs[Math.min(zs.length - 1, Math.floor(zs.length * 0.98))]
+  const min = zs[0]
+  const max = zs[zs.length - 1]
+  const p02 = zs[Math.floor(zs.length * 0.02)]
+  const p98 = zs[Math.min(zs.length - 1, Math.floor(zs.length * 0.98))]
+  const core = p98 - p02
+  // A degenerate core (a near-constant surface) leaves no scale to fence
+  // against — just bracket the data; nothing to tame.
+  let lo = core === 0 ? min : Math.max(min, p02 - core)
+  let hi = core === 0 ? max : Math.min(max, p98 + core)
   if (lo === hi) {
     lo -= 1
     hi += 1
@@ -113,6 +132,9 @@ export class SurfacePlot {
   private frame = new THREE.Group()
   private mesh: THREE.Mesh | null = null
   private points: THREE.Points | null = null
+  /** Draw style for the surface mesh; a rebuild (setData) re-reads it so a
+   * resample keeps the chosen look. */
+  private renderMode: SurfaceRender = 'solid'
   private raycaster = new THREE.Raycaster()
   /** Clip stale geometry at the frame: pan/zoom moves the surface before the
    * resample lands, and whatever leaves the box must not paint over it. */
@@ -155,6 +177,18 @@ export class SurfacePlot {
     )
     this.camera.lookAt(0, TARGET_Y, 0)
     this.render()
+  }
+
+  /** Switch the surface draw style — solid, semi-transparent ('glass'), or
+   * wireframe. Updates the live material in place (no geometry rebuild) and
+   * is remembered for the next setData so a resample keeps the look. */
+  setRenderMode(mode: SurfaceRender) {
+    if (mode === this.renderMode) return
+    this.renderMode = mode
+    if (this.mesh) {
+      applyRenderMode(this.mesh.material as THREE.MeshLambertMaterial, mode)
+      this.render()
+    }
   }
 
   /** Rebuild the surface mesh from a row-major heights grid (y outer, x
@@ -214,14 +248,13 @@ export class SurfacePlot {
       geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
       geometry.setIndex(indices)
       geometry.computeVertexNormals()
-      this.mesh = new THREE.Mesh(
-        geometry,
-        new THREE.MeshLambertMaterial({
-          vertexColors: true,
-          side: THREE.DoubleSide,
-          clippingPlanes: this.clipPlanes,
-        }),
-      )
+      const material = new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        clippingPlanes: this.clipPlanes,
+      })
+      applyRenderMode(material, this.renderMode)
+      this.mesh = new THREE.Mesh(geometry, material)
       this.surface.add(this.mesh)
     }
 
@@ -336,6 +369,16 @@ export class SurfacePlot {
   private render() {
     this.renderer.render(this.scene, this.camera)
   }
+}
+
+/** Stamp a draw style onto the surface material. Wireframe shows the triangle
+ * mesh; glass blends the shaded surface at reduced opacity (depthWrite stays
+ * on, so the surface still sorts cleanly against the markers and frame). */
+function applyRenderMode(mat: THREE.MeshLambertMaterial, mode: SurfaceRender) {
+  mat.wireframe = mode === 'wire'
+  mat.transparent = mode === 'glass'
+  mat.opacity = mode === 'glass' ? GLASS_OPACITY : 1
+  mat.needsUpdate = true
 }
 
 function disposeGroup(group: THREE.Group) {

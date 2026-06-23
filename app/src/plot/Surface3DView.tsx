@@ -7,10 +7,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Plot3dData } from '../engine/types'
-import { useSettings } from '../state/settings'
+import { useSettings, type SurfaceRender } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
 import { MathInline } from '../components/MathOutput'
+import { nameToLatex } from '../engine/nameLatex'
 import { formatTick, niceTicks } from './scales'
 import {
   clampOrbit,
@@ -22,6 +23,13 @@ import {
   type Orbit,
 } from './SurfacePlot'
 import { saveDataUrl } from '../platform/desktop'
+
+/** Header toggle for the surface draw style (see SurfaceRender). */
+const RENDER_MODES: { id: SurfaceRender; label: string; title: string }[] = [
+  { id: 'solid', label: 'solid', title: 'opaque shaded surface' },
+  { id: 'glass', label: 'glass', title: 'semi-transparent surface' },
+  { id: 'wire', label: 'wire', title: 'wireframe mesh' },
+]
 
 /** The data domain currently on screen: [a, b]×[c, d]. */
 interface Win {
@@ -138,6 +146,8 @@ type Drag =
 export function Surface3DView({ plot }: { plot: Plot3dData }) {
   const resample3d = useNotebook((s) => s.resample3d)
   const themeKey = useSettings((s) => `${s.resolvedMode}/${s.accent}`)
+  const surfaceRender = useSettings((s) => s.surfaceRender)
+  const setSurfaceRender = useSettings((s) => s.setSurfaceRender)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -483,6 +493,13 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
     painterRef.current?.setOrbit(orbit)
   }, [orbit])
 
+  // Draw style (solid / glass / wire) is a persisted display preference; the
+  // painter updates its material in place, and a later setData rebuild re-reads
+  // it, so a resample keeps the chosen look.
+  useEffect(() => {
+    painterRef.current?.setRenderMode(surfaceRender)
+  }, [surfaceRender])
+
   const reset = () => {
     setOrbit(DEFAULT_ORBIT)
     setWin({ a: plot.a, b: plot.b, c: plot.c, d: plot.d })
@@ -503,10 +520,12 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
       <div className="mb-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted">
         <MathInline latex={plot.latex} fallback={plot.text} />
         <span className="text-xs">
-          {plot.xvar} ∈ [{formatTick(win.a)}, {formatTick(win.b)}]
+          <MathInline latex={nameToLatex(plot.xvar)} fallback={plot.xvar} /> ∈ [
+          {formatTick(win.a)}, {formatTick(win.b)}]
         </span>
         <span className="text-xs">
-          {plot.yvar} ∈ [{formatTick(win.c)}, {formatTick(win.d)}]
+          <MathInline latex={nameToLatex(plot.yvar)} fallback={plot.yvar} /> ∈ [
+          {formatTick(win.c)}, {formatTick(win.d)}]
         </span>
         <span
           className="text-xs"
@@ -522,10 +541,29 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
             ⚠ undersampled
           </span>
         )}
+        {!pointsOnly && (
+          <div className="ml-auto inline-flex overflow-hidden rounded-md border border-edge-strong text-xs">
+            {RENDER_MODES.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setSurfaceRender(m.id)}
+                title={m.title}
+                aria-pressed={surfaceRender === m.id}
+                className={`px-2 ${
+                  surfaceRender === m.id
+                    ? 'bg-accent/15 text-accent'
+                    : 'text-muted hover:text-ink'
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           onClick={savePng}
           title="download the plot as a PNG"
-          className="ml-auto rounded-md border border-edge-strong px-2 text-xs text-muted hover:text-ink"
+          className={`${pointsOnly ? 'ml-auto ' : ''}rounded-md border border-edge-strong px-2 text-xs text-muted hover:text-ink`}
         >
           png
         </button>
@@ -550,6 +588,15 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
           openContextMenu(e, [
             { label: 'Save as PNG', onSelect: savePng },
             { label: 'Reset view', onSelect: reset },
+            ...(pointsOnly
+              ? []
+              : [
+                  'divider' as const,
+                  ...RENDER_MODES.map((m) => ({
+                    label: `${surfaceRender === m.id ? '✓ ' : ''}${m.title}`,
+                    onSelect: () => setSurfaceRender(m.id),
+                  })),
+                ]),
             'divider',
             {
               label: 'Copy expression',
@@ -563,12 +610,18 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
           positions[i].visible ? (
             <span
               key={l.key}
-              className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 font-mono ${
-                l.isName ? 'text-[11px] text-muted' : 'text-[10px] text-faint'
+              className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 ${
+                l.isName
+                  ? 'text-[11px] text-muted'
+                  : 'font-mono text-[10px] text-faint'
               }`}
               style={{ left: positions[i].x, top: positions[i].y }}
             >
-              {l.text}
+              {l.isName ? (
+                <MathInline latex={nameToLatex(l.text)} fallback={l.text} />
+              ) : (
+                l.text
+              )}
             </span>
           ) : null,
         )}
