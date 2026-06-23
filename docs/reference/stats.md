@@ -208,7 +208,7 @@ a length-n vector for a single predictor); `y` is the n responses. An
 intercept column is added automatically unless `X` already holds a constant
 column. You can also fit from a data table with a
 [formula](data.md#model-formulas-the-operator): `stats.regress(y ~ x1 + x2,
-data)` (the same form works for `wls`, `ridge`, and `logit`).
+data)` (the same form works for `wls`, `ridge`, `lasso`, and `logit`).
 
 What makes this exact where it can be: the coefficient covariance
 σ̂²·(XᵀX)⁻¹ is a *rational matrix*, so standard errors and t-statistics are
@@ -299,6 +299,42 @@ different scales first.
 >> r.edf
 21/11
 ```
+
+## `stats.lasso`
+
+```
+stats.lasso(X, y, lambda)
+```
+
+Lasso regression — the L1-penalized estimator minimizing
+½n⁻¹‖y − Xβ‖₂² + λ‖β‖₁ over the slope coefficients. Where [ridge](#statsridge)
+only shrinks, lasso's L1 penalty drives coefficients **exactly to zero**, so the
+fit doubles as variable selection. There's no closed form: the solver is cyclic
+coordinate descent with soft-thresholding, so — like [logit](#statslogit) — the
+coefficients come back as floats. The intercept is added automatically (unless
+`X` already has a constant column) and is never penalized. Unlike OLS, lasso
+fits happily with more predictors than observations. Standardize predictors of
+very different scales first, since one shared `lambda` penalizes every
+coefficient equally.
+
+The result reports point estimates and fit only (the L1 estimator is biased, so
+classical standard errors don't apply): `coefficients`, `fitted`, `residuals`,
+`rss`, `r2`, `lambda`, `intercept`, the number of active (nonzero) coefficients
+`df`, the coordinate-descent `iterations` and whether they `converged`, and the
+counts `n`, `k`. `lambda = 0` recovers OLS; as `lambda` grows, coefficients drop
+out one by one and `df` falls.
+
+```text
+>> l := stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 1/5)
+>> l.coefficients
+[ 2.50000000038866 ]
+[ 0.499999999894001 ]
+>> stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 2).coefficients   # slope zeroed out
+[ 4 ]
+[ 0 ]
+```
+
+A negative or non-numeric `lambda` is an error.
 
 ## `stats.logit`
 

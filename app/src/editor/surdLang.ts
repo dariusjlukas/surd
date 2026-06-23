@@ -395,6 +395,11 @@ const NAMESPACES: Namespace[] = [
         doc: 'L2-penalized (ridge) regression; exact in lambda.',
       },
       {
+        name: 'lasso',
+        params: ['X', 'y', 'lambda'],
+        doc: 'L1-penalized (lasso) regression; zeroes out coefficients (selection).',
+      },
+      {
         name: 'logit',
         params: ['X', 'y'],
         doc: 'Logistic regression by IRLS, for a binary 0/1 response y.',

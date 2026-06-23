@@ -17,9 +17,9 @@ use num_traits::ToPrimitive;
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "mean", "median", "quantile", "var", "std", "cov", "cor", "linfit", "polyfit", "polyval",
-    "lsq", "regress", "wls", "ridge", "logit", "predict", "robustse", "anova", "bptest", "dwtest",
-    "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv",
-    "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
+    "lsq", "regress", "wls", "ridge", "lasso", "logit", "predict", "robustse", "anova", "bptest",
+    "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf",
+    "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -95,6 +95,7 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "regress" => regress(&args),
         "wls" => wls(&args),
         "ridge" => ridge(&args),
+        "lasso" => lasso(&args),
         "logit" => logit(&args),
         "predict" => predict(&args),
         "robustse" => robustse(&args),
@@ -797,6 +798,154 @@ fn ridge(args: &[Expr]) -> Result<Expr, String> {
 /// The index of the first constant (intercept-spanning) column, if any.
 fn constant_col_index(rows: &[Vec<Expr>]) -> Option<usize> {
     (0..rows[0].len()).find(|&j| rows.iter().all(|r| r[j] == rows[0][j]))
+}
+
+/// Lasso regression: the L1-penalized estimator minimizing
+/// (1/2n)·‖y − Xβ‖₂² + λ·‖β‖₁ over the non-intercept coefficients. Where ridge's
+/// L2 penalty only shrinks, the L1 penalty drives coefficients *exactly* to
+/// zero, so lasso doubles as variable selection (`df` reports how many survive).
+/// There's no closed form — the fit is cyclic coordinate descent with
+/// soft-thresholding, so, like `logit`, the estimates are floats. The intercept
+/// is never penalized, and lasso handles more predictors than observations.
+/// Predictors on very different scales should be standardized first, since one
+/// shared λ penalizes every coefficient equally.
+fn lasso(args: &[Expr]) -> Result<Expr, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "stats.lasso expects 3 argument(s) (X, y, lambda), got {}",
+            args.len()
+        ));
+    }
+    let (x, y_expr) = model_data("stats.lasso", &args[0], &args[1])?;
+    let n = y_expr.len();
+    if n < 2 {
+        return Err("stats.lasso needs at least 2 observations".into());
+    }
+    let lambda = &args[2];
+    let lam = eval_f64(lambda, &[])
+        .map_err(|_| "stats.lasso: the penalty lambda must be a nonnegative number".to_string())?;
+    if lam.is_nan() || lam < 0.0 {
+        return Err("stats.lasso: the penalty lambda must be nonnegative".into());
+    }
+    let y: Vec<f64> = y_expr
+        .iter()
+        .map(|yi| eval_f64(yi, &[]))
+        .collect::<Result<_, _>>()?;
+
+    let mut rows = design_rows("stats.lasso", &x, n)?;
+    let added_intercept = !has_constant_col(&rows);
+    if added_intercept {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let k = rows[0].len();
+    let intercept_idx = constant_col_index(&rows);
+    let xmat: Vec<Vec<f64>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|e| eval_f64(e, &[]))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<_, _>>()?;
+
+    let (beta, iters, converged) = coord_descent(&xmat, &y, lam, intercept_idx, k);
+
+    // Fit, residuals, and the usual fit summaries — all in f64.
+    let fitted: Vec<f64> = xmat
+        .iter()
+        .map(|xi| (0..k).map(|j| xi[j] * beta[j]).sum())
+        .collect();
+    let resid: Vec<f64> = y.iter().zip(&fitted).map(|(yi, fi)| yi - fi).collect();
+    let rss: f64 = resid.iter().map(|r| r * r).sum();
+    let ybar = y.iter().sum::<f64>() / n as f64;
+    let ss_tot: f64 = y.iter().map(|yi| (yi - ybar).powi(2)).sum();
+    let nonzero = beta.iter().filter(|b| b.abs() > 1e-11).count();
+
+    let mut fields = vec![
+        ("coefficients".into(), col(nlfit::floats(&beta)?)),
+        ("fitted".into(), col(nlfit::floats(&fitted)?)),
+        ("residuals".into(), col(nlfit::floats(&resid)?)),
+        ("rss".into(), nlfit::float_expr(rss)?),
+        ("lambda".into(), lambda.clone()),
+        ("df".into(), int(nonzero as i64)),
+        ("intercept".into(), Expr::Bool(added_intercept)),
+        ("iterations".into(), int(iters as i64)),
+        ("converged".into(), Expr::Bool(converged)),
+        ("n".into(), int(n as i64)),
+        ("k".into(), int(k as i64)),
+    ];
+    if ss_tot != 0.0 {
+        fields.push(("r2".into(), nlfit::float_expr(1.0 - rss / ss_tot)?));
+    }
+    structure(fields)
+}
+
+/// Cyclic coordinate descent for lasso, minimizing (1/2n)‖y−Xβ‖² + λΣ|βⱼ| with
+/// the intercept column (if any) left unpenalized. Each sweep updates every
+/// coordinate to the soft-thresholded least-squares value against the current
+/// partial residual, maintaining `r = y − Xβ` incrementally. Returns (β, sweeps,
+/// converged).
+fn coord_descent(
+    x: &[Vec<f64>],
+    y: &[f64],
+    lambda: f64,
+    intercept_idx: Option<usize>,
+    k: usize,
+) -> (Vec<f64>, usize, bool) {
+    let nf = y.len() as f64;
+    // Column second moments zⱼ = (1/n)Σ xᵢⱼ², the per-coordinate curvature.
+    let z: Vec<f64> = (0..k)
+        .map(|j| x.iter().map(|xi| xi[j] * xi[j]).sum::<f64>() / nf)
+        .collect();
+    let mut beta = vec![0.0_f64; k];
+    let mut resid = y.to_vec(); // r = y − Xβ, and β starts at 0
+    let mut iters = 0;
+    let mut converged = false;
+    for it in 0..10_000 {
+        iters = it + 1;
+        let mut max_delta = 0.0_f64;
+        for j in 0..k {
+            if z[j] == 0.0 {
+                continue; // a zero column carries no information
+            }
+            // ρⱼ = (1/n)Σ xᵢⱼ(rᵢ + xᵢⱼβⱼ): the fit of column j to the partial
+            // residual that adds its own current contribution back in.
+            let rho =
+                x.iter().zip(&resid).map(|(xi, ri)| xi[j] * ri).sum::<f64>() / nf + z[j] * beta[j];
+            let bj = if Some(j) == intercept_idx {
+                rho / z[j]
+            } else {
+                soft_threshold(rho, lambda) / z[j]
+            };
+            let delta = bj - beta[j];
+            if delta != 0.0 {
+                for (xi, ri) in x.iter().zip(resid.iter_mut()) {
+                    *ri -= xi[j] * delta;
+                }
+                beta[j] = bj;
+                max_delta = max_delta.max(delta.abs());
+            }
+        }
+        if max_delta < 1e-10 {
+            converged = true;
+            break;
+        }
+    }
+    (beta, iters, converged)
+}
+
+/// Soft-thresholding S(ρ, λ) = sign(ρ)·max(|ρ| − λ, 0), the proximal operator of
+/// the L1 penalty and the reason lasso coefficients reach exactly zero.
+fn soft_threshold(rho: f64, lambda: f64) -> f64 {
+    if rho > lambda {
+        rho - lambda
+    } else if rho < -lambda {
+        rho + lambda
+    } else {
+        0.0
+    }
 }
 
 // -- the formula interface ----------------------------------------------------

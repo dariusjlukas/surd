@@ -1505,6 +1505,47 @@ fn logistic_regression() {
 }
 
 #[test]
+fn lasso_regression() {
+    // λ = 0 recovers ordinary least squares: slope = OLS's 3/5, intercept 11/5.
+    // Coefficients are floats (coordinate descent), so compare within tolerance.
+    let z = "z := stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 0)";
+    assert_eq!(ev_all(&[z, "z.converged"]), "true");
+    assert_eq!(
+        ev_all(&[z, "abs(z.coefficients[1] - 11/5) < 1/10^6"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[z, "abs(z.coefficients[2] - 3/5) < 1/10^6"]),
+        "true"
+    );
+    // λ = 1/5: hand-checked soft-thresholded solution [5/2, 1/2], both active.
+    let l = "l := stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 1/5)";
+    assert_eq!(
+        ev_all(&[l, "abs(l.coefficients[1] - 5/2) < 1/10^6"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[l, "abs(l.coefficients[2] - 1/2) < 1/10^6"]),
+        "true"
+    );
+    assert_eq!(ev_all(&[l, "l.df"]), "2");
+    // A large penalty drives the slope to *exactly* zero (the L1 corner),
+    // leaving the unpenalized intercept at mean(y) = 4; df drops to 1.
+    let h = "h := stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 2)";
+    assert_eq!(ev_all(&[h, "h.coefficients[1]"]), "4");
+    assert_eq!(ev_all(&[h, "h.coefficients[2]"]), "0");
+    assert_eq!(ev_all(&[h, "h.df"]), "1");
+    // More predictors than observations is fine for lasso (unlike OLS).
+    assert_eq!(
+        ev("stats.lasso([1, 0, 2; 0, 1, 1; 1, 1, 0], [1; 2; 3], 1/10).df"),
+        "2"
+    );
+    // The penalty must be a nonnegative number.
+    assert!(ev("stats.lasso([1; 2; 3], [1; 2; 3], -1)")
+        .starts_with("error: stats.lasso: the penalty lambda must be nonnegative"));
+}
+
+#[test]
 fn data_namespace_transforms() {
     // Centering and standardizing stay exact (the z-scores are surds).
     assert_eq!(ev("data.center([1; 2; 3; 4; 5])[1]"), "-2");
