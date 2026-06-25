@@ -7,7 +7,7 @@
 
 [package]
 name = "surd-desktop"
-version = "0.5.0"
+version = "0.6.0"
 description = "surd — exact-by-default mathematical scratchpad (desktop)"
 edition = "2021"
 
