@@ -101,7 +101,7 @@ export function InputBar() {
           }}
         />
         <button
-          onClick={() => insertCell(null, 'markdown')}
+          onClick={() => insertCell('end', 'markdown')}
           title="add a text (markdown) cell"
           className="shrink-0 rounded-md border border-edge px-2 py-0.5 text-xs text-faint hover:border-edge-strong hover:text-ink"
         >

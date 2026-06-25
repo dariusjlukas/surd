@@ -12,6 +12,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { downloadNotebook, parseNotebookFile } from '../state/notebookFile'
+import { exportNotebookPdf } from './exportPdf'
 import { useSettings } from '../state/settings'
 import { untitledName, useNotebook, type Notebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
@@ -166,6 +167,13 @@ function NotebookRow({ nb, active }: { nb: Notebook; active: boolean }) {
           },
           { label: 'Rename…', onSelect: startRename },
           { label: 'Export as JSON', onSelect: () => downloadNotebook(nb) },
+          {
+            label: 'Export as PDF…',
+            onSelect: () =>
+              void exportNotebookPdf(nb).catch((e) =>
+                console.error('PDF export failed', e),
+              ),
+          },
           'divider',
           { label: 'Delete', onSelect: remove, danger: true },
         ])

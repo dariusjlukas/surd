@@ -243,3 +243,126 @@
 .md-cell strong {
   color: var(--ink);
 }
+
+/* ---------------------------------------------------------------------------
+ * PDF / print export.
+ *
+ * exportNotebookPdf builds a #print-report element in <body> and calls
+ * window.print(). On screen it's hidden; when printing we hide the live app and
+ * show the report in a fixed light, paper-friendly theme (independent of the
+ * app's dark/light mode, since a report is shared and printed on white).
+ * ------------------------------------------------------------------------- */
+#print-report {
+  display: none;
+}
+@media print {
+  /* Swap the whole app for the report (covers React's #root and any portals). */
+  body > * {
+    display: none !important;
+  }
+  body > #print-report {
+    display: block !important;
+    color: #0f172a;
+    background: #ffffff;
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      sans-serif;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  @page {
+    margin: 1.6cm;
+  }
+  #print-report .report-header {
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #cbd5e1;
+  }
+  #print-report .report-title {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  #print-report .report-date {
+    margin-top: 2px;
+    font-size: 11px;
+    color: #64748b;
+  }
+  /* A cell shouldn't split across a page boundary when it can be helped. */
+  #print-report .report-cell {
+    margin: 10px 0;
+    break-inside: avoid;
+  }
+  #print-report .report-src {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: #334155;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  #print-report .report-sigil {
+    color: #94a3b8;
+  }
+  #print-report .report-result,
+  #print-report .report-text {
+    margin-top: 3px;
+  }
+  #print-report .report-text {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: #0f172a;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  #print-report .report-error {
+    margin-top: 3px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: #b91c1c;
+  }
+  #print-report .report-note {
+    color: #64748b;
+    font-style: italic;
+  }
+  #print-report .report-plot {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin-top: 4px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+  }
+  /* KaTeX and prose inherit dark ink on the white page. */
+  #print-report .katex {
+    color: #0f172a;
+  }
+  #print-report .katex-display {
+    margin: 0.2rem 0;
+  }
+  /* Override the on-screen (theme-token) markdown colors for paper. */
+  #print-report .md-cell,
+  #print-report .md-cell h1,
+  #print-report .md-cell h2,
+  #print-report .md-cell h3,
+  #print-report .md-cell strong {
+    color: #0f172a;
+  }
+  #print-report .md-cell code {
+    background: #f1f5f9;
+    color: #0f172a;
+  }
+  #print-report .md-cell pre {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+  }
+  #print-report .md-cell a {
+    color: #1d4ed8;
+  }
+  #print-report .md-cell blockquote {
+    border-color: #cbd5e1;
+    color: #475569;
+  }
+}

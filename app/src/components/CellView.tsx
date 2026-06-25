@@ -5,9 +5,10 @@
 // state/staleness). Stale cells are flagged; the edited one keeps its editor
 // open until you re-run (enter, recomputing the cell and everything below it;
 // see store.recomputeFrom) or revert (esc). Markdown cells render sanitized
-// HTML and double-click into a plain editor. Committing an empty source
-// deletes the cell. Both kinds carry a right-click menu mirroring the hover
-// buttons.
+// HTML (with $…$/$$…$$ math via KaTeX, see ./markdown) and double-click into a
+// plain editor. Committing an empty source deletes the cell. A right-click menu
+// mirrors the hover buttons and can convert a cell between code and text
+// (store.setCellKind) or insert a new cell of either kind below.
 
 import {
   lazy,
@@ -20,8 +21,6 @@ import {
 } from 'react'
 import { faXmark } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
 import { insertNewlineAndIndent } from '@codemirror/commands'
 import type { KeyBinding } from '@codemirror/view'
 import { CodeEditor, type CodeEditorHandle } from '../editor/CodeEditor'
@@ -29,6 +28,7 @@ import { is_incomplete } from '../engine/lexer'
 import { useNotebook, type Cell } from '../state/store'
 import { useDrafts } from '../state/staleness'
 import { openContextMenu, type MenuEntry } from '../state/contextMenu'
+import { hydrateMath, renderMarkdown } from './markdown'
 import { MathOutput } from './MathOutput'
 
 // ThreeJS is the heaviest dependency; load it only when a plot first renders.
@@ -104,18 +104,6 @@ function CellButton({
   )
 }
 
-function InsertNoteButton({ afterId }: { afterId: string }) {
-  const insertCell = useNotebook((s) => s.insertCell)
-  return (
-    <CellButton
-      label="insert text cell below"
-      onClick={() => insertCell(afterId, 'markdown')}
-    >
-      +note
-    </CellButton>
-  )
-}
-
 const copy = (text: string) => void navigator.clipboard.writeText(text)
 
 // ---------------------------------------------------------------------------
@@ -127,12 +115,14 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
   const insertCell = useNotebook((s) => s.insertCell)
   const deleteCell = useNotebook((s) => s.deleteCell)
   const updateCell = useNotebook((s) => s.updateCell)
+  const setCellKind = useNotebook((s) => s.setCellKind)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
   // Actions are stable refs, so subscribing here never forces a re-render.
   const setDraft = useDrafts((s) => s.setDraft)
   const clearDraft = useDrafts((s) => s.clearDraft)
 
-  const [editing, setEditing] = useState(false)
+  // A freshly inserted cell (src === '') opens straight into edit mode.
+  const [editing, setEditing] = useState(cell.src === '')
   const editorRef = useRef<CodeEditorHandle>(null)
 
   // Drop any pending draft if the cell unmounts (deleted, notebook switched).
@@ -151,14 +141,20 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
     else void updateCell(cell.id, src) // writes src + recomputes from here down
   }
   const revert = () => {
+    // A never-committed insert (src === '') has nothing to revert to — drop it.
+    if (cell.src === '') return void deleteCell(cell.id)
     editorRef.current?.set(cell.src)
     close()
   }
   // Leaving an untouched cell collapses it back to the read view; one with
-  // un-run edits stays open so its stale marker persists. Read the draft
-  // imperatively so per-keystroke edits don't re-render the cell.
+  // un-run edits stays open so its stale marker persists. A freshly inserted
+  // cell left empty is abandoned — delete it. Read the draft imperatively so
+  // per-keystroke edits don't re-render the cell.
   const onBlur = () => {
     const draft = useDrafts.getState().drafts[cell.id]
+    if (cell.src === '' && (draft === undefined || draft.trim() === '')) {
+      return void deleteCell(cell.id)
+    }
     if (draft === undefined || draft === cell.src) close()
   }
   // The "run" control: apply this cell's pending edits if any, else re-run
@@ -203,10 +199,19 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
           { label: 'Copy result as LaTeX', onSelect: () => copy(r.latex) },
         ] satisfies MenuEntry[])
       : []),
+    {
+      label: 'Convert to text',
+      onSelect: () => void setCellKind(cell.id, 'markdown'),
+      disabled: !ready,
+    },
     'divider',
     {
-      label: 'Add note below',
-      onSelect: () => insertCell(cell.id, 'markdown'),
+      label: 'Insert code below',
+      onSelect: () => insertCell({ after: cell.id }, 'math'),
+    },
+    {
+      label: 'Insert text below',
+      onSelect: () => insertCell({ after: cell.id }, 'markdown'),
     },
     {
       label: 'Delete cell',
@@ -291,7 +296,6 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
               </CellButton>
             </>
           )}
-          <InsertNoteButton afterId={cell.id} />
           <DeleteButton cell={cell} />
         </span>
       </div>
@@ -352,7 +356,7 @@ function Output({ cell }: { cell: Cell }) {
             <div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />
           }
         >
-          <PlotView plot={r.plot} />
+          <PlotView plot={r.plot} cellId={cell.id} />
         </Suspense>
       ) : null
     case 'plot3d':
@@ -362,7 +366,7 @@ function Output({ cell }: { cell: Cell }) {
             <div className="h-80 max-w-2xl animate-pulse rounded-lg bg-surface" />
           }
         >
-          <Surface3DView plot={r.plot3d} />
+          <Surface3DView plot={r.plot3d} cellId={cell.id} />
         </Suspense>
       ) : null
     case 'function':
@@ -402,8 +406,12 @@ function DataCell({ cell }: { cell: Cell }) {
     },
     'divider',
     {
-      label: 'Add note below',
-      onSelect: () => insertCell(cell.id, 'markdown'),
+      label: 'Insert code below',
+      onSelect: () => insertCell({ after: cell.id }, 'math'),
+    },
+    {
+      label: 'Insert text below',
+      onSelect: () => insertCell({ after: cell.id }, 'markdown'),
     },
     {
       label: 'Delete cell',
@@ -432,7 +440,6 @@ function DataCell({ cell }: { cell: Cell }) {
               run
             </CellButton>
           )}
-          <InsertNoteButton afterId={cell.id} />
           <DeleteButton cell={cell} />
         </span>
       </div>
@@ -450,6 +457,8 @@ function DataCell({ cell }: { cell: Cell }) {
 function MarkdownCell({ cell }: { cell: Cell }) {
   const insertCell = useNotebook((s) => s.insertCell)
   const deleteCell = useNotebook((s) => s.deleteCell)
+  const setCellKind = useNotebook((s) => s.setCellKind)
+  const ready = useNotebook((s) => s.engineStatus === 'ready')
   const { editing, setEditing, editorRef, commit, cancel } =
     useCellEditing(cell)
 
@@ -465,12 +474,12 @@ function MarkdownCell({ cell }: { cell: Cell }) {
           ref={editorRef}
           initialDoc={cell.src}
           lang="plain"
-          placeholder="markdown — *italic*, **bold**, # heading, `code`"
+          placeholder="markdown — **bold**, # heading, `code`, $a^2+b^2$, $$\int$$"
           autoFocus
           keys={keys}
         />
         <div className="pt-0.5 text-[11px] text-faint">
-          shift+enter renders · esc cancels
+          shift+enter renders · esc cancels · $…$ and $$…$$ render as math
         </div>
       </div>
     )
@@ -483,10 +492,19 @@ function MarkdownCell({ cell }: { cell: Cell }) {
         openContextMenu(e, [
           { label: 'Edit', onSelect: () => setEditing(true) },
           { label: 'Copy source', onSelect: () => copy(cell.src) },
+          {
+            label: 'Convert to code',
+            onSelect: () => void setCellKind(cell.id, 'math'),
+            disabled: !ready,
+          },
           'divider',
           {
-            label: 'Add note below',
-            onSelect: () => insertCell(cell.id, 'markdown'),
+            label: 'Insert code below',
+            onSelect: () => insertCell({ after: cell.id }, 'math'),
+          },
+          {
+            label: 'Insert text below',
+            onSelect: () => insertCell({ after: cell.id }, 'markdown'),
           },
           {
             label: 'Delete cell',
@@ -510,7 +528,6 @@ function MarkdownCell({ cell }: { cell: Cell }) {
           >
             edit
           </CellButton>
-          <InsertNoteButton afterId={cell.id} />
           <DeleteButton cell={cell} />
         </span>
       </div>
@@ -519,12 +536,16 @@ function MarkdownCell({ cell }: { cell: Cell }) {
 }
 
 function MarkdownView({ src }: { src: string }) {
-  const html = useMemo(
-    () => DOMPurify.sanitize(marked.parse(src, { async: false })),
-    [src],
-  )
+  const ref = useRef<HTMLDivElement>(null)
+  const html = useMemo(() => renderMarkdown(src), [src])
+  // KaTeX renders into the math placeholders after the sanitized HTML lands in
+  // the DOM, so its glyph-positioning styles never face DOMPurify.
+  useEffect(() => {
+    if (ref.current) hydrateMath(ref.current)
+  }, [html])
   return (
     <div
+      ref={ref}
       className="md-cell text-sm"
       dangerouslySetInnerHTML={{ __html: html }}
     />

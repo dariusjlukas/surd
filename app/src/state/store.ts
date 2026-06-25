@@ -38,6 +38,10 @@ export type EngineStatus = 'booting' | 'restoring' | 'ready' | 'busy' | 'failed'
  * the workspace name it binds; `src` is only a display label. */
 export type CellKind = 'math' | 'markdown' | 'data'
 
+/** Where to drop a freshly inserted cell: next to a neighbor (`{after}` /
+ * `{before}` carry that neighbor's id) or at either end of the notebook. */
+export type InsertPos = { after: string } | { before: string } | 'start' | 'end'
+
 export interface Cell {
   id: string
   kind: CellKind
@@ -155,10 +159,15 @@ interface NotebookState {
   rerun(cellId: string): Promise<void>
   /** Change a cell's source. Math cells recompute from that point down. */
   updateCell(cellId: string, src: string): Promise<void>
+  /** Convert a cell between code (`math`) and formatted text (`markdown`) in
+   * place — the source text is reinterpreted. The engine state replays from
+   * that cell down (a former binding is undone; a new one is evaluated), so
+   * this needs the engine ready. Data cells aren't convertible. */
+  setCellKind(cellId: string, kind: 'math' | 'markdown'): Promise<void>
   deleteCell(cellId: string): Promise<void>
-  /** Insert an empty cell after `afterId` (or append when null). Returns the
-   * new cell's id; an empty cell opens in edit mode in the UI. */
-  insertCell(afterId: string | null, kind: CellKind): string
+  /** Insert an empty cell at `pos` (next to a neighbor, or at an end). Returns
+   * the new cell's id; an empty cell opens in edit mode in the UI. */
+  insertCell(pos: InsertPos, kind: CellKind): string
   cancel(): void
   clearNotebook(): void
   resample(
@@ -447,6 +456,27 @@ export const useNotebook = create<NotebookState>()(
           await recomputeFrom(nb.id, index)
         },
 
+        async setCellKind(cellId, kind) {
+          if (get().engineStatus !== 'ready') return
+          const nb = active()
+          const index = nb.cells.findIndex((c) => c.id === cellId)
+          if (index < 0) return
+          const cell = nb.cells[index]
+          if (cell.kind === 'data' || cell.kind === kind) return
+          // A math cell that bound a value (ran cleanly) needs that effect
+          // undone; becoming math always needs evaluating. Either way, replay
+          // from here. A never-bound math→markdown is a pure relabel.
+          const undoesBinding =
+            cell.kind === 'math' && cell.status === 'done' && !!cell.result?.ok
+          const needsReplay = kind === 'math' || undoesBinding
+          patchCell(nb.id, cellId, {
+            kind,
+            result: undefined,
+            status: kind === 'math' ? 'pending' : 'done',
+          })
+          if (needsReplay) await recomputeFrom(nb.id, index)
+        },
+
         async deleteCell(cellId: string) {
           const nb = active()
           const index = nb.cells.findIndex((c) => c.id === cellId)
@@ -465,7 +495,7 @@ export const useNotebook = create<NotebookState>()(
           if (affectsWorkspace) await recomputeFrom(nb.id, index)
         },
 
-        insertCell(afterId, kind) {
+        insertCell(pos, kind) {
           const nb = active()
           const cell: Cell = {
             id: crypto.randomUUID(),
@@ -474,11 +504,18 @@ export const useNotebook = create<NotebookState>()(
             status: 'done',
           }
           patch(nb.id, (n) => {
-            const at = afterId
-              ? n.cells.findIndex((c) => c.id === afterId) + 1
-              : n.cells.length
+            const at =
+              pos === 'start'
+                ? 0
+                : pos === 'end'
+                  ? n.cells.length
+                  : 'after' in pos
+                    ? n.cells.findIndex((c) => c.id === pos.after) + 1
+                    : n.cells.findIndex((c) => c.id === pos.before)
+            // A neighbor id we can't find (concurrent delete) → append.
+            const idx = at < 0 ? n.cells.length : at
             return {
-              cells: [...n.cells.slice(0, at), cell, ...n.cells.slice(at)],
+              cells: [...n.cells.slice(0, idx), cell, ...n.cells.slice(idx)],
             }
           })
           return cell.id

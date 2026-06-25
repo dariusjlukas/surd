@@ -96,6 +96,19 @@ export async function saveDataUrl(
   a.click()
 }
 
+/** Open the native print dialog for the app's own content — the path to "Save
+ * as PDF". The desktop webview (WKWebView on macOS) treats JS `window.print()`
+ * as a no-op, so the Tauri build routes through a Rust command that runs the
+ * platform print operation; the web build uses the browser's `window.print()`.
+ * Both render the live page under its `@media print` stylesheet. */
+export async function printDocument(): Promise<void> {
+  if (isTauri()) {
+    await invoke('print_webview')
+    return
+  }
+  window.print()
+}
+
 /** Install a global click handler that opens external (http/https) links in
  * the system browser instead of navigating the app's webview. No-op on the
  * web build. Returns a teardown function. */

@@ -23,11 +23,20 @@ import { MathInline } from '../components/MathOutput'
 import { nameToLatex } from '../engine/nameLatex'
 import { LinePlot, seriesColorToken } from './LinePlot'
 import { formatTick, niceTicks, quantileDomain } from './scales'
+import { registerPlotSnapshot } from './snapshots'
 import { saveDataUrl } from '../platform/desktop'
 
 const RESAMPLE_DEBOUNCE_MS = 180
 
-export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
+export function PlotView({
+  plot: rawPlot,
+  cellId,
+}: {
+  plot: PlotData
+  /** Owning cell id, when shown in a notebook cell: registers this live view
+   * for PDF export (see plot/snapshots). Absent for previews/tests. */
+  cellId?: string
+}) {
   // Pre-multi-curve persisted results normalize to a one-series shape.
   const plot = useMemo(() => normalizePlotData(rawPlot), [rawPlot])
   const resample = useNotebook((s) => s.resample)
@@ -100,6 +109,16 @@ export function PlotView({ plot: rawPlot }: { plot: PlotData }) {
       painterRef.current = null
     }
   }, [])
+
+  // Expose this live view to the PDF exporter as a PNG source. painterRef is
+  // set by the lifecycle effect above, which runs first.
+  useEffect(() => {
+    if (!cellId) return
+    return registerPlotSnapshot(
+      cellId,
+      () => painterRef.current?.snapshot() ?? '',
+    )
+  }, [cellId])
 
   useEffect(() => {
     painterRef.current?.setData(points, scatterFlags)

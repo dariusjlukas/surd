@@ -22,6 +22,7 @@ import {
   Z_SCALE,
   type Orbit,
 } from './SurfacePlot'
+import { registerPlotSnapshot } from './snapshots'
 import { saveDataUrl } from '../platform/desktop'
 
 /** Header toggle for the surface draw style (see SurfaceRender). */
@@ -143,7 +144,15 @@ type Drag =
    * so that point stays under the cursor (no incremental drift). */
   | { mode: 'pan'; pointerId: number; grabX: number; grabY: number }
 
-export function Surface3DView({ plot }: { plot: Plot3dData }) {
+export function Surface3DView({
+  plot,
+  cellId,
+}: {
+  plot: Plot3dData
+  /** Owning cell id, when shown in a notebook cell: registers this live view
+   * for PDF export (see plot/snapshots). Absent for previews/tests. */
+  cellId?: string
+}) {
   const resample3d = useNotebook((s) => s.resample3d)
   const themeKey = useSettings((s) => `${s.resolvedMode}/${s.accent}`)
   const surfaceRender = useSettings((s) => s.surfaceRender)
@@ -462,6 +471,15 @@ export function Surface3DView({ plot }: { plot: Plot3dData }) {
       painterRef.current = null
     }
   }, [])
+
+  // Expose this live view to the PDF exporter as a PNG source (see above).
+  useEffect(() => {
+    if (!cellId) return
+    return registerPlotSnapshot(
+      cellId,
+      () => painterRef.current?.snapshot() ?? '',
+    )
+  }, [cellId])
 
   useEffect(() => {
     painterRef.current?.setData(

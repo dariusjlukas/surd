@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useMemo, useRef } from 'react'
 import { useSettings } from '../state/settings'
-import { useActiveNotebook, useNotebook } from '../state/store'
+import { useActiveNotebook, useNotebook, type InsertPos } from '../state/store'
 import { computeStaleCells, useDrafts } from '../state/staleness'
 import { CellView } from './CellView'
+import { exportNotebookPdf } from './exportPdf'
 import { openContextMenu } from '../state/contextMenu'
 
 export function NotebookView() {
@@ -28,12 +29,25 @@ export function NotebookView() {
 
   return (
     <div
-      className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6"
+      className="flex-1 overflow-y-auto px-4 py-4 sm:px-6"
       onContextMenu={(e) =>
         openContextMenu(e, [
           {
+            label: 'Add code cell',
+            onSelect: () => insertCell('end', 'math'),
+          },
+          {
             label: 'Add text cell',
-            onSelect: () => insertCell(null, 'markdown'),
+            onSelect: () => insertCell('end', 'markdown'),
+          },
+          'divider',
+          {
+            label: 'Export as PDF…',
+            disabled: count === 0,
+            onSelect: () =>
+              void exportNotebookPdf(notebook).catch((e) =>
+                console.error('PDF export failed', e),
+              ),
           },
           'divider',
           {
@@ -55,10 +69,46 @@ export function NotebookView() {
       }
     >
       {count === 0 && <Welcome />}
+      {count > 0 && <CellInserter pos="start" />}
       {notebook.cells.map((c) => (
-        <CellView key={c.id} cell={c} stale={stale.has(c.id)} />
+        <Fragment key={c.id}>
+          <CellView cell={c} stale={stale.has(c.id)} />
+          <CellInserter pos={{ after: c.id }} />
+        </Fragment>
       ))}
       <div ref={endRef} />
+    </div>
+  )
+}
+
+// A thin hover zone between rows: reveals "+ code" / "+ text" buttons that drop
+// a fresh empty cell at this spot. The 1rem height also supplies the vertical
+// rhythm between cells (the list dropped its `space-y` for this).
+function CellInserter({ pos }: { pos: InsertPos }) {
+  const insertCell = useNotebook((s) => s.insertCell)
+  const btn =
+    'rounded border border-edge bg-app px-1.5 text-[11px] leading-4 text-faint hover:border-edge-strong hover:text-ink'
+  return (
+    <div className="group/ins relative flex h-4 items-center justify-center">
+      <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-edge-strong opacity-0 transition-opacity group-hover/ins:opacity-50" />
+      <div className="relative flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/ins:opacity-100">
+        <button
+          type="button"
+          title="insert a code cell here"
+          onClick={() => insertCell(pos, 'math')}
+          className={btn}
+        >
+          + code
+        </button>
+        <button
+          type="button"
+          title="insert a text cell here"
+          onClick={() => insertCell(pos, 'markdown')}
+          className={btn}
+        >
+          + text
+        </button>
+      </div>
     </div>
   )
 }
@@ -98,8 +148,9 @@ function Welcome() {
       <p className="mt-4 text-xs text-faint">
         <code>:=</code> assigns · <code>plot(f, x, a, b)</code> draws · ↑/↓
         recalls history · click a cell to edit it (re-running recomputes
-        everything below) · <em>+ note</em> adds markdown · notebooks save
-        automatically
+        everything below) · hover between cells for <em>+ code</em> /{' '}
+        <em>+ text</em> · text cells render <code>$LaTeX$</code> · notebooks
+        save automatically
       </p>
     </div>
   )

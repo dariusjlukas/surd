@@ -44,12 +44,30 @@ async fn save_export(
     }
 }
 
+/// Open the native print dialog for the app's webview — the desktop path to
+/// "Save as PDF". WKWebView on macOS ignores JS `window.print()` (it's a no-op),
+/// so the frontend's PDF export routes through this command, which runs the
+/// platform's print operation on the live page (honoring its `@media print` /
+/// `@page` CSS). The web build calls `window.print()` directly.
+#[tauri::command]
+fn print_webview(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        window.print().map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = window;
+        Err("printing is not supported on this platform".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![save_export])
+        .invoke_handler(tauri::generate_handler![save_export, print_webview])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
