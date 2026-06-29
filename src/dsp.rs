@@ -85,7 +85,7 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             let Expr::Signal(s) = &args[0] else {
                 return Err("dsp.peak expects a signal".into());
             };
-            Ok(signal::peak(s))
+            signal::peak(s)
         }
         "rms" => {
             arity("dsp.rms", &args, 1)?;
@@ -363,17 +363,22 @@ fn round_half_away(r: &BigRational) -> BigInt {
     }
 }
 
-/// `dsp.fft(s)` / `dsp.ifft(f)`: the certified bulk transform. A real signal
-/// goes in; `struct(re, im)` of signals comes out (and goes back in for the
-/// inverse). For exact spectra use `dsp.dft`.
+/// `dsp.fft(s)` / `dsp.ifft(f)`: the certified bulk transform. A real or
+/// complex signal goes in and a single complex signal comes out (use `re`/`im`
+/// to split it, `abs` for the magnitude spectrum). For back-compat the inverse
+/// also accepts a legacy `struct(re = signal, im = signal)`. Exact spectra come
+/// from `dsp.dft`.
 fn bulk_transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, String> {
     arity(name, &args, 1)?;
-    let (re, im) = match &args[0] {
-        Expr::Signal(s) => (s.clone(), None),
+    let input = match &args[0] {
+        Expr::Signal(s) => (**s).clone(),
+        // Legacy struct(re, im) input — fold it back into a complex signal.
         Expr::Struct(fields) => {
             let get = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, v)| v);
             match (get("re"), get("im")) {
-                (Some(Expr::Signal(r)), Some(Expr::Signal(i))) => (r.clone(), Some(i.clone())),
+                (Some(Expr::Signal(r)), Some(Expr::Signal(i))) => {
+                    signal::complex((**r).clone(), (**i).clone())?
+                }
                 _ => {
                     return Err(format!(
                         "{} expects a signal or struct(re = signal, im = signal)",
@@ -389,11 +394,7 @@ fn bulk_transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, St
             ))
         }
     };
-    let (r, i) = signal::fft(&re, im.as_deref(), inverse)?;
-    structure(vec![
-        ("re".to_string(), Expr::Signal(Rc::new(r))),
-        ("im".to_string(), Expr::Signal(Rc::new(i))),
-    ])
+    Ok(Expr::Signal(Rc::new(signal::fft_signal(&input, inverse)?)))
 }
 
 /// `dsp.remez(n, edges, desired[, weights])`: exact Parks–McClellan. Band

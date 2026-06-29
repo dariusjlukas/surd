@@ -27,6 +27,7 @@ import { initLexer } from '../engine/lexer'
 import type {
   EvalResult,
   ImportFormat,
+  RawExportFormat,
   ReplayEntry,
   WorkspaceEntry,
 } from '../engine/types'
@@ -154,6 +155,8 @@ interface NotebookState {
   ): Promise<void>
   /** Serialize the named workspace variables into one surd-data file. */
   exportData(names: string[]): Promise<string>
+  /** Export one variable as raw little-endian binary; resolves to base64. */
+  exportRaw(name: string, format: RawExportFormat): Promise<string>
   /** Re-evaluate a cell and everything below it (the cell's old effect on
    * the workspace must be undone, which means replaying the prefix). */
   rerun(cellId: string): Promise<void>
@@ -432,6 +435,10 @@ export const useNotebook = create<NotebookState>()(
 
         exportData(names: string[]) {
           return client.exportData(names)
+        },
+
+        exportRaw(name: string, format: RawExportFormat) {
+          return client.exportRaw(name, format)
         },
 
         async rerun(cellId: string) {

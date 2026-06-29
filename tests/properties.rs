@@ -334,6 +334,7 @@ fn endpoint(s: &SignalData, i: usize, high: bool) -> BigRational {
         SignalData::Big { lo, hi, .. } => {
             float_to_rational(if high { &hi[i] } else { &lo[i] }).expect("finite endpoint")
         }
+        SignalData::Complex { .. } => unreachable!("these properties exercise real signals"),
     }
 }
 

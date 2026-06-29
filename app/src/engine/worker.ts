@@ -46,6 +46,9 @@ function runImport(
     case 'raw-f32':
     case 'raw-i16':
       return s.import_raw_data(fromBase64(payload), format.slice(4), name)
+    case 'raw-cf32':
+    case 'raw-cf64':
+      return s.import_raw_iq_data(fromBase64(payload), format.slice(4), name)
     case 'csv-packed':
       return s.import_csv_packed_data(payload, name)
     default:
@@ -82,6 +85,13 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     case 'exportData': {
       const result = JSON.parse(
         session!.export_data(JSON.stringify(msg.names)),
+      ) as ExportResult
+      post({ type: 'exported', id: msg.id, result })
+      break
+    }
+    case 'exportRaw': {
+      const result = JSON.parse(
+        session!.export_raw(msg.name, msg.format),
       ) as ExportResult
       post({ type: 'exported', id: msg.id, result })
       break

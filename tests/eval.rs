@@ -1110,10 +1110,11 @@ fn signal_division_by_zero_sample_refuses() {
 fn signal_fft_roundtrip_within_certified_bounds() {
     // The certified peak of the round-trip error is provably tiny — this is
     // a *decidable* comparison (Float vs rational).
+    // fft/ifft now return a single complex signal; re(...) pulls the real part.
     assert_eq!(
         ev_all(&[
             "s := signal([1; 2; 3; 4; 5; 6; 7; 8])",
-            "r := dsp.ifft(dsp.fft(s)).re",
+            "r := re(dsp.ifft(dsp.fft(s)))",
             "dsp.peak(r - s) < 1/10^12",
         ]),
         "true"
@@ -1122,8 +1123,57 @@ fn signal_fft_roundtrip_within_certified_bounds() {
     assert!(ev_all(&["s := signal([1; 2; 3])", "dsp.fft(s)"])
         .starts_with("error: fft length must be a power of two"));
     assert_eq!(
-        ev_all(&["s := signal([1; 2; 3])", "len(dsp.fft(dsp.pad(s, 4)).re)"]),
+        ev_all(&["s := signal([1; 2; 3])", "len(re(dsp.fft(dsp.pad(s, 4))))"]),
         "4"
+    );
+}
+
+#[test]
+fn complex_signals_pack_split_and_compute() {
+    // Complex entries pack into a complex signal; integer parts stay exact.
+    assert_eq!(
+        ev("signal([1 + 2*I; 3 - 4*I])"),
+        "<signal: 2 samples, complex f64, exact>"
+    );
+    // re/im pull out real signals; indexing reads a (real) midpoint.
+    assert_eq!(
+        ev_all(&["z := signal([1 + 2*I; 3 - 4*I])", "re(z)[2]"]),
+        "3"
+    );
+    assert_eq!(
+        ev_all(&["z := signal([1 + 2*I; 3 - 4*I])", "im(z)[1]"]),
+        "2"
+    );
+    // |3 + 4i| = 5, within the certified envelope.
+    assert_eq!(
+        ev_all(&[
+            "z := signal([3 + 4*I])",
+            "dsp.peak(abs(z) - signal([5])) < 1/10^9"
+        ]),
+        "true"
+    );
+    // i·i = −1: complex .* really is the complex product.
+    assert_eq!(
+        ev_all(&[
+            "z := signal([1*I])",
+            "dsp.peak((z .* z) - signal([-1])) < 1/10^9"
+        ]),
+        "true"
+    );
+    // conj flips the imaginary part.
+    assert_eq!(ev_all(&["z := signal([1 + 2*I])", "im(conj(z))[1]"]), "-2");
+}
+
+#[test]
+fn complex_fft_roundtrips() {
+    // ifft∘fft is the identity on a complex signal too (within bounds).
+    assert_eq!(
+        ev_all(&[
+            "z := signal([1 + 1*I; 2 - 1*I; 0 + 3*I; -1 - 2*I])",
+            "w := dsp.ifft(dsp.fft(z))",
+            "dsp.peak(w - z) < 1/10^12",
+        ]),
+        "true"
     );
 }
 

@@ -129,7 +129,7 @@ expect("signal plot kind", sigPlot.kind, "plot");
 expect("signal plot fixed", sigPlot.plot.series[0].fixed, true);
 expect("signal plot points", sigPlot.plot.series[0].points.length, 4);
 const fftOk = ev(
-  "dsp.peak(dsp.ifft(dsp.fft(dsp.pad(snd, 4))).re - dsp.pad(snd, 4)) < 1/10^12",
+  "dsp.peak(re(dsp.ifft(dsp.fft(dsp.pad(snd, 4)))) - dsp.pad(snd, 4)) < 1/10^12",
 );
 expect("signal fft roundtrip certified", fftOk.text, "true");
 
@@ -169,6 +169,39 @@ expect("wav rate", ev("clip.rate").text, "8000");
 expect("wav normalized exactly", ev("clip.ch1[2]").text, "0.5");
 expect("wav import is exact", ev("bound(clip.ch1)").text, "0");
 expect("wav slice", ev("len(slice(clip.ch1, 2, 3))").text, "3");
+
+// Interleaved I/Q import → a complex signal; re/im split, magnitude, the
+// complex FFT round-trip, and raw binary export all certified.
+const iqVals = new Float32Array([1, 2, 3, 4]); // I0,Q0,I1,Q1
+const iqBytes = new Uint8Array(iqVals.buffer);
+const iqRes = JSON.parse(s.import_raw_iq_data(iqBytes, "cf32", "iq"));
+expect("iq import ok", iqRes.ok, true);
+expect(
+  "iq is a complex signal",
+  ev("iq").text.startsWith("<signal: 2 samples, complex f64"),
+  true,
+);
+expect("iq real part", ev("re(iq)[2]").text, "3");
+expect("iq imag part", ev("im(iq)[1]").text, "2");
+expect("iq peak magnitude", ev("dsp.peak(iq) < 6").text, "true");
+expect(
+  "iq complex fft roundtrip certified",
+  ev("dsp.peak(dsp.ifft(dsp.fft(iq)) - iq) < 1/10^12").text,
+  "true",
+);
+const iqExp = JSON.parse(s.export_raw("iq", "cf32"));
+expect("iq raw export ok", iqExp.ok, true);
+const iqOut = new Uint8Array(Buffer.from(iqExp.data, "base64"));
+expect(
+  "iq raw export roundtrips the bytes",
+  iqOut.length === iqBytes.length && iqOut.every((b, i) => b === iqBytes[i]),
+  true,
+);
+expect(
+  "raw export rejects a mismatched format",
+  JSON.parse(s.export_raw("iq", "f32")).ok,
+  false,
+);
 
 // Big-substrate signals export losslessly (decimal-string bounds) …
 ev("hp := signal([1/3; -2], 40)");

@@ -141,18 +141,7 @@ fn encode(e: &Expr) -> Result<Value, String> {
         // the certified bounds survive export/import losslessly. Big bounds
         // write as exact decimal strings (a binary float terminates in
         // decimal) — also lossless, just bulkier.
-        Expr::Signal(s) => match crate::signal::big_decimal_bounds(s) {
-            Some(bounds) => {
-                let b = bounds?;
-                json!({ "t": "signal", "digits": b.digits, "lo": b.lo, "hi": b.hi })
-            }
-            None => match s.as_ref() {
-                crate::signal::SignalData::F64 { lo, hi } => {
-                    json!({ "t": "signal", "lo": lo, "hi": hi })
-                }
-                crate::signal::SignalData::Big { .. } => unreachable!("covered above"),
-            },
-        },
+        Expr::Signal(s) => encode_signal(s)?,
         Expr::Int(i) => number_from_text(&i.to_string()),
         Expr::Rat(r) => match rat_to_decimal(r) {
             // Decimal-friendly denominators (2^a·5^b) write as plain numbers.
@@ -198,6 +187,31 @@ fn encode(e: &Expr) -> Result<Value, String> {
 
 fn encode_all(es: &[Expr]) -> Result<Vec<Value>, String> {
     es.iter().map(encode).collect()
+}
+
+/// Encode a signal. f64 bounds ride as plain JSON numbers (serde round-trips
+/// f64 exactly), Big bounds as exact decimal strings, and a complex signal as
+/// its two encoded real parts under `kind: "complex"`.
+fn encode_signal(s: &crate::signal::SignalData) -> Result<Value, String> {
+    use crate::signal::SignalData;
+    if let SignalData::Complex { re, im } = s {
+        return Ok(json!({
+            "t": "signal",
+            "kind": "complex",
+            "re": encode_signal(re)?,
+            "im": encode_signal(im)?,
+        }));
+    }
+    Ok(match crate::signal::big_decimal_bounds(s) {
+        Some(bounds) => {
+            let b = bounds?;
+            json!({ "t": "signal", "digits": b.digits, "lo": b.lo, "hi": b.hi })
+        }
+        None => match s {
+            SignalData::F64 { lo, hi } => json!({ "t": "signal", "lo": lo, "hi": hi }),
+            _ => unreachable!("big/complex handled above"),
+        },
+    })
 }
 
 /// A JSON number from already-validated decimal text. With
@@ -367,6 +381,19 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
         "eq" => Ok(Expr::Equation(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
         "formula" => Ok(Expr::Formula(Box::new(dec("lhs")?), Box::new(dec("rhs")?))),
         "signal" => {
+            // Complex: two nested real signals.
+            if map.get("kind").and_then(Value::as_str) == Some("complex") {
+                let part = |k: &str| -> Result<crate::signal::SignalData, String> {
+                    match decode(field(k)?, Mode::Tagged)? {
+                        Expr::Signal(s) => Ok((*s).clone()),
+                        _ => Err(format!("'signal' {} part must be a signal", k)),
+                    }
+                };
+                return Ok(Expr::Signal(Rc::new(crate::signal::complex(
+                    part("re")?,
+                    part("im")?,
+                )?)));
+            }
             // Arbitrary precision (decimal-string bounds + digits)…
             if let Some(d) = map.get("digits") {
                 let digits = d
@@ -1047,6 +1074,180 @@ pub fn import_raw(bytes: &[u8], format: &str) -> Result<Expr, String> {
     })))
 }
 
+/// Parse a headerless little-endian array of *interleaved* I/Q samples
+/// (`[I0, Q0, I1, Q1, …]`) into a complex signal. `cf32` is interleaved f32
+/// (the GNU Radio `.cfile`/`.cf32` format), `cf64` interleaved f64.
+pub fn import_raw_iq(bytes: &[u8], format: &str) -> Result<Expr, String> {
+    let width = match format {
+        "cf32" => 4,
+        "cf64" => 8,
+        other => {
+            return Err(format!(
+                "unknown IQ format '{}' (supported: cf32, cf64; interleaved little-endian)",
+                other
+            ))
+        }
+    };
+    let frame = width * 2; // one complex sample = I + Q
+    if bytes.is_empty() || !bytes.len().is_multiple_of(frame) {
+        return Err(format!(
+            "IQ data length {} is not a multiple of {} bytes (interleaved I/Q pairs)",
+            bytes.len(),
+            frame
+        ));
+    }
+    let n = bytes.len() / frame;
+    if n > MAX_BULK_SAMPLES {
+        return Err(format!(
+            "IQ data too large ({} complex samples; cap {})",
+            n, MAX_BULK_SAMPLES
+        ));
+    }
+    let read = |b: &[u8]| -> f64 {
+        match format {
+            "cf64" => f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+            _ => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
+        }
+    };
+    let mut re = Vec::with_capacity(n);
+    let mut im = Vec::with_capacity(n);
+    for i in 0..n {
+        let base = i * frame;
+        let iv = read(&bytes[base..base + width]);
+        let qv = read(&bytes[base + width..base + frame]);
+        if !iv.is_finite() || !qv.is_finite() {
+            return Err(format!("non-finite value at complex sample {}", i + 1));
+        }
+        re.push(iv);
+        im.push(qv);
+    }
+    let real = |v: Vec<f64>| {
+        let hi = v.clone(); // exact conversions: point intervals
+        crate::signal::SignalData::F64 { lo: v, hi }
+    };
+    Ok(Expr::Signal(Rc::new(crate::signal::complex(
+        real(re),
+        real(im),
+    )?)))
+}
+
+/// Which raw-binary export a value supports, so the UI only offers formats that
+/// will work: `Some("real")` → f32/f64, `Some("complex")` → cf32/cf64, `None`
+/// → not raw-exportable. Mirrors what [`export_raw`] accepts, but cheaply (no
+/// f64 evaluation): a signal is classified by its variant; a matrix/scalar by
+/// whether every entry is a numeric literal (and whether any is complex).
+pub fn raw_export_kind(value: &Expr) -> Option<&'static str> {
+    /// `Some(is_complex)` if `e` is a plain numeric literal, else `None`.
+    fn numeric(e: &Expr) -> Option<bool> {
+        match e {
+            Expr::Int(_) | Expr::Rat(_) | Expr::Float(..) | Expr::Const(_) => Some(false),
+            Expr::Complex(re, im) if numeric(re).is_some() && numeric(im).is_some() => Some(true),
+            _ => None,
+        }
+    }
+    let tag = |complex: bool| if complex { "complex" } else { "real" };
+    match value {
+        Expr::Signal(s) => Some(tag(crate::signal::is_complex(s))),
+        Expr::Matrix(rows) => {
+            let mut any_complex = false;
+            for e in rows.iter().flatten() {
+                any_complex |= numeric(e)?;
+            }
+            Some(tag(any_complex))
+        }
+        other => numeric(other).map(tag),
+    }
+}
+
+/// Write a signal or numeric vector/matrix to raw little-endian binary.
+/// `format` picks the width and real/complex shape: `f32`/`f64` for real data,
+/// `cf32`/`cf64` for interleaved I/Q. This is a deliberate one-way exit from
+/// certification — each sample collapses to its midpoint, then rounds to the
+/// target width — so it's only valid on data that has a single value per slot.
+pub fn export_raw(value: &Expr, format: &str) -> Result<Vec<u8>, String> {
+    let (want_complex, narrow) = match format {
+        "f32" => (false, true),
+        "f64" => (false, false),
+        "cf32" => (true, true),
+        "cf64" => (true, false),
+        other => {
+            return Err(format!(
+                "unknown export format '{}' (use f32, f64, cf32, cf64)",
+                other
+            ))
+        }
+    };
+    let (re, im) = gather_streams(value)?;
+    match (want_complex, &im) {
+        (false, Some(_)) => return Err("this is complex data — export as cf32 or cf64".into()),
+        (true, None) => {
+            return Err("this is real data — export as f32 or f64 (cf32/cf64 are for I/Q)".into())
+        }
+        _ => {}
+    }
+    let mut out = Vec::new();
+    let mut push = |v: f64| {
+        if narrow {
+            out.extend_from_slice(&(v as f32).to_le_bytes());
+        } else {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    };
+    match im {
+        None => re.iter().for_each(|v| push(*v)),
+        Some(imv) => re.iter().zip(&imv).for_each(|(r, m)| {
+            push(*r);
+            push(*m);
+        }),
+    }
+    Ok(out)
+}
+
+/// The f64 value streams behind an exportable value: `(re, None)` for real
+/// data, `(re, Some(im))` for complex. Signals contribute their sample
+/// midpoints; a numeric matrix/vector its row-major entries (complex entries
+/// split into re/im, real ones get a zero imaginary part only if the whole
+/// collection is complex).
+fn gather_streams(e: &Expr) -> Result<(Vec<f64>, Option<Vec<f64>>), String> {
+    let scalar_f64 = |x: &Expr| crate::f64eval::eval_f64(x, &[]);
+    let entry_parts = |x: &Expr| -> Result<(f64, f64), String> {
+        match x {
+            Expr::Complex(r, i) => Ok((scalar_f64(r)?, scalar_f64(i)?)),
+            other => Ok((scalar_f64(other)?, 0.0)),
+        }
+    };
+    match e {
+        Expr::Signal(s) => Ok(crate::signal::midpoints_f64(s)),
+        Expr::Matrix(rows) => {
+            let entries: Vec<&Expr> = rows.iter().flatten().collect();
+            if entries.iter().any(|x| matches!(x, Expr::Complex(..))) {
+                let mut re = Vec::with_capacity(entries.len());
+                let mut im = Vec::with_capacity(entries.len());
+                for x in entries {
+                    let (r, i) = entry_parts(x)?;
+                    re.push(r);
+                    im.push(i);
+                }
+                Ok((re, Some(im)))
+            } else {
+                let mut re = Vec::with_capacity(entries.len());
+                for x in entries {
+                    re.push(scalar_f64(x).map_err(|_| {
+                        "matrix entries must be numeric to export to raw binary".to_string()
+                    })?);
+                }
+                Ok((re, None))
+            }
+        }
+        // A bare complex / numeric scalar exports as a single sample.
+        Expr::Complex(..) => entry_parts(e).map(|(r, i)| (vec![r], Some(vec![i]))),
+        _ => match scalar_f64(e) {
+            Ok(v) => Ok((vec![v], None)),
+            Err(_) => Err("only signals and numeric vectors/matrices export to raw binary".into()),
+        },
+    }
+}
+
 /// Parse CSV straight into packed signals (one per column) — the bulk path
 /// for files too large for exact rationals. Integers within ±2^53 pack as
 /// exact points; other decimals as certified ±1-ulp enclosures around the
@@ -1206,6 +1407,114 @@ mod bulk_tests {
 
         assert!(import_wav(b"not a wav").is_err());
         assert!(import_raw(&[1, 2, 3], "f32").is_err());
+    }
+
+    #[test]
+    fn iq_import_deinterleaves() {
+        // Interleaved [I0, Q0, I1, Q1, I2, Q2] as little-endian f32.
+        let iq: [f32; 6] = [1.0, 2.0, 3.0, 4.0, -5.0, -6.0];
+        let bytes: Vec<u8> = iq.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let Expr::Signal(s) = import_raw_iq(&bytes, "cf32").unwrap() else {
+            panic!("complex signal")
+        };
+        let crate::signal::SignalData::Complex { re, im } = s.as_ref() else {
+            panic!("complex variant")
+        };
+        let (
+            crate::signal::SignalData::F64 { lo: rl, .. },
+            crate::signal::SignalData::F64 { lo: il, .. },
+        ) = (re.as_ref(), im.as_ref())
+        else {
+            panic!("f64 parts")
+        };
+        assert_eq!(rl, &[1.0, 3.0, -5.0]); // the I channel
+        assert_eq!(il, &[2.0, 4.0, -6.0]); // the Q channel
+
+        // A dangling half-pair (odd number of f32) is rejected.
+        assert!(import_raw_iq(&bytes[..bytes.len() - 4], "cf32").is_err());
+        assert!(import_raw_iq(&bytes, "bogus").is_err());
+    }
+
+    #[test]
+    fn raw_binary_export_roundtrips() {
+        // Real f32: import → export reproduces the bytes (values are exactly
+        // f32-representable, so midpoint == value and f64→f32 is exact).
+        let reals: [f32; 4] = [1.5, -2.25, 0.0, 7.0];
+        let rbytes: Vec<u8> = reals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let sig = import_raw(&rbytes, "f32").unwrap();
+        assert_eq!(export_raw(&sig, "f32").unwrap(), rbytes);
+
+        // Interleaved I/Q cf32: same round-trip.
+        let iq: [f32; 6] = [1.0, 2.0, 3.0, 4.0, -5.0, -6.0];
+        let ibytes: Vec<u8> = iq.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let cz = import_raw_iq(&ibytes, "cf32").unwrap();
+        assert_eq!(export_raw(&cz, "cf32").unwrap(), ibytes);
+        // cf64 widens each f32 to 8 bytes: twice the length.
+        assert_eq!(export_raw(&cz, "cf64").unwrap().len(), ibytes.len() * 2);
+
+        // Shape mismatches are rejected with guidance.
+        assert!(export_raw(&sig, "cf32").unwrap_err().contains("real data"));
+        assert!(export_raw(&cz, "f32").unwrap_err().contains("complex data"));
+        assert!(export_raw(&sig, "f16").is_err());
+
+        // A numeric vector exports its entries (row-major).
+        let v = crate::matrix::matrix(vec![
+            vec![Expr::Int(BigInt::from(1))],
+            vec![Expr::Int(BigInt::from(2))],
+        ])
+        .unwrap();
+        assert_eq!(export_raw(&v, "f64").unwrap().len(), 16);
+    }
+
+    #[test]
+    fn raw_export_kind_classifies() {
+        let reals: [f32; 2] = [1.0, 2.0];
+        let rbytes: Vec<u8> = reals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(
+            raw_export_kind(&import_raw(&rbytes, "f32").unwrap()),
+            Some("real")
+        );
+        let iq: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+        let ibytes: Vec<u8> = iq.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(
+            raw_export_kind(&import_raw_iq(&ibytes, "cf32").unwrap()),
+            Some("complex")
+        );
+        // A real numeric vector and a bare scalar are real-exportable.
+        let v = crate::matrix::matrix(vec![vec![Expr::Int(BigInt::from(1))]]).unwrap();
+        assert_eq!(raw_export_kind(&v), Some("real"));
+        assert_eq!(raw_export_kind(&Expr::Int(BigInt::from(7))), Some("real"));
+        // A complex scalar and a vector holding one are complex.
+        assert_eq!(
+            raw_export_kind(&complex(
+                Expr::Int(BigInt::from(1)),
+                Expr::Int(BigInt::from(2))
+            )),
+            Some("complex")
+        );
+        // Non-numeric values offer no raw export.
+        assert_eq!(raw_export_kind(&Expr::Symbol("x".into())), None);
+        assert_eq!(raw_export_kind(&Expr::Bool(true)), None);
+    }
+
+    #[test]
+    fn complex_signal_export_roundtrips() {
+        // [1+2i, 3-4i] as an f64 complex signal, via export → import.
+        let entries = vec![
+            complex(Expr::Int(BigInt::from(1)), Expr::Int(BigInt::from(2))),
+            complex(Expr::Int(BigInt::from(3)), Expr::Int(BigInt::from(-4))),
+        ];
+        let original = crate::signal::pack(&entries, None).unwrap();
+        let sig = Expr::Signal(Rc::new(original.clone()));
+        let json = export_variables(&[("z", &sig)]).unwrap();
+        let back = import(&json).unwrap();
+        let Expr::Struct(fields) = &back else {
+            panic!()
+        };
+        let Expr::Signal(restored) = &fields[0].1 else {
+            panic!("field is a signal")
+        };
+        assert_eq!(&original, restored.as_ref(), "complex signal round-trips");
     }
 }
 

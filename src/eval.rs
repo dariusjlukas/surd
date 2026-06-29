@@ -819,6 +819,9 @@ impl Interpreter {
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(conjugate(e)));
                 }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::conj(s))));
+                }
                 Ok(conjugate(&args[0]))
             }
             "re" | "real" => {
@@ -826,12 +829,18 @@ impl Interpreter {
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(real_part(e)));
                 }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::re_part(s))));
+                }
                 Ok(real_part(&args[0]))
             }
             "im" | "imag" => {
                 arity(name, &args, 1)?;
                 if matrix::is_matrix(&args[0]) {
                     return matrix::try_map(&args[0], |e| Ok(imag_part(e)));
+                }
+                if let Expr::Signal(s) = &args[0] {
+                    return Ok(Expr::Signal(std::rc::Rc::new(signal::im_part(s))));
                 }
                 Ok(imag_part(&args[0]))
             }

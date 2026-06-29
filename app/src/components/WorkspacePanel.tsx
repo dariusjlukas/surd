@@ -16,11 +16,16 @@ import {
   faWaveSquare,
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import type { ImportFormat, WorkspaceEntry } from '../engine/types'
+import type {
+  ImportFormat,
+  RawExportFormat,
+  WorkspaceEntry,
+} from '../engine/types'
 import { nameToLatex } from '../engine/nameLatex'
 import { useNotebook } from '../state/store'
-import { downloadDataFile } from '../state/dataFile'
+import { downloadDataFile, downloadRawFile } from '../state/dataFile'
 import { openContextMenu } from '../state/contextMenu'
+import type { MenuEntry } from '../state/contextMenu'
 import { MathInline } from './MathOutput'
 
 const MAX_RENDERED_CHARS = 120
@@ -50,6 +55,7 @@ export function WorkspacePanel({
   const workspace = useNotebook((s) => s.workspace)
   const importData = useNotebook((s) => s.importData)
   const exportData = useNotebook((s) => s.exportData)
+  const exportRaw = useNotebook((s) => s.exportRaw)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
   const fileRef = useRef<HTMLInputElement>(null)
   const signalFileRef = useRef<HTMLInputElement>(null)
@@ -79,13 +85,21 @@ export function WorkspacePanel({
             ? 'raw-f32'
             : ext === 'i16' || ext === 'pcm'
               ? 'raw-i16'
-              : ext === 'csv' || ext === 'tsv' || ext === 'txt'
-                ? 'csv-packed'
-                : null
+              : ext === 'cf32' ||
+                  ext === 'fc32' ||
+                  ext === 'cfile' ||
+                  ext === 'iq'
+                ? 'raw-cf32'
+                : ext === 'cf64' || ext === 'fc64'
+                  ? 'raw-cf64'
+                  : ext === 'csv' || ext === 'tsv' || ext === 'txt'
+                    ? 'csv-packed'
+                    : null
     if (format === null) {
       setError(
-        `cannot infer the sample format of '.${ext}' — use .wav, .csv, or ` +
-          'rename raw binary with its sample type: .f64 .f32 .i16',
+        `cannot infer the sample format of '.${ext}' — use .wav, .csv, ` +
+          'rename real raw binary with its sample type (.f64 .f32 .i16), ' +
+          'or interleaved I/Q with .cf32/.cf64',
       )
       return
     }
@@ -107,6 +121,17 @@ export function WorkspacePanel({
       setError(null)
       setSelecting(false)
       setSelected(new Set())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'export failed')
+    }
+  }
+
+  // Raw binary export of one variable (real → f32/f64, complex → cf32/cf64).
+  // The engine rejects a format that doesn't match the data; surface that.
+  const doExportRaw = async (name: string, format: RawExportFormat) => {
+    try {
+      downloadRawFile(await exportRaw(name, format), name, format)
+      setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'export failed')
     }
@@ -143,7 +168,7 @@ export function WorkspacePanel({
             <FontAwesomeIcon icon={faUpload} className="h-3 w-3" />
           </button>
           <button
-            title="import a signal (WAV audio, raw .f64/.f32/.i16 binary, or large CSV) as certified bulk data"
+            title="import a signal (WAV audio, raw .f64/.f32/.i16 binary, interleaved I/Q .cf32/.cf64, or large CSV) as certified bulk data"
             disabled={!ready}
             onClick={() => signalFileRef.current?.click()}
             className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"
@@ -178,7 +203,7 @@ export function WorkspacePanel({
         <input
           ref={signalFileRef}
           type="file"
-          accept=".wav,.csv,.tsv,.txt,.f64,.f32,.i16,.pcm,audio/wav"
+          accept=".wav,.csv,.tsv,.txt,.f64,.f32,.i16,.pcm,.cf32,.fc32,.cfile,.iq,.cf64,.fc64,audio/wav"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0]
@@ -209,6 +234,7 @@ export function WorkspacePanel({
                   selected={selected.has(entry.name)}
                   onToggle={() => toggle(entry.name)}
                   onExportOne={() => void doExport([entry.name], entry.name)}
+                  onExportRaw={(format) => void doExportRaw(entry.name, format)}
                 />
               ))}
             </tbody>
@@ -242,18 +268,48 @@ export function WorkspacePanel({
   )
 }
 
+/** Context-menu entries for raw binary export, gated to the formats the value
+ * supports: real → f32/f64, complex (I/Q) → cf32/cf64, none otherwise. */
+function rawExportItems(
+  raw: WorkspaceEntry['raw'],
+  onExportRaw: (format: RawExportFormat) => void,
+): MenuEntry[] {
+  const formats: { format: RawExportFormat; label: string }[] =
+    raw === 'real'
+      ? [
+          { format: 'f32', label: 'Export raw float32 (.f32)' },
+          { format: 'f64', label: 'Export raw float64 (.f64)' },
+        ]
+      : raw === 'complex'
+        ? [
+            { format: 'cf32', label: 'Export raw I/Q float32 (.cf32)' },
+            { format: 'cf64', label: 'Export raw I/Q float64 (.cf64)' },
+          ]
+        : []
+  if (formats.length === 0) return []
+  return [
+    'divider',
+    ...formats.map(({ format, label }) => ({
+      label,
+      onSelect: () => onExportRaw(format),
+    })),
+  ]
+}
+
 function Row({
   entry,
   selecting,
   selected,
   onToggle,
   onExportOne,
+  onExportRaw,
 }: {
   entry: WorkspaceEntry
   selecting: boolean
   selected: boolean
   onToggle: () => void
   onExportOne: () => void
+  onExportRaw: (format: RawExportFormat) => void
 }) {
   return (
     <tr
@@ -268,7 +324,11 @@ function Row({
             onSelect: () => copy(`${entry.name} := ${entry.text}`),
           },
           'divider',
-          { label: 'Export variable…', onSelect: onExportOne },
+          { label: 'Export variable (surd-data)…', onSelect: onExportOne },
+          // Raw binary export — only the formats the value actually supports
+          // (real → f32/f64, complex I/Q → cf32/cf64). `entry.raw` is absent
+          // for anything that can't export to raw binary.
+          ...rawExportItems(entry.raw, onExportRaw),
         ])
       }
     >

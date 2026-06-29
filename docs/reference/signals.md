@@ -74,17 +74,35 @@ In `dsp`:
 
 | Function | Description |
 | --- | --- |
-| `dsp.fft(s)` / `dsp.ifft(f)` | Radix-2 interval FFT (power-of-two lengths) → `struct(re, im)` |
+| `dsp.fft(s)` / `dsp.ifft(f)` | Radix-2 interval FFT (power-of-two lengths) → a complex signal |
 | `dsp.conv(a, b)` | Certified bulk convolution |
 | `dsp.pad(s, n)` | Zero-pad (never truncates) |
-| `dsp.peak(s)` | Certified upper bound on max │x│ |
+| `dsp.peak(s)` | Certified upper bound on max │x│ (max │z│ for complex) |
 | `dsp.rms(s)` | Certified upper bound on the RMS |
 
 ```text
 >> s := signal([1; 2; 3; 4; 5; 6; 7; 8])
->> r := dsp.ifft(dsp.fft(s)).re
->> dsp.peak(r - s) < 1/10^12     # the round-trip error is *provably* tiny
+>> r := re(dsp.ifft(dsp.fft(s)))     # fft/ifft return one complex signal
+>> dsp.peak(r - s) < 1/10^12         # the round-trip error is *provably* tiny
 true
+```
+
+## Complex signals
+
+A signal can be complex — IQ captures import as one, and `dsp.fft` produces
+one. Arithmetic (`+ − .* ./`) is genuinely complex (a complex `.*` is the
+complex product; a real signal or scalar promotes to `(x, 0)`). The complex
+accessors carry over from scalars:
+
+| | |
+| --- | --- |
+| `re(z)` / `im(z)` | the real / imaginary part, as a real signal |
+| `conj(z)` | complex conjugate |
+| `abs(z)` | per-sample magnitude √(re² + im²), as a real signal |
+
+```text
+>> iq := dsp.ifft(dsp.fft(signal([1; 0; 1; 0])))   # a complex signal
+>> mag := abs(iq)                                  # magnitude spectrum-style envelope
 ```
 
 The test suite holds signals to the same standard as the exact engine: a
@@ -112,6 +130,7 @@ too.)
 | --- | --- |
 | WAV (PCM 16/24/32, float 32/64) | `struct(rate, ch1[, ch2…])`, normalized to [−1, 1) exactly |
 | Raw binary (`f64`/`f32`/`i16`, little-endian) | one signal, unnormalized |
+| Interleaved I/Q (`cf32`/`cf64`, i.e. `.cf32`/`.cfile`/`.iq` / `.cf64`) | one complex signal, unnormalized |
 | Packed CSV | `struct` of one signal per column |
 
 Integer PCM and IEEE floats convert to f64 *exactly*, so imported data

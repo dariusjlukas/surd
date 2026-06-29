@@ -109,7 +109,8 @@ How it holds together:
   names can never collide with existing bindings. Numbers are read from their
   literal text — `0.1` in a sensor log becomes the exact rational 1/10, never
   an f64. A separate waveform button imports bulk data — WAV, raw binary
-  (`f64`/`f32`/`i16`), or packed CSV — straight into [signals](#certified-bulk-data-signals).
+  (`f64`/`f32`/`i16`), interleaved I/Q (`.cf32`/`.cfile`/`.iq`/`.cf64`, → a
+  complex signal), or packed CSV — straight into [signals](#certified-bulk-data-signals).
   Export saves any selection of workspace variables (anything a variable can
   hold, functions and signals included) into one `surd-data` file; exact
   values round-trip losslessly. An import is a notebook *cell* carrying the
@@ -479,7 +480,7 @@ hide it:
 <signal: 4 samples, f64, max error ±1.1e-16>
 >> s .* s
 <signal: 4 samples, f64, max error ±8.9e-16>
->> r := dsp.ifft(dsp.fft(s)).re
+>> r := re(dsp.ifft(dsp.fft(s)))       # fft/ifft return one complex signal
 >> dsp.peak(r - s) < 1/10^12            # the round-trip error is *provably* tiny
 true
 ```

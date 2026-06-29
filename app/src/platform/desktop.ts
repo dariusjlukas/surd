@@ -75,6 +75,31 @@ export async function saveTextFile(
   browserDownload(suggestedName, new Blob([text], { type: mime }))
 }
 
+/** Save raw bytes (given as base64) to a user-chosen file — the binary-export
+ * path (.f32/.f64/.cf32/.cf64). The desktop build hands the base64 to the Rust
+ * save command (which writes the decoded bytes); the web build decodes it to a
+ * Blob and triggers the usual anchor download. */
+export async function saveBinaryFile(
+  suggestedName: string,
+  base64: string,
+): Promise<void> {
+  if (isTauri()) {
+    await invoke('save_export', {
+      suggestedName,
+      data: base64,
+      base64: true,
+    })
+    return
+  }
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  browserDownload(
+    suggestedName,
+    new Blob([bytes], { type: 'application/octet-stream' }),
+  )
+}
+
 /** Save a `data:` URL (canvas/plot snapshots) to a user-chosen file. */
 export async function saveDataUrl(
   suggestedName: string,

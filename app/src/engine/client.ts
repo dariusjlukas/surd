@@ -10,6 +10,7 @@ import type {
   EvalResult,
   ExportResult,
   FromWorker,
+  RawExportFormat,
   ReplayEntry,
   Resample3dResult,
   ResampleResult,
@@ -107,6 +108,20 @@ export class EngineClient {
       type: 'exportData',
       id,
       names,
+    }))
+    if (!r.ok || r.data === undefined)
+      throw new Error(r.error ?? 'export failed')
+    return r.data
+  }
+
+  /** Export one workspace variable as raw little-endian binary; resolves to
+   * the base64 of the bytes (decoded by the save path). */
+  async exportRaw(name: string, format: RawExportFormat): Promise<string> {
+    const r = await this.request<ExportResult>((id) => ({
+      type: 'exportRaw',
+      id,
+      name,
+      format,
     }))
     if (!r.ok || r.data === undefined)
       throw new Error(r.error ?? 'export failed')

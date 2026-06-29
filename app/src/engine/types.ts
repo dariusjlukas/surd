@@ -123,6 +123,9 @@ export interface WorkspaceEntry {
   text: string
   latex: string
   kind: ResultKind
+  /** Raw-binary export shape: `'real'` offers f32/f64, `'complex'` offers
+   * cf32/cf64. Absent when the value can't export to raw binary. */
+  raw?: 'real' | 'complex'
 }
 
 /** Result of Session.export_data: the surd-data file's text, or an error. */
@@ -131,6 +134,10 @@ export interface ExportResult {
   data?: string
   error?: string
 }
+
+/** Raw binary export precisions: `f32`/`f64` for real signals and numeric
+ * data, `cf32`/`cf64` for interleaved I/Q (complex signals). */
+export type RawExportFormat = 'f32' | 'f64' | 'cf32' | 'cf64'
 
 // ---------------------------------------------------------------------------
 // Worker protocol
@@ -146,6 +153,8 @@ export type ImportFormat =
   | 'raw-f64'
   | 'raw-f32'
   | 'raw-i16'
+  | 'raw-cf32'
+  | 'raw-cf64'
   | 'csv-packed'
 
 /** One replayable step of a notebook's engine history: an evaluated source
@@ -165,6 +174,7 @@ export type ToWorker =
       format?: ImportFormat
     }
   | { type: 'exportData'; id: number; names: string[] }
+  | { type: 'exportRaw'; id: number; name: string; format: RawExportFormat }
   | { type: 'workspace'; id: number }
   | {
       type: 'resampleSignal'

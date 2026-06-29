@@ -58,6 +58,15 @@ pub enum SignalData {
         /// Display digits; working precision is `prec_bits` of this.
         digits: usize,
     },
+    /// A complex signal: two real sub-signals (re + i·im). Invariant
+    /// (enforced by [`complex`]): `re` and `im` are themselves real (`F64` or
+    /// `Big`, never `Complex`), the same length, and the same substrate. This
+    /// reuses every real kernel — complex add/mul/abs are composed from the
+    /// real `binop`/`unary` on the two parts, so both substrates come for free.
+    Complex {
+        re: Box<SignalData>,
+        im: Box<SignalData>,
+    },
 }
 
 pub type Signal = Rc<SignalData>;
@@ -67,12 +76,138 @@ impl SignalData {
         match self {
             SignalData::F64 { lo, .. } => lo.len(),
             SignalData::Big { lo, .. } => lo.len(),
+            SignalData::Complex { re, .. } => re.len(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Build a complex signal from real parts. They must be real (not themselves
+/// complex), the same length, and share a substrate (both `F64`, or both `Big`
+/// with the same `digits`).
+pub fn complex(re: SignalData, im: SignalData) -> Result<SignalData, String> {
+    if matches!(re, SignalData::Complex { .. }) || matches!(im, SignalData::Complex { .. }) {
+        return Err("a complex signal's parts must be real, not complex".into());
+    }
+    if re.len() != im.len() {
+        return Err(format!(
+            "complex signal parts must have the same length, got {} and {}",
+            re.len(),
+            im.len()
+        ));
+    }
+    let same_substrate = match (&re, &im) {
+        (SignalData::F64 { .. }, SignalData::F64 { .. }) => true,
+        (SignalData::Big { digits: a, .. }, SignalData::Big { digits: b, .. }) => a == b,
+        _ => false,
+    };
+    if !same_substrate {
+        return Err(
+            "complex signal parts must share a substrate — both f64, or both \
+                    arbitrary-precision with the same digits"
+                .into(),
+        );
+    }
+    Ok(SignalData::Complex {
+        re: Box::new(re),
+        im: Box::new(im),
+    })
+}
+
+/// The real signal whose substrate/length a constant should match: a complex
+/// signal's real part, or the signal itself. (A real `Complex`'s parts are
+/// real, so the result is always `F64`/`Big`.)
+fn real_substrate(s: &SignalData) -> &SignalData {
+    match s {
+        SignalData::Complex { re, .. } => re,
+        real => real,
+    }
+}
+
+/// Decompose into owned (re, im) real parts; a real signal gets a zero
+/// imaginary part of the matching substrate and length.
+fn split_complex(s: &SignalData) -> Result<(SignalData, SignalData), String> {
+    match s {
+        SignalData::Complex { re, im } => Ok(((**re).clone(), (**im).clone())),
+        real => {
+            let zero = constant(real, &BigRational::from_integer(0.into()))?;
+            Ok((real.clone(), zero))
+        }
+    }
+}
+
+/// Complex product (a_re + i·a_im)(b_re + i·b_im), over real-signal parts.
+fn cmul(
+    a: (&SignalData, &SignalData),
+    b: (&SignalData, &SignalData),
+) -> Result<(SignalData, SignalData), String> {
+    let re = binop("-", &binop("*", a.0, b.0)?, &binop("*", a.1, b.1)?)?;
+    let im = binop("+", &binop("*", a.0, b.1)?, &binop("*", a.1, b.0)?)?;
+    Ok((re, im))
+}
+
+/// Complex quotient a/b = a·conj(b) / |b|². Divides by the (real) |b|²; the
+/// real `binop("/")` rejects any sample whose divisor interval reaches zero.
+fn cdiv(
+    a: (&SignalData, &SignalData),
+    b: (&SignalData, &SignalData),
+) -> Result<(SignalData, SignalData), String> {
+    let denom = binop("+", &binop("*", b.0, b.0)?, &binop("*", b.1, b.1)?)?;
+    let num_re = binop("+", &binop("*", a.0, b.0)?, &binop("*", a.1, b.1)?)?;
+    let num_im = binop("-", &binop("*", a.1, b.0)?, &binop("*", a.0, b.1)?)?;
+    Ok((binop("/", &num_re, &denom)?, binop("/", &num_im, &denom)?))
+}
+
+/// Per-sample magnitude |z| = √(re² + im²), as a real signal.
+fn cmag(re: &SignalData, im: &SignalData) -> Result<SignalData, String> {
+    let sumsq = binop("+", &binop("*", re, re)?, &binop("*", im, im)?)?;
+    unary("sqrt", &sumsq)
+}
+
+/// The real part of a signal (the signal itself when already real).
+pub fn re_part(s: &SignalData) -> SignalData {
+    match s {
+        SignalData::Complex { re, .. } => (**re).clone(),
+        real => real.clone(),
+    }
+}
+
+/// The imaginary part of a signal (an all-zero real signal when already real).
+pub fn im_part(s: &SignalData) -> SignalData {
+    match s {
+        SignalData::Complex { im, .. } => (**im).clone(),
+        real => constant(real, &BigRational::from_integer(0.into()))
+            .expect("zero is always representable"),
+    }
+}
+
+/// Whether a signal is complex-valued.
+pub fn is_complex(s: &SignalData) -> bool {
+    matches!(s, SignalData::Complex { .. })
+}
+
+/// The complex conjugate (identity on a real signal).
+pub fn conj(s: &SignalData) -> SignalData {
+    match s {
+        SignalData::Complex { re, im } => SignalData::Complex {
+            re: re.clone(),
+            im: Box::new(unary("neg", im).expect("negation is total on real signals")),
+        },
+        real => real.clone(),
+    }
+}
+
+/// FFT/IFFT producing a single complex signal. Accepts a real or complex
+/// signal; the heavy lifting reuses the interval-complex [`fft`] kernels.
+pub fn fft_signal(s: &SignalData, inverse: bool) -> Result<SignalData, String> {
+    let (re, im) = match s {
+        SignalData::Complex { re, im } => fft(re, Some(im), inverse)?,
+        real => fft(real, None, inverse)?,
+    };
+    complex(re, im)
 }
 
 /// One-line description for display: `<signal: 1024 samples, f64, max error ±2.2e-16>`.
@@ -98,6 +233,23 @@ impl fmt::Display for SignalData {
                         f,
                         "<signal: {} {}, {} digits, max error ±{:.1e}>",
                         n, samples, digits, hw
+                    )
+                }
+            }
+            SignalData::Complex { re, .. } => {
+                let hw = max_half_width_f64(self);
+                let sub = match re.as_ref() {
+                    SignalData::F64 { .. } => "complex f64".to_string(),
+                    SignalData::Big { digits, .. } => format!("complex, {} digits", digits),
+                    SignalData::Complex { .. } => unreachable!("complex parts are real"),
+                };
+                if hw == 0.0 {
+                    write!(f, "<signal: {} {}, {}, exact>", n, samples, sub)
+                } else {
+                    write!(
+                        f,
+                        "<signal: {} {}, {}, max error ±{:.1e}>",
+                        n, samples, sub, hw
                     )
                 }
             }
@@ -415,6 +567,25 @@ fn entry_rational(e: &Expr) -> Result<BigRational, String> {
 /// Pack exact entries into a signal: f64 substrate by default, arbitrary
 /// precision when `digits` is given.
 pub fn pack(entries: &[Expr], digits: Option<usize>) -> Result<SignalData, String> {
+    // Any complex entry makes the whole signal complex: split into real and
+    // imaginary entry lists and pack each separately (same substrate).
+    if entries.iter().any(|e| matches!(e, Expr::Complex(..))) {
+        let mut re = Vec::with_capacity(entries.len());
+        let mut im = Vec::with_capacity(entries.len());
+        for e in entries {
+            match e {
+                Expr::Complex(r, i) => {
+                    re.push((**r).clone());
+                    im.push((**i).clone());
+                }
+                other => {
+                    re.push(other.clone());
+                    im.push(Expr::Int(BigInt::from(0)));
+                }
+            }
+        }
+        return complex(pack(&re, digits)?, pack(&im, digits)?);
+    }
     match digits {
         None => {
             let mut lo = Vec::with_capacity(entries.len());
@@ -458,6 +629,7 @@ pub fn midpoint(s: &SignalData, i: usize) -> Expr {
                 .div(&two, p, RoundingMode::ToEven);
             Expr::Float(m, *digits)
         }
+        SignalData::Complex { re, im } => crate::expr::complex(midpoint(re, i), midpoint(im, i)),
     }
 }
 
@@ -495,6 +667,8 @@ fn deviation_f64(s: &SignalData, i: usize) -> f64 {
             // Display approximation only — the rigorous bound is `d`.
             big_to_f64_upper(&d)
         }
+        // The wider of the two components' deviations bounds |z − mid|.
+        SignalData::Complex { re, im } => deviation_f64(re, i).max(deviation_f64(im, i)),
     }
 }
 
@@ -572,6 +746,24 @@ pub fn binop(op: &str, a: &SignalData, b: &SignalData) -> Result<SignalData, Str
             }
             Ok(SignalData::Big { lo, hi, digits })
         }
+        // Complex on either side: promote the real operand to (x, 0) and work
+        // component-wise, reusing the real kernels above (and so both substrates).
+        _ if matches!(a, SignalData::Complex { .. }) || matches!(b, SignalData::Complex { .. }) => {
+            let (are, aim) = split_complex(a)?;
+            let (bre, bim) = split_complex(b)?;
+            match op {
+                "+" | "-" => complex(binop(op, &are, &bre)?, binop(op, &aim, &bim)?),
+                "*" => {
+                    let (re, im) = cmul((&are, &aim), (&bre, &bim))?;
+                    complex(re, im)
+                }
+                "/" => {
+                    let (re, im) = cdiv((&are, &aim), (&bre, &bim))?;
+                    complex(re, im)
+                }
+                _ => unreachable!("unknown signal binop"),
+            }
+        }
         _ => Err(
             "cannot mix f64 and arbitrary-precision signals — repack one side with signal(...)"
                 .into(),
@@ -604,20 +796,33 @@ fn big_binop_one(
     }
 }
 
-/// Broadcast an exact scalar against a signal.
+/// Broadcast an exact scalar (real or complex) against a signal.
 pub fn scalar_binop(
     op: &str,
     s: &SignalData,
     scalar: &Expr,
     scalar_on_left: bool,
 ) -> Result<SignalData, String> {
-    let r = entry_rational(scalar).map_err(|_| {
-        format!(
-            "cannot mix '{}' into a signal — only numbers broadcast",
-            scalar
-        )
-    })?;
-    let broadcast = constant(s, &r)?;
+    let broadcast = match scalar {
+        // A complex scalar broadcasts to a complex constant; binop then
+        // promotes a real `s` as needed.
+        Expr::Complex(r, i) => {
+            let base = real_substrate(s);
+            complex(
+                constant(base, &entry_rational(r)?)?,
+                constant(base, &entry_rational(i)?)?,
+            )?
+        }
+        _ => {
+            let r = entry_rational(scalar).map_err(|_| {
+                format!(
+                    "cannot mix '{}' into a signal — only numbers broadcast",
+                    scalar
+                )
+            })?;
+            constant(s, &r)?
+        }
+    };
     if scalar_on_left {
         binop(op, &broadcast, s)
     } else {
@@ -625,9 +830,10 @@ pub fn scalar_binop(
     }
 }
 
-/// A constant signal in the same substrate/length as `like`.
+/// A real constant signal matching the substrate/length of `like` (a complex
+/// `like` matches its real part — the same length and substrate).
 fn constant(like: &SignalData, r: &BigRational) -> Result<SignalData, String> {
-    match like {
+    match real_substrate(like) {
         SignalData::F64 { lo, .. } => {
             let (l, h) = rat_to_f64_iv(r)?;
             Ok(SignalData::F64 {
@@ -644,6 +850,7 @@ fn constant(like: &SignalData, r: &BigRational) -> Result<SignalData, String> {
                 digits: *digits,
             })
         }
+        SignalData::Complex { .. } => unreachable!("real_substrate yields a real signal"),
     }
 }
 
@@ -679,6 +886,13 @@ pub fn unary(name: &str, s: &SignalData) -> Result<SignalData, String> {
                 })
             })?
         }
+        SignalData::Complex { re, im } => match name {
+            // |z| collapses to a real magnitude signal.
+            "abs" => cmag(re, im),
+            "neg" => complex(unary("neg", re)?, unary("neg", im)?),
+            "conj" => Ok(conj(s)),
+            _ => Err(format!("'{}' is not defined on complex signals", name)),
+        },
     }
 }
 
@@ -759,6 +973,14 @@ pub fn conv(a: &SignalData, b: &SignalData) -> Result<SignalData, String> {
             }
             Ok(SignalData::Big { lo, hi, digits })
         }
+        // Complex convolution: combine the real component convolutions.
+        _ if matches!(a, SignalData::Complex { .. }) || matches!(b, SignalData::Complex { .. }) => {
+            let (are, aim) = split_complex(a)?;
+            let (bre, bim) = split_complex(b)?;
+            let re = binop("-", &conv(&are, &bre)?, &conv(&aim, &bim)?)?;
+            let im = binop("+", &conv(&are, &bim)?, &conv(&aim, &bre)?)?;
+            complex(re, im)
+        }
         _ => Err(
             "cannot mix f64 and arbitrary-precision signals — repack one side with signal(...)"
                 .into(),
@@ -796,6 +1018,7 @@ pub fn pad(s: &SignalData, n: usize) -> Result<SignalData, String> {
                 digits: *digits,
             })
         }
+        SignalData::Complex { re, im } => complex(pad(re, n)?, pad(im, n)?),
     }
 }
 
@@ -825,6 +1048,9 @@ pub fn fft(
     match re {
         SignalData::F64 { .. } => fft_f64(re, im, inverse),
         SignalData::Big { .. } => fft_big(re, im, inverse),
+        SignalData::Complex { .. } => {
+            Err("fft: real and imaginary parts must each be real signals".into())
+        }
     }
 }
 
@@ -1022,8 +1248,8 @@ fn fft_big(
 // Certified reductions
 // ---------------------------------------------------------------------------
 
-/// Certified upper bound on max |x[i]| — the peak.
-pub fn peak(s: &SignalData) -> Expr {
+/// Certified upper bound on max |x[i]| — the peak (max |z| for complex).
+pub fn peak(s: &SignalData) -> Result<Expr, String> {
     match s {
         SignalData::F64 { lo, hi } => {
             let v = lo
@@ -1031,7 +1257,7 @@ pub fn peak(s: &SignalData) -> Expr {
                 .zip(hi)
                 .map(|(l, h)| l.abs().max(h.abs()))
                 .fold(0.0, f64::max);
-            Expr::Float(BigFloat::from_f64(v, 64), 17)
+            Ok(Expr::Float(BigFloat::from_f64(v, 64), 17))
         }
         SignalData::Big { lo, hi, digits } => {
             let p = prec_bits(*digits);
@@ -1043,13 +1269,17 @@ pub fn peak(s: &SignalData) -> Expr {
                     max = m;
                 }
             }
-            Expr::Float(max, *digits)
+            Ok(Expr::Float(max, *digits))
         }
+        SignalData::Complex { re, im } => peak(&cmag(re, im)?),
     }
 }
 
-/// Certified upper bound on the RMS √(Σx²/n).
+/// Certified upper bound on the RMS √(Σx²/n) — √(Σ|z|²/n) for complex.
 pub fn rms(s: &SignalData) -> Result<Expr, String> {
+    if let SignalData::Complex { re, im } = s {
+        return rms(&cmag(re, im)?);
+    }
     let sq = binop("*", s, s)?;
     match &sq {
         SignalData::F64 { hi, .. } => {
@@ -1075,6 +1305,8 @@ pub fn rms(s: &SignalData) -> Result<Expr, String> {
             let upper = acc.div(&n, p, UP).sqrt(p, UP);
             Ok(Expr::Float(upper, *digits))
         }
+        // `s` is real here (complex handled above), so `s*s` is real too.
+        SignalData::Complex { .. } => unreachable!("rms squares a real signal"),
     }
 }
 
@@ -1108,6 +1340,7 @@ pub fn slice(s: &SignalData, start: usize, n: usize) -> Result<SignalData, Strin
             hi: hi[start..end].to_vec(),
             digits: *digits,
         },
+        SignalData::Complex { re, im } => complex(slice(re, start, n)?, slice(im, start, n)?)?,
     })
 }
 
@@ -1126,6 +1359,26 @@ fn mid_f64(s: &SignalData, i: usize) -> f64 {
                 .and_then(|r| r.to_f64())
                 .unwrap_or(f64::NAN)
         }
+        // Fallback when a complex signal is plotted without being split into
+        // its parts first: the magnitude midpoint. (The wasm plot path splits
+        // into separate re/im series, so this is rarely hit.)
+        SignalData::Complex { re, im } => {
+            let (r, m) = (mid_f64(re, i), mid_f64(im, i));
+            (r * r + m * m).sqrt()
+        }
+    }
+}
+
+/// Per-sample midpoints as plain `f64` — the representative used when leaving
+/// the certified world (e.g. raw binary export). A complex signal returns its
+/// real and imaginary midpoint streams; a real signal returns `(values, None)`.
+pub fn midpoints_f64(s: &SignalData) -> (Vec<f64>, Option<Vec<f64>>) {
+    match s {
+        SignalData::Complex { re, im } => (
+            (0..re.len()).map(|i| mid_f64(re, i)).collect(),
+            Some((0..im.len()).map(|i| mid_f64(im, i)).collect()),
+        ),
+        real => ((0..real.len()).map(|i| mid_f64(real, i)).collect(), None),
     }
 }
 

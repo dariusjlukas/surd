@@ -132,6 +132,33 @@ fn error_result(msg: String) -> EvalResult {
     }
 }
 
+/// Standard base64 (no line breaks). The transport for binary-export bytes
+/// over the string-based worker protocol; the desktop save command and the
+/// web download path both decode it back to raw bytes.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn kind_of(e: &Expr) -> &'static str {
     match e {
         Expr::Matrix(_) => "matrix",
@@ -351,8 +378,8 @@ fn plot_signal_data(
             MAX_SERIES
         )));
     }
-    let mut series = Vec::with_capacity(args.len());
-    let mut signals = Vec::with_capacity(args.len());
+    let mut series = Vec::new();
+    let mut signals: Vec<surd::signal::Signal> = Vec::new();
     let mut maxlen = 0usize;
     for (i, arg) in args.iter().enumerate() {
         let Expr::Signal(s) = arg else {
@@ -361,15 +388,40 @@ fn plot_signal_data(
             ));
         };
         maxlen = maxlen.max(s.len());
-        signals.push(s.clone());
-        series.push(Series {
-            latex: format!(r"\mathrm{{signal}}_{{{}}}", i + 1),
-            text: format!("{}", arg),
-            undersampled: surd::signal::plot_decimated(s, PLOT_SAMPLES_MAX),
-            fixed: true,
-            scatter: false,
-            points: surd::signal::plot_points(s, PLOT_SAMPLES_MAX),
-        });
+        // A complex signal plots as two series: real and imaginary parts.
+        let parts: Vec<(String, surd::signal::Signal)> =
+            if matches!(s.as_ref(), surd::signal::SignalData::Complex { .. }) {
+                vec![
+                    (
+                        format!(r"\Re\,\mathrm{{signal}}_{{{}}}", i + 1),
+                        std::rc::Rc::new(surd::signal::re_part(s)),
+                    ),
+                    (
+                        format!(r"\Im\,\mathrm{{signal}}_{{{}}}", i + 1),
+                        std::rc::Rc::new(surd::signal::im_part(s)),
+                    ),
+                ]
+            } else {
+                vec![(format!(r"\mathrm{{signal}}_{{{}}}", i + 1), s.clone())]
+            };
+        for (latex, comp) in parts {
+            series.push(Series {
+                latex,
+                text: format!("{}", arg),
+                undersampled: surd::signal::plot_decimated(&comp, PLOT_SAMPLES_MAX),
+                fixed: true,
+                scatter: false,
+                points: surd::signal::plot_points(&comp, PLOT_SAMPLES_MAX),
+            });
+            signals.push(comp);
+        }
+    }
+    if series.len() > MAX_SERIES {
+        return Some(Err(format!(
+            "plot: too many signal series ({}, max {})",
+            series.len(),
+            MAX_SERIES
+        )));
     }
     Some(Ok((
         PlotData {
@@ -611,6 +663,10 @@ impl Session {
             text: String,
             latex: String,
             kind: &'static str,
+            /// Raw-binary export shape: "real" (f32/f64), "complex" (cf32/cf64),
+            /// or absent when the value can't export to raw binary.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            raw: Option<&'static str>,
         }
         let mut entries: Vec<Entry> = self
             .interp
@@ -620,6 +676,7 @@ impl Session {
                 text: format!("{}", value),
                 latex: latex::to_latex(value),
                 kind: kind_of(value),
+                raw: surd::dataio::raw_export_kind(value),
             })
             .collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -664,6 +721,12 @@ impl Session {
     /// "f64", "f32", "i16") as a packed signal bound to `name`.
     pub fn import_raw_data(&mut self, bytes: &[u8], format: &str, name: &str) -> String {
         self.bind_bulk(name, surd::dataio::import_raw(bytes, format))
+    }
+
+    /// Import interleaved I/Q samples (`format` is "cf32" or "cf64") as a
+    /// packed complex signal bound to `name`.
+    pub fn import_raw_iq_data(&mut self, bytes: &[u8], format: &str, name: &str) -> String {
+        self.bind_bulk(name, surd::dataio::import_raw_iq(bytes, format))
     }
 
     /// Import CSV straight into packed signals (one per column) — the bulk
@@ -745,6 +808,25 @@ impl Session {
                 vars.push((n.as_str(), value));
             }
             surd::dataio::export_variables(&vars)
+        };
+        match inner() {
+            Ok(data) => serde_json::json!({ "ok": true, "data": data }).to_string(),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+        }
+    }
+
+    /// Export one workspace variable as raw little-endian binary. `format` is
+    /// "f32"/"f64" (real) or "cf32"/"cf64" (interleaved I/Q). Returns
+    /// `{ok, data?, error?}` where `data` is the base64 of the bytes (the save
+    /// command decodes it back to a file).
+    pub fn export_raw(&self, name: &str, format: &str) -> String {
+        let inner = || -> Result<String, String> {
+            let value = self
+                .interp
+                .get_global(name)
+                .ok_or_else(|| format!("no workspace variable named '{}'", name))?;
+            let bytes = surd::dataio::export_raw(value, format)?;
+            Ok(base64_encode(&bytes))
         };
         match inner() {
             Ok(data) => serde_json::json!({ "ok": true, "data": data }).to_string(),
