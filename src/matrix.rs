@@ -112,39 +112,104 @@ pub fn mat_mul(a: &Expr, b: &Expr) -> Result<Expr, String> {
     Ok(Expr::Matrix(rows))
 }
 
-/// 1-based indexing. One index reads a vector element — or a whole row of a
-/// general matrix; two indices read an element as (row, column).
-pub fn index(m: &Expr, idxs: &[usize]) -> Result<Expr, String> {
+/// A per-axis index selector, resolved from `a` (scalar), `a:b`, `a:`, `:b`,
+/// or `:`. A `One` collapses its axis; a `Range` keeps it. Open ends are
+/// filled against the axis length when the selection is performed.
+#[derive(Clone, Copy, Debug)]
+pub enum Sel {
+    One(usize),
+    Range(Option<usize>, Option<usize>),
+}
+
+/// A resolved, 1-based selector for one axis of known length.
+enum Axis {
+    One(usize),
+    /// Inclusive `[lo, hi]`.
+    Range(usize, usize),
+}
+
+/// Resolve a selector against an axis of length `len`, validating bounds.
+/// `what` names the axis for error messages.
+fn resolve(sel: &Sel, len: usize, what: &str) -> Result<Axis, String> {
+    match *sel {
+        Sel::One(i) => {
+            if (1..=len).contains(&i) {
+                Ok(Axis::One(i))
+            } else {
+                Err(format!(
+                    "index {} is out of range ({} has {})",
+                    i, what, len
+                ))
+            }
+        }
+        Sel::Range(lo, hi) => {
+            let lo = lo.unwrap_or(1);
+            let hi = hi.unwrap_or(len);
+            if lo < 1 || hi > len || lo > hi {
+                Err(format!(
+                    "range {}:{} is out of range ({} has {})",
+                    lo, hi, what, len
+                ))
+            } else {
+                Ok(Axis::Range(lo, hi))
+            }
+        }
+    }
+}
+
+/// Index or slice a matrix. `sels` carries one selector per axis: a single
+/// selector reads a vector element or a whole matrix row (matching the
+/// classic `v[i]` / `m[i]`); two select `(row, column)`. A scalar selector
+/// collapses its axis, a range keeps it — so `m[2, 1:3]` is a row, `m[1:3, 2]`
+/// a column, and `m[1:2, 1:2]` a submatrix.
+pub fn select(m: &Expr, sels: &[Sel]) -> Result<Expr, String> {
     let Expr::Matrix(rows) = m else {
         return Err(format!("cannot index into '{}' (not a matrix)", m));
     };
     let (nr, nc) = (rows.len(), rows[0].len());
-    let check = |i: usize, n: usize, what: &str| {
-        if (1..=n).contains(&i) {
-            Ok(())
-        } else {
-            Err(format!("index {} is out of range ({} has {})", i, what, n))
-        }
-    };
-    match idxs {
-        [i] if nr == 1 => {
-            check(*i, nc, "the vector")?;
-            Ok(rows[0][i - 1].clone())
-        }
-        [i] if nc == 1 => {
-            check(*i, nr, "the vector")?;
-            Ok(rows[i - 1][0].clone())
-        }
-        [i] => {
-            check(*i, nr, "the matrix")?;
-            Ok(Expr::Matrix(vec![rows[i - 1].clone()]))
-        }
-        [i, j] => {
-            check(*i, nr, "the matrix's rows")?;
-            check(*j, nc, "the matrix's columns")?;
-            Ok(rows[i - 1][j - 1].clone())
+    match sels {
+        // One selector on a row vector → along its single row of columns.
+        [s] if nr == 1 => match resolve(s, nc, "the vector")? {
+            Axis::One(j) => Ok(rows[0][j - 1].clone()),
+            Axis::Range(lo, hi) => Ok(Expr::Matrix(vec![rows[0][lo - 1..hi].to_vec()])),
+        },
+        // One selector on a column vector → along its rows.
+        [s] if nc == 1 => match resolve(s, nr, "the vector")? {
+            Axis::One(i) => Ok(rows[i - 1][0].clone()),
+            Axis::Range(lo, hi) => Ok(Expr::Matrix(rows[lo - 1..hi].to_vec())),
+        },
+        // One selector on a 2-D matrix → a whole row (scalar) or block of rows.
+        [s] => match resolve(s, nr, "the matrix")? {
+            Axis::One(i) => Ok(Expr::Matrix(vec![rows[i - 1].clone()])),
+            Axis::Range(lo, hi) => Ok(Expr::Matrix(rows[lo - 1..hi].to_vec())),
+        },
+        // Two selectors → (row, column).
+        [rs, cs] => {
+            let r = resolve(rs, nr, "the matrix's rows")?;
+            let c = resolve(cs, nc, "the matrix's columns")?;
+            Ok(submatrix(rows, &r, &c))
         }
         _ => Err("indexing takes 1 index (vector element / matrix row) or 2 (row, column)".into()),
+    }
+}
+
+/// Gather the `(row, column)` block. Both scalar → the bare element; exactly
+/// one scalar → a vector (collapsed axis); both ranges → a submatrix.
+fn submatrix(rows: &[Vec<Expr>], r: &Axis, c: &Axis) -> Expr {
+    let span = |a: &Axis| -> Vec<usize> {
+        match *a {
+            Axis::One(i) => vec![i],
+            Axis::Range(lo, hi) => (lo..=hi).collect(),
+        }
+    };
+    let (ri, ci) = (span(r), span(c));
+    let out: Vec<Vec<Expr>> = ri
+        .iter()
+        .map(|&i| ci.iter().map(|&j| rows[i - 1][j - 1].clone()).collect())
+        .collect();
+    match (r, c) {
+        (Axis::One(_), Axis::One(_)) => out[0][0].clone(),
+        _ => Expr::Matrix(out),
     }
 }
 

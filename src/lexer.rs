@@ -36,6 +36,8 @@ pub enum Token {
     Newline,
     /// `:=` — assignment.
     Assign,
+    /// `:` — range separator inside an index, e.g. `A[1:10, 3]`.
+    Colon,
     /// `=` — builds an equation, not a truth test.
     Eq,
     /// `~` — builds a model formula (`y ~ x1 + x2`).
@@ -158,7 +160,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                     tokens.push(Token::Assign);
                     i += 2;
                 } else {
-                    return Err("unexpected ':' (did you mean ':=' for assignment?)".into());
+                    // A lone `:` is a range separator inside `[...]`; the parser
+                    // rejects it anywhere else.
+                    push(&mut tokens, Token::Colon, &mut i);
                 }
             }
             _ if c.is_ascii_digit() || c == '.' => {
@@ -340,8 +344,19 @@ mod tests {
     #[test]
     fn errors_instead_of_panicking() {
         assert!(lex("@").is_err());
-        assert!(lex("a : b").is_err()); // lone ':' is not ':='
         assert!(lex("!").is_err()); // lone '!'
+    }
+
+    #[test]
+    fn colon_is_a_range_separator_distinct_from_assign() {
+        assert_eq!(
+            toks("1:10"),
+            vec![Num("1".into()), Colon, Num("10".into()), Eof]
+        );
+        assert_eq!(
+            toks("x := 1"),
+            vec![Ident("x".into()), Assign, Num("1".into()), Eof]
+        );
     }
 
     #[test]

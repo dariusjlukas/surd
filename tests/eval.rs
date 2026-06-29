@@ -1241,6 +1241,50 @@ fn slice_vectors_and_signals() {
 }
 
 #[test]
+fn range_slicing_with_colon() {
+    let m = "[1,2,3;4,5,6;7,8,9]";
+    // A range keeps its axis; a scalar collapses it.
+    assert_eq!(norm(&format!("{m}[1:2, 2:3]")), "[ 2 3 ] [ 5 6 ]"); // submatrix
+    assert_eq!(norm(&format!("{m}[2, :]")), "[ 4 5 6 ]"); // a whole row
+    assert_eq!(norm(&format!("{m}[:, 2]")), "[ 2 ] [ 5 ] [ 8 ]"); // a whole column
+    assert_eq!(norm(&format!("{m}[1:2, 3]")), "[ 3 ] [ 6 ]"); // scalar column collapses
+    assert_eq!(norm(&format!("{m}[3, 1:2]")), "[ 7 8 ]"); // scalar row collapses
+    assert_eq!(ev(&format!("{m}[2, 3]")), "6"); // both scalar → the element
+
+    // Vector sub-ranges, open ends, and `:` binding looser than arithmetic.
+    assert_eq!(norm("[10,20,30,40][2:3]"), "[ 20 30 ]");
+    assert_eq!(norm("[10;20;30;40][2:3]"), "[ 20 ] [ 30 ]");
+    assert_eq!(norm("[10,20,30,40][:3]"), "[ 10 20 30 ]"); // open start
+    assert_eq!(norm("[10,20,30,40][2:]"), "[ 20 30 40 ]"); // open end
+    assert_eq!(norm("[10,20,30,40][:]"), "[ 10 20 30 40 ]"); // whole axis
+    assert_eq!(ev("[10,20,30][2:2]"), "[ 20 ]"); // a one-long range stays a vector
+    assert_eq!(ev("[10,20,30][2]"), "20"); // …but a scalar collapses to the element
+    assert_eq!(norm("[10,20,30,40,50][(1+1):(1+3)]"), "[ 20 30 40 ]"); // expression bounds
+
+    // Bounds are checked; reversed and over-long ranges name the axis.
+    assert_eq!(
+        ev("[1,2,3][2:5]"),
+        "error: range 2:5 is out of range (the vector has 3)"
+    );
+    assert_eq!(
+        ev("[1,2,3][3:2]"),
+        "error: range 3:2 is out of range (the vector has 3)"
+    );
+    assert!(ev("[1,2;3,4][1, 1, 1]").starts_with("error: indexing takes 1 index"));
+}
+
+#[test]
+fn range_slicing_signals() {
+    let s = "s := signal([3; 1; 4; 1; 5])";
+    assert_eq!(ev_all(&[s, "len(s[2:4])"]), "3"); // a sub-signal, not a vector
+    assert_eq!(ev_all(&[s, "s[2:4][1]"]), "1"); // re-indexes into the slice
+    assert_eq!(ev_all(&[s, "len(s[:])"]), "5"); // whole signal
+    assert_eq!(ev_all(&[s, "s[3]"]), "4"); // a scalar still reads the midpoint
+    assert!(ev_all(&["s := signal([1; 2])", "s[1:5]"])
+        .starts_with("error: range 1:5 is out of range (the signal has 2)"));
+}
+
+#[test]
 fn plotting_signals() {
     // plot over signals produces the static signal-plot value.
     assert!(ev_all(&["s := signal([1; 2; 3])", "plot(s)"]).starts_with("plotsignal("));

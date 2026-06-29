@@ -1,7 +1,7 @@
 //! The tree-walking evaluator: lowers an [`crate::ast::Node`] into a canonical
 //! [`Expr`] within a scope, dispatches builtins, and runs control flow.
 
-use crate::ast::{Node, Op};
+use crate::ast::{IndexArg, Node, Op};
 use crate::dsp;
 use crate::expr::*;
 use crate::interval;
@@ -107,6 +107,15 @@ impl Interpreter {
         result
     }
 
+    /// Evaluate an optional range bound to a 1-based index, leaving an omitted
+    /// bound (`None`) for the selection to fill against the axis length.
+    fn eval_opt_index(&mut self, n: &Option<Box<Node>>) -> Result<Option<usize>, String> {
+        match n {
+            Some(n) => Ok(Some(as_index(&self.eval_node(n)?)?)),
+            None => Ok(None),
+        }
+    }
+
     fn eval_node_inner(&mut self, node: &Node) -> Result<Expr, String> {
         match node {
             Node::Num(s) => Ok(parse_number(s)),
@@ -159,26 +168,19 @@ impl Interpreter {
             Node::FieldCall(base, name, args) => self.eval_field_call(base, name, args),
             Node::Index(base, idxs) => {
                 let value = self.eval_node(base)?;
-                let mut indices = Vec::with_capacity(idxs.len());
-                for ix in idxs {
-                    indices.push(as_index(&self.eval_node(ix)?)?);
+                let mut sels = Vec::with_capacity(idxs.len());
+                for arg in idxs {
+                    sels.push(match arg {
+                        IndexArg::Scalar(n) => matrix::Sel::One(as_index(&self.eval_node(n)?)?),
+                        IndexArg::Range(lo, hi) => {
+                            matrix::Sel::Range(self.eval_opt_index(lo)?, self.eval_opt_index(hi)?)
+                        }
+                    });
                 }
-                // Indexing a signal reads the midpoint of that sample; the
-                // certified half-width is bound(s, i).
                 if let Expr::Signal(s) = &value {
-                    let [i] = indices.as_slice() else {
-                        return Err("a signal takes a single index".into());
-                    };
-                    if !(1..=s.len()).contains(i) {
-                        return Err(format!(
-                            "index {} is out of range (the signal has {})",
-                            i,
-                            s.len()
-                        ));
-                    }
-                    return Ok(signal::midpoint(s, i - 1));
+                    return index_signal(s, &sels);
                 }
-                matrix::index(&value, &indices)
+                matrix::select(&value, &sels)
             }
             Node::Call(name, args) => {
                 // diff/subs treat their variable argument as a *name*, not a
@@ -1115,7 +1117,19 @@ fn collect_node_idents(node: &Node, out: &mut Vec<String>) {
         }
         Node::Index(b, idx) => {
             collect_node_idents(b, out);
-            idx.iter().for_each(|i| collect_node_idents(i, out));
+            for arg in idx {
+                match arg {
+                    IndexArg::Scalar(n) => collect_node_idents(n, out),
+                    IndexArg::Range(lo, hi) => {
+                        if let Some(n) = lo {
+                            collect_node_idents(n, out);
+                        }
+                        if let Some(n) = hi {
+                            collect_node_idents(n, out);
+                        }
+                    }
+                }
+            }
         }
         Node::Matrix(rows) => rows
             .iter()
@@ -1235,6 +1249,42 @@ fn signal_arith(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
             wrap(sig::scalar_binop(opstr, s, scalar, true)?)
         }
         _ => unreachable!("signal_arith without a signal"),
+    }
+}
+
+/// Index or slice a signal. A scalar reads the midpoint of that sample (the
+/// certified half-width is `bound(s, i)`); a range cuts a sub-signal, staying
+/// inside the signal substrate.
+fn index_signal(s: &Rc<signal::SignalData>, sels: &[matrix::Sel]) -> Result<Expr, String> {
+    let [sel] = sels else {
+        return Err("a signal takes a single index".into());
+    };
+    let len = s.len();
+    match *sel {
+        matrix::Sel::One(i) => {
+            if !(1..=len).contains(&i) {
+                return Err(format!(
+                    "index {} is out of range (the signal has {})",
+                    i, len
+                ));
+            }
+            Ok(signal::midpoint(s, i - 1))
+        }
+        matrix::Sel::Range(lo, hi) => {
+            let lo = lo.unwrap_or(1);
+            let hi = hi.unwrap_or(len);
+            if lo < 1 || hi > len || lo > hi {
+                return Err(format!(
+                    "range {}:{} is out of range (the signal has {})",
+                    lo, hi, len
+                ));
+            }
+            Ok(Expr::Signal(Rc::new(signal::slice(
+                s,
+                lo - 1,
+                hi - lo + 1,
+            )?)))
+        }
     }
 }
 

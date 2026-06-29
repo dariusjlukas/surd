@@ -24,6 +24,36 @@ Out-of-range and non-integer indices are clean errors. There is no indexed
 *assignment* — values are immutable; build results with `map`, `vcat`, and
 friends.
 
+### Ranges with `:`
+
+Any index position can be a **range** `lo:hi` (inclusive, 1-based) instead of a
+single number. Either bound may be omitted — `lo:` runs to the end, `:hi` from
+the start, and a bare `:` spans the whole axis. A **scalar index collapses its
+axis; a range keeps it**, so you control the shape of the result:
+
+```text
+>> m := [1, 2, 3; 4, 5, 6; 7, 8, 9]
+>> m[1:2, 2:3]         # rows 1–2, columns 2–3 → a submatrix
+[ 2  3 ]
+[ 5  6 ]
+>> m[2, :]             # row 2, every column → a row
+[ 4  5  6 ]
+>> m[:, 2]             # every row, column 2 → a column
+[ 2 ]
+[ 5 ]
+[ 8 ]
+>> m[1:2, 3]           # the scalar column collapses → a column
+[ 3 ]
+[ 6 ]
+>> v := [10, 20, 30, 40]
+>> v[2:3]              # a sub-vector
+[ 20  30 ]
+```
+
+Bounds are evaluated like any expression, so `v[2:n]` and `v[(k+1):]` work. A
+range that runs past the end or reverses (`hi < lo`) is a clean error naming the
+axis.
+
 ## Elementwise operators: `.*` `./` `.^`
 
 Entrywise versions of `*` `/` `^`. Shapes must match when both sides are
@@ -78,6 +108,10 @@ slice(v, start, n)
 >> slice([10, 20, 30, 40], 2, 2)
 [ 20  30 ]
 ```
+
+The `:` range form above is the more general way to say the same thing
+(`v[2:3]`); `slice` is kept for when the count, not the endpoint, is what you
+have.
 
 ## `map`
 

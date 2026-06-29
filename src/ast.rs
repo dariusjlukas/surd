@@ -23,8 +23,9 @@ pub enum Node {
     /// namespace like `dsp`.
     FieldCall(Box<Node>, String, Vec<Node>),
     /// Indexing, 1-based: `v[i]` (vector element or matrix row), `m[i, j]`
-    /// (matrix element).
-    Index(Box<Node>, Vec<Node>),
+    /// (matrix element). Each argument is a scalar or a range (`a:b`, `a:`,
+    /// `:b`, `:`) — a scalar collapses its axis, a range keeps it.
+    Index(Box<Node>, Vec<IndexArg>),
     /// A matrix literal, rows of cells: `[1, 2; 3, 4]`.
     Matrix(Vec<Vec<Node>>),
     /// `name := rhs`
@@ -42,6 +43,15 @@ pub enum Node {
     FuncDef(String, Vec<String>, Box<Node>),
     /// A sequence of statements; its value is the last one's.
     Block(Vec<Node>),
+}
+
+/// One argument of an [`Node::Index`]. `Scalar` selects a single position and
+/// collapses that axis; `Range(lo, hi)` keeps the axis, with either bound left
+/// open (`None`) to mean "to the start/end of the axis".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum IndexArg {
+    Scalar(Node),
+    Range(Option<Box<Node>>, Option<Box<Node>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

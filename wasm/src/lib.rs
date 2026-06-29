@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 use std::collections::BTreeSet;
-use surd::ast::Node;
+use surd::ast::{IndexArg, Node};
 use surd::expr::Expr;
 use surd::{f64eval, latex};
 use wasm_bindgen::prelude::*;
@@ -1046,8 +1046,15 @@ fn symbol_walk(
         }
         Node::Index(base, idx) => {
             symbol_walk(base, top, cond, bound, defs, uses);
-            for i in idx {
-                symbol_walk(i, top, cond, bound, defs, uses);
+            for arg in idx {
+                match arg {
+                    IndexArg::Scalar(n) => symbol_walk(n, top, cond, bound, defs, uses),
+                    IndexArg::Range(lo, hi) => {
+                        for n in lo.iter().chain(hi.iter()) {
+                            symbol_walk(n, top, cond, bound, defs, uses);
+                        }
+                    }
+                }
             }
         }
         Node::Matrix(rows) => {

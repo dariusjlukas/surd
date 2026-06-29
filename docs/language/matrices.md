@@ -130,5 +130,8 @@ the [linear-algebra reference](../reference/linear-algebra.md).
 ## Indexing and elementwise operations
 
 `m[i, j]` reads an element (1-based), `v[i]` a vector element, `m[i]` a whole
-row; `.*` `./` `.^` operate entrywise; scalar functions map over entries
+row. Any position can also be a **range** `lo:hi` (with `lo:`, `:hi`, and `:`
+as the open and whole-axis forms) — a scalar collapses that axis, a range keeps
+it, so `m[2, :]` is a row, `m[:, 2]` a column, and `m[1:2, 1:3]` a submatrix.
+`.*` `./` `.^` operate entrywise; scalar functions map over entries
 automatically. See [Vectors and data](../reference/data.md).

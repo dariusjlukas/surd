@@ -122,7 +122,9 @@ stands.)
 
 `slice(s, start, n)` cuts `n` samples from 1-based `start` — handy for
 trimming to a power of two before `dsp.fft`. (`slice` works on exact vectors
-too.)
+too.) Range indexing does the same by endpoint: `s[2:5]` is a sub-signal,
+`s[:512]` the first 512 samples, `s[:]` the whole thing — staying inside the
+signal substrate, where a scalar `s[i]` instead crosses out to the midpoint.
 
 ## Bulk imports
 

@@ -9,7 +9,7 @@
 //! by `then`/`do`/`else`/`end`. Block keywords and `and`/`or`/`not` are plain
 //! identifiers recognized here.
 
-use crate::ast::{Node, Op};
+use crate::ast::{IndexArg, Node, Op};
 use crate::lexer::Token;
 
 /// Bound on nesting depth, so pathologically nested input errors gracefully
@@ -376,9 +376,9 @@ impl Parser {
                     Node::Field(Box::new(node), name)
                 };
             } else if self.eat(&Token::LBracket) {
-                let mut idxs = vec![self.parse_expr()?];
+                let mut idxs = vec![self.parse_index_arg()?];
                 while self.eat(&Token::Comma) {
-                    idxs.push(self.parse_expr()?);
+                    idxs.push(self.parse_index_arg()?);
                 }
                 self.expect(Token::RBracket)?;
                 node = Node::Index(Box::new(node), idxs);
@@ -401,6 +401,35 @@ impl Parser {
         }
         self.expect(Token::RParen)?;
         Ok(args)
+    }
+
+    /// One comma-separated index argument: a scalar `e`, or a range `lo:hi`
+    /// with either bound omitted (`lo:`, `:hi`, `:`). The `:` is bracket-local
+    /// — it never participates in ordinary expression precedence.
+    fn parse_index_arg(&mut self) -> Result<IndexArg, String> {
+        if self.eat(&Token::Colon) {
+            // `:` (whole axis) or `:hi`.
+            return Ok(if self.at_index_end() {
+                IndexArg::Range(None, None)
+            } else {
+                IndexArg::Range(None, Some(Box::new(self.parse_expr()?)))
+            });
+        }
+        let lo = self.parse_expr()?;
+        if self.eat(&Token::Colon) {
+            // `lo:` (to the end) or `lo:hi`.
+            return Ok(if self.at_index_end() {
+                IndexArg::Range(Some(Box::new(lo)), None)
+            } else {
+                IndexArg::Range(Some(Box::new(lo)), Some(Box::new(self.parse_expr()?)))
+            });
+        }
+        Ok(IndexArg::Scalar(lo))
+    }
+
+    /// True at the close of an index argument — a comma or the closing `]`.
+    fn at_index_end(&self) -> bool {
+        matches!(self.peek(), Token::Comma | Token::RBracket)
     }
 
     fn parse_atom(&mut self) -> Result<Node, String> {
