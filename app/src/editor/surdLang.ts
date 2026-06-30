@@ -181,6 +181,12 @@ const BUILTINS: Builtin[] = [
     doc: '3D data points (x, y, z) as markers; overlay in plot3d(…) over a surface, or plot3d(scatter3d(x, y, z)) alone.',
   },
   {
+    name: 'pairs',
+    params: ['M'],
+    doc: 'Scatterplot matrix of a data matrix (columns are variables) or a struct of columns — pairs(M, [name1, …]) labels the columns.',
+    variadic: true,
+  },
+  {
     name: 'precision',
     params: ['digits?'],
     doc: 'Query, or set, the default numeric precision.',

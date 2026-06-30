@@ -40,7 +40,7 @@ const MAX_SERIES: usize = 12;
 struct EvalResult {
     ok: bool,
     /// "scalar" | "matrix" | "boolean" | "equation" | "function" | "plot"
-    /// | "plot3d"
+    /// | "plot3d" | "splom"
     kind: &'static str,
     /// Plain-text rendering (the REPL form; re-parseable).
     text: String,
@@ -50,6 +50,8 @@ struct EvalResult {
     plot: Option<PlotData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     plot3d: Option<Plot3dData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    splom: Option<SplomData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -128,6 +130,7 @@ fn error_result(msg: String) -> EvalResult {
         latex: String::new(),
         plot: None,
         plot3d: None,
+        splom: None,
         error: Some(msg),
     }
 }
@@ -356,6 +359,139 @@ fn plot_scatter_data(e: &Expr) -> Option<Result<PlotData, String>> {
             series,
         })
     })())
+}
+
+/// Cap on samples drawn per variable in a scatterplot matrix. Denser data
+/// decimates by an even stride — the panels keep their shape, while the payload
+/// and the point count stay bounded.
+const SPLOM_POINTS_MAX: usize = 3000;
+/// Cap on variables: panels form a k×k grid, so this bounds it. Mirrors
+/// `MAX_SPLOM_VARS` on the engine side (`build_splom`).
+const SPLOM_VARS_MAX: usize = 10;
+
+#[derive(Serialize)]
+struct SplomData {
+    /// Variable labels — one per row and column of the panel grid.
+    labels: Vec<String>,
+    /// k columns of decimated samples; `null` is a non-numeric / non-finite gap.
+    columns: Vec<Vec<Option<f64>>>,
+    /// (min, max) per variable — the shared scale down its column and across
+    /// its row, so every panel in a row/column reads on the same axis.
+    ranges: Vec<(f64, f64)>,
+    /// Row-major k×k Pearson r, for the upper-triangle annotations; `null`
+    /// where a variable is constant (correlation undefined).
+    cor: Vec<Option<f64>>,
+    /// Samples drawn per variable after decimation, and the original count —
+    /// the UI notes when it's showing a thinned view.
+    shown: usize,
+    total: usize,
+}
+
+/// A `pairs(...)` value, prepared for drawing as a scatterplot matrix. The
+/// `splom` tag carries the n×k data matrix (columns are variables) followed by
+/// one symbol per column label. `None` if `e` isn't one.
+fn splom_data(e: &Expr) -> Option<Result<SplomData, String>> {
+    let Expr::Func(name, args) = e else {
+        return None;
+    };
+    if name != "splom" || args.len() < 3 {
+        return None;
+    }
+    Some(splom_data_inner(args))
+}
+
+fn splom_data_inner(args: &[Expr]) -> Result<SplomData, String> {
+    let Expr::Matrix(rows) = &args[0] else {
+        return Err("pairs: malformed value".into());
+    };
+    let labels: Vec<String> = args[1..]
+        .iter()
+        .map(|s| match s {
+            Expr::Symbol(s) => s.clone(),
+            other => format!("{}", other),
+        })
+        .collect();
+    let k = labels.len();
+    if k < 2 {
+        return Err("pairs needs at least 2 variables".into());
+    }
+    if k > SPLOM_VARS_MAX {
+        return Err(format!(
+            "pairs: too many variables ({}, max {})",
+            k, SPLOM_VARS_MAX
+        ));
+    }
+    if rows.is_empty() || rows[0].len() != k {
+        return Err("pairs: data shape does not match its labels".into());
+    }
+    let total = rows.len();
+    // Even-stride decimation: keep the panel's shape while bounding the payload.
+    let stride = total.div_ceil(SPLOM_POINTS_MAX).max(1);
+    let mut columns: Vec<Vec<Option<f64>>> = vec![Vec::new(); k];
+    for row in rows.iter().step_by(stride) {
+        for (j, x) in row.iter().enumerate() {
+            let v = f64eval::eval_f64(x, &[]).ok().filter(|v| v.is_finite());
+            columns[j].push(v);
+        }
+    }
+    let shown = columns.first().map_or(0, Vec::len);
+    // Per-variable extent over finite samples, padded so markers don't sit on
+    // a panel edge. A variable with no numeric data can't be drawn.
+    let mut ranges = Vec::with_capacity(k);
+    for (j, col) in columns.iter().enumerate() {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for v in col.iter().flatten() {
+            lo = lo.min(*v);
+            hi = hi.max(*v);
+        }
+        if !lo.is_finite() {
+            return Err(format!(
+                "pairs: variable '{}' has no numeric data",
+                labels[j]
+            ));
+        }
+        ranges.push(pad_window(lo, hi));
+    }
+    // Pearson r per ordered pair (a numeric echo of the engine's exact cormat;
+    // here it only labels a panel, so f64 is fine).
+    let mut cor = Vec::with_capacity(k * k);
+    for ci in &columns {
+        for cj in &columns {
+            cor.push(pearson(ci, cj));
+        }
+    }
+    Ok(SplomData {
+        labels,
+        columns,
+        ranges,
+        cor,
+        shown,
+        total,
+    })
+}
+
+/// Pearson correlation of two equal-length sample columns over the indices
+/// where both are finite. `None` when fewer than two complete pairs remain, or
+/// either column is constant.
+fn pearson(a: &[Option<f64>], b: &[Option<f64>]) -> Option<f64> {
+    let pairs: Vec<(f64, f64)> = a.iter().zip(b).filter_map(|(x, y)| (*x).zip(*y)).collect();
+    let n = pairs.len();
+    if n < 2 {
+        return None;
+    }
+    let nf = n as f64;
+    let mx = pairs.iter().map(|(x, _)| x).sum::<f64>() / nf;
+    let my = pairs.iter().map(|(_, y)| y).sum::<f64>() / nf;
+    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+    for (x, y) in &pairs {
+        let (dx, dy) = (x - mx, y - my);
+        sxy += dx * dy;
+        sxx += dx * dx;
+        syy += dy * dy;
+    }
+    let denom = (sxx * syy).sqrt();
+    (denom != 0.0).then(|| (sxy / denom).clamp(-1.0, 1.0))
 }
 
 /// A `plot(s1, ..., sk)` over signals: the samples are the data — no
@@ -703,6 +839,7 @@ impl Session {
                         latex: String::new(),
                         plot: None,
                         plot3d: None,
+                        splom: None,
                         error: None,
                     }
                 }
@@ -751,6 +888,7 @@ impl Session {
                         latex: String::new(),
                         plot: None,
                         plot3d: None,
+                        splom: None,
                         error: None,
                     }
                 }
@@ -839,33 +977,43 @@ impl Session {
         let result = match self.interp.eval_line(src) {
             Err(e) => error_result(e),
             Ok(value) => {
-                let ok = |kind, plot, plot3d| EvalResult {
+                let ok = |kind, plot, plot3d, splom| EvalResult {
                     ok: true,
                     kind,
                     text: format!("{}", value),
                     latex: latex::to_latex(&value),
                     plot,
                     plot3d,
+                    splom,
                     error: None,
                 };
-                let curve = plot_data(&value)
-                    .map(|r| r.map(|p| (p, Vec::new())))
-                    .or_else(|| plot_scatter_data(&value).map(|r| r.map(|p| (p, Vec::new()))))
-                    .or_else(|| plot_signal_data(&value, self.next_plot_id));
-                match (curve, plot3d_data(&value)) {
-                    (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
-                    (Some(Ok((plot, signals))), _) => {
-                        if !signals.is_empty() {
-                            self.signal_plots.push_back((self.next_plot_id, signals));
-                            self.next_plot_id += 1;
-                            if self.signal_plots.len() > MAX_SIGNAL_PLOTS {
-                                self.signal_plots.pop_front();
-                            }
-                        }
-                        ok("plot", Some(plot), None)
+                // A scatterplot matrix is an unambiguous tagged value — handle
+                // it before the curve/surface paths.
+                if let Some(r) = splom_data(&value) {
+                    match r {
+                        Ok(s) => ok("splom", None, None, Some(s)),
+                        Err(e) => error_result(e),
                     }
-                    (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface)),
-                    (None, None) => ok(kind_of(&value), None, None),
+                } else {
+                    let curve = plot_data(&value)
+                        .map(|r| r.map(|p| (p, Vec::new())))
+                        .or_else(|| plot_scatter_data(&value).map(|r| r.map(|p| (p, Vec::new()))))
+                        .or_else(|| plot_signal_data(&value, self.next_plot_id));
+                    match (curve, plot3d_data(&value)) {
+                        (Some(Err(e)), _) | (_, Some(Err(e))) => error_result(e),
+                        (Some(Ok((plot, signals))), _) => {
+                            if !signals.is_empty() {
+                                self.signal_plots.push_back((self.next_plot_id, signals));
+                                self.next_plot_id += 1;
+                                if self.signal_plots.len() > MAX_SIGNAL_PLOTS {
+                                    self.signal_plots.pop_front();
+                                }
+                            }
+                            ok("plot", Some(plot), None, None)
+                        }
+                        (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface), None),
+                        (None, None) => ok(kind_of(&value), None, None, None),
+                    }
                 }
             }
         };
@@ -1285,6 +1433,35 @@ mod tests {
         // Two surfaces is an error — plot3d draws a single mesh.
         let v: serde_json::Value =
             serde_json::from_str(&s.eval("plot3d(x, y, x, 0, 1, y, 0, 1)")).unwrap();
+        assert_eq!(v["ok"], false);
+    }
+
+    #[test]
+    fn pairs_builds_a_scatterplot_matrix() {
+        let mut s = Session::new();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("pairs([1, 2; 2, 4; 3, 6])")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        assert_eq!(v["kind"], "splom");
+        let sp = &v["splom"];
+        assert_eq!(sp["labels"], serde_json::json!(["x1", "x2"]));
+        assert_eq!(sp["shown"], 3);
+        assert_eq!(sp["total"], 3);
+        let cols = sp["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0], serde_json::json!([1.0, 2.0, 3.0]));
+        assert_eq!(cols[1], serde_json::json!([2.0, 4.0, 6.0]));
+        assert_eq!(sp["ranges"].as_array().unwrap().len(), 2);
+        // Row-major k×k correlations: diagonal exactly 1, the perfectly-linear
+        // off-diagonal pair ≈ 1.
+        let cor = sp["cor"].as_array().unwrap();
+        assert_eq!(cor.len(), 4);
+        assert!((cor[0].as_f64().unwrap() - 1.0).abs() < 1e-12);
+        assert!((cor[1].as_f64().unwrap() - 1.0).abs() < 1e-12);
+
+        // A variable with no numeric data can't be drawn.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("pairs([a, 1; b, 2; c, 3])")).unwrap();
         assert_eq!(v["ok"], false);
     }
 

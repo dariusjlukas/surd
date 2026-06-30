@@ -16,10 +16,10 @@ use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
-    "mean", "median", "quantile", "var", "std", "cov", "cor", "linfit", "polyfit", "polyval",
-    "lsq", "regress", "wls", "ridge", "lasso", "logit", "predict", "robustse", "anova", "bptest",
-    "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf", "norminv", "tcdf", "tpdf",
-    "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
+    "mean", "median", "quantile", "var", "std", "cov", "cor", "covmat", "cormat", "linfit",
+    "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "logit", "predict",
+    "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf",
+    "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -88,6 +88,8 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             let (a, b) = two_vectors("stats.cor", &args)?;
             correlation(&a, &b)
         }
+        "covmat" => cov_matrix(one_matrix("stats.covmat", &args)?),
+        "cormat" => corr_matrix(one_matrix("stats.cormat", &args)?),
         "linfit" => {
             let (x, y) = two_vectors("stats.linfit", &args)?;
             linfit(&x, &y)
@@ -169,6 +171,60 @@ fn correlation(a: &[Expr], b: &[Expr]) -> Result<Expr, String> {
     }
     let cov = covariance(a, b)?;
     Ok(mul(vec![cov, pow(va, neg_half()), pow(vb, neg_half())]))
+}
+
+/// The columns of a data matrix as observation vectors. The convention shared
+/// by `covmat`, `cormat`, and the top-level `pairs`: columns are variables and
+/// rows are observations, so a k-variable dataset of n samples is an n×k
+/// matrix and the result is k×k.
+fn data_columns(name: &str, m: &Expr) -> Result<Vec<Vec<Expr>>, String> {
+    let Expr::Matrix(rows) = m else {
+        return Err(format!(
+            "{} expects a data matrix (columns are variables, rows are observations)",
+            name
+        ));
+    };
+    if rows.len() < 2 {
+        return Err(format!("{} expects at least 2 observations (rows)", name));
+    }
+    let k = rows[0].len();
+    let mut cols = vec![Vec::with_capacity(rows.len()); k];
+    for row in rows {
+        for (j, x) in row.iter().enumerate() {
+            cols[j].push(x.clone());
+        }
+    }
+    Ok(cols)
+}
+
+/// Build the k×k matrix whose (i, j) entry is `f(column_i, column_j)` — the
+/// common shape of the covariance and correlation matrices.
+fn pairwise_matrix(
+    name: &str,
+    m: &Expr,
+    f: impl Fn(&[Expr], &[Expr]) -> Result<Expr, String>,
+) -> Result<Expr, String> {
+    let cols = data_columns(name, m)?;
+    let rows = cols
+        .iter()
+        .map(|ci| {
+            cols.iter()
+                .map(|cj| f(ci, cj))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    matrix::matrix(rows)
+}
+
+/// k×k sample covariance matrix of an n×k data matrix (exact).
+fn cov_matrix(m: &Expr) -> Result<Expr, String> {
+    pairwise_matrix("stats.covmat", m, covariance)
+}
+
+/// k×k Pearson correlation matrix of an n×k data matrix. For numeric data the
+/// entries are exact surds and the diagonal is exactly 1.
+fn corr_matrix(m: &Expr) -> Result<Expr, String> {
+    pairwise_matrix("stats.cormat", m, correlation)
 }
 
 /// Exact least-squares line y = intercept + slope·x, as a struct.
@@ -1768,6 +1824,19 @@ fn one_vector(name: &str, args: &[Expr]) -> Result<Vec<Expr>, String> {
         ));
     }
     entries(name, &args[0])
+}
+
+/// The single matrix argument of `covmat`/`cormat` — left whole (unlike
+/// `one_vector`, which flattens) so `data_columns` can read its columns.
+fn one_matrix<'a>(name: &str, args: &'a [Expr]) -> Result<&'a Expr, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "{} expects 1 argument(s), got {}",
+            name,
+            args.len()
+        ));
+    }
+    Ok(&args[0])
 }
 
 fn two_vectors(name: &str, args: &[Expr]) -> Result<(Vec<Expr>, Vec<Expr>), String> {

@@ -38,6 +38,9 @@ const PlotView = lazy(() =>
 const Surface3DView = lazy(() =>
   import('../plot/Surface3DView').then((m) => ({ default: m.Surface3DView })),
 )
+const SplomView = lazy(() =>
+  import('../plot/SplomView').then((m) => ({ default: m.SplomView })),
+)
 
 // Memoized so a keystroke in one cell (which re-renders NotebookView to
 // recompute the stale set) only re-renders cells whose `stale` flag flips.
@@ -367,6 +370,16 @@ function Output({ cell }: { cell: Cell }) {
           }
         >
           <Surface3DView plot={r.plot3d} cellId={cell.id} />
+        </Suspense>
+      ) : null
+    case 'splom':
+      return r.splom ? (
+        <Suspense
+          fallback={
+            <div className="aspect-square max-w-2xl animate-pulse rounded-lg bg-surface" />
+          }
+        >
+          <SplomView splom={r.splom} cellId={cell.id} />
         </Suspense>
       ) : null
     case 'function':

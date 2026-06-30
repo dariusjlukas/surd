@@ -61,6 +61,26 @@ export interface Plot3dData {
   scatter?: [number, number, number][]
 }
 
+/** A scatterplot matrix (SPLOM) from `pairs(...)`: k variables drawn as a k×k
+ * grid of panels — lower triangle scatter, upper triangle correlation,
+ * diagonal variable names. */
+export interface SplomData {
+  /** Variable labels, one per row and column of the panel grid. */
+  labels: string[]
+  /** k columns of decimated samples; null is a non-numeric / non-finite gap. */
+  columns: (number | null)[][]
+  /** [min, max] per variable — the shared scale down its column and across its
+   * row, so every panel in a row/column reads on the same axis. */
+  ranges: [number, number][]
+  /** Row-major k×k Pearson r for the panel annotations; null where a variable
+   * is constant (correlation undefined). */
+  cor: (number | null)[]
+  /** Samples drawn per variable after decimation, and the original count — the
+   * UI notes when it's showing a thinned view. */
+  shown: number
+  total: number
+}
+
 export type ResultKind =
   | 'scalar'
   | 'matrix'
@@ -70,6 +90,8 @@ export type ResultKind =
   | 'struct'
   | 'plot'
   | 'plot3d'
+  /** A scatterplot matrix (pairs(...)). */
+  | 'splom'
   /** A data import's summary result (Session.import_data). */
   | 'data'
   | 'error'
@@ -81,6 +103,7 @@ export interface EvalResult {
   latex: string
   plot?: PlotData
   plot3d?: Plot3dData
+  splom?: SplomData
   error?: string
 }
 

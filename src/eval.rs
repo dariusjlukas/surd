@@ -1074,6 +1074,17 @@ impl Interpreter {
                 };
                 numeric_eval(&args[0], digits)
             }
+            // pairs(M) / pairs(M, [names]) / pairs(struct) — a scatterplot
+            // matrix. Like `scatter`, it stays a tagged value the plot path
+            // (wasm `splom_data`) turns into a grid of panels; never sampled.
+            "pairs" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(
+                        "pairs expects pairs(M), pairs(M, [name1, ...]), or pairs(struct)".into(),
+                    );
+                }
+                build_splom(&args)
+            }
             // Unknown name: keep it as a symbolic, unevaluated application.
             _ => Ok(func(name, args)),
         }
@@ -1550,6 +1561,123 @@ fn vector_entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
     } else {
         Err(format!("{} expects vectors (1×n or n×1 matrices)", name))
     }
+}
+
+/// Cap on variables in a scatterplot matrix — beyond this the k×k grid of
+/// panels is too small to read. Mirrored by `SPLOM_VARS_MAX` in the wasm bridge.
+const MAX_SPLOM_VARS: usize = 10;
+
+/// Build the tagged `splom` value for `pairs(...)`: the data as an n×k matrix
+/// (columns are variables) followed by one symbol per column label. The wasm
+/// `splom_data` turns it into the grid of panels; here we only validate shapes
+/// and resolve the labels.
+fn build_splom(args: &[Expr]) -> Result<Expr, String> {
+    let (data, labels) = match &args[0] {
+        Expr::Struct(fields) => {
+            if args.len() != 1 {
+                return Err(
+                    "pairs(struct) takes no second argument — the field names label the columns"
+                        .into(),
+                );
+            }
+            splom_from_struct(fields)?
+        }
+        Expr::Matrix(rows) => {
+            if rows.len() < 2 {
+                return Err("pairs needs at least 2 observations (rows)".into());
+            }
+            let ncols = rows[0].len();
+            let labels = match args.len() {
+                2 => splom_labels(&args[1], ncols)?,
+                _ => (1..=ncols).map(|i| format!("x{}", i)).collect(),
+            };
+            (args[0].clone(), labels)
+        }
+        _ => {
+            return Err(
+                "pairs expects a data matrix (columns are variables) or a struct of \
+                 equal-length columns"
+                    .into(),
+            )
+        }
+    };
+    let k = labels.len();
+    if k < 2 {
+        return Err("pairs needs at least 2 variables (columns) to form a matrix of panels".into());
+    }
+    if k > MAX_SPLOM_VARS {
+        return Err(format!(
+            "pairs: too many variables ({}, max {}) — select fewer columns",
+            k, MAX_SPLOM_VARS
+        ));
+    }
+    let mut out = Vec::with_capacity(k + 1);
+    out.push(data);
+    out.extend(labels.into_iter().map(Expr::Symbol));
+    Ok(Expr::Func("splom".to_string(), out))
+}
+
+/// Read k column labels from a vector argument (symbols, or anything that
+/// renders to text), for `pairs(M, [a, b, ...])`.
+fn splom_labels(e: &Expr, k: usize) -> Result<Vec<String>, String> {
+    let v = vector_entries("pairs", e)?;
+    if v.len() != k {
+        return Err(format!(
+            "pairs: got {} label(s) for {} column(s)",
+            v.len(),
+            k
+        ));
+    }
+    Ok(v.iter()
+        .map(|x| match x {
+            Expr::Symbol(s) => s.clone(),
+            other => format!("{}", other),
+        })
+        .collect())
+}
+
+/// Assemble (data matrix, labels) from a struct whose fields are equal-length
+/// numeric column vectors. Non-numeric fields (e.g. a categorical column) are
+/// skipped, the way data-frame pair plots use only the numeric columns; field
+/// names become the labels (alphabetical, the struct's canonical field order).
+fn splom_from_struct(fields: &[(String, Expr)]) -> Result<(Expr, Vec<String>), String> {
+    let mut labels = Vec::new();
+    let mut columns: Vec<Vec<Expr>> = Vec::new();
+    let mut n: Option<usize> = None;
+    for (name, value) in fields {
+        let Some(col) = numeric_column(value) else {
+            continue;
+        };
+        match n {
+            None => n = Some(col.len()),
+            Some(len) if len != col.len() => {
+                return Err(format!(
+                    "pairs(struct): column '{}' has {} value(s) but other columns have {}",
+                    name,
+                    col.len(),
+                    len
+                ));
+            }
+            _ => {}
+        }
+        labels.push(name.clone());
+        columns.push(col);
+    }
+    let n = n.ok_or("pairs(struct): no numeric columns to plot")?;
+    // Columns → an n×k row-major matrix (columns are variables).
+    let rows: Vec<Vec<Expr>> = (0..n)
+        .map(|r| columns.iter().map(|c| c[r].clone()).collect())
+        .collect();
+    Ok((matrix::matrix(rows)?, labels))
+}
+
+/// A struct field read as a vector of all-numeric entries, or `None` if it
+/// isn't a vector or holds a non-number (a symbol, an equation, …).
+fn numeric_column(e: &Expr) -> Option<Vec<Expr>> {
+    let v = matrix::vector_of(e)?;
+    v.iter()
+        .all(|x| matches!(x, Expr::Int(_) | Expr::Rat(_) | Expr::Float(..)))
+        .then_some(v)
 }
 
 /// A `scatter(x, y)` data value, carried symbolically into a plot.

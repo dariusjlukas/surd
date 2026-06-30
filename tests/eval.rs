@@ -800,6 +800,40 @@ fn correlation_of_linear_data_is_exactly_one() {
 }
 
 #[test]
+fn correlation_and_covariance_matrices_are_exact() {
+    // Columns are variables, rows observations. col2 = 2·col1, so every
+    // correlation is exactly 1 and the diagonal is exactly 1.
+    assert_eq!(norm("stats.cormat([1,2; 2,4; 3,6])"), "[ 1 1 ] [ 1 1 ]");
+    // Hand-checked: var(col1)=1, var(col2)=4, cov=2 — exact, no rounding.
+    assert_eq!(norm("stats.covmat([1,2; 2,4; 3,6])"), "[ 1 2 ] [ 2 4 ]");
+    // Unit diagonal and exact symmetry hold for arbitrary columns too.
+    assert_eq!(ev("stats.cormat([1,4; 2,2; 3,7])[1,1]"), "1");
+    assert_eq!(
+        ev("m := stats.cormat([1,4; 2,2; 3,7]); m[1,2] - m[2,1]"),
+        "0"
+    );
+    // Graceful errors.
+    assert!(norm("stats.cormat([1,2,3])").starts_with("error: stats.cormat expects at least 2"));
+    assert!(norm("stats.covmat(5)").starts_with("error: stats.covmat expects a data matrix"));
+}
+
+#[test]
+fn pairs_builds_a_scatterplot_matrix_value() {
+    // A tagged `splom` value: the data matrix, then one symbol per column.
+    let v = norm("pairs([1,2; 3,4; 5,6])");
+    assert!(v.starts_with("splom("), "got {v}");
+    // Default labels x1..xk, or explicit ones from a second vector argument.
+    assert!(v.ends_with("x1, x2)"), "got {v}");
+    assert!(norm("pairs([1,2; 3,4; 5,6], [mpg, hp])").ends_with("mpg, hp)"));
+    // A struct's numeric fields become labelled columns (alphabetical order).
+    assert!(norm("pairs(struct(b = [2; 4; 6], a = [1; 2; 3]))").ends_with("a, b)"));
+    // Errors: too few variables / observations / mismatched struct columns.
+    assert!(ev("pairs([1; 2; 3])").starts_with("error: pairs needs at least 2 variables"));
+    assert!(ev("pairs([1, 2])").starts_with("error: pairs needs at least 2 observations"));
+    assert!(ev("pairs(struct(a = [1; 2], b = [1; 2; 3]))").starts_with("error: pairs(struct)"));
+}
+
+#[test]
 fn linfit_is_exact_least_squares() {
     assert_eq!(
         ev("stats.linfit([1; 2; 3; 4], [3; 5; 7; 9])"),

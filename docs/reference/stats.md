@@ -80,6 +80,33 @@ exact, perfectly linear data correlates to **exactly** ±1 — not 0.9999…:
 
 Zero-variance data is an error (the correlation is undefined).
 
+## `stats.covmat` / `stats.cormat`
+
+```
+stats.covmat(M)
+stats.cormat(M)
+```
+
+The full sample covariance and Pearson correlation matrices of a data matrix
+`M` — **columns are variables, rows are observations** (so an n×k matrix gives a
+k×k result). Both are exact: every entry is the same surd `stats.cov` / `stats.cor`
+would give for that pair of columns, so `cormat` has an exactly-1 diagonal and is
+exactly symmetric.
+
+```text
+>> stats.cormat([1, 2; 2, 4; 3, 6])
+[ 1  1 ]
+[ 1  1 ]
+>> stats.covmat([1, 2; 2, 4; 3, 6])
+[ 1  2 ]
+[ 2  4 ]
+```
+
+Wrap in `N(...)` for decimals, e.g. `N(stats.cormat(M))`. To *see* the pairwise
+relationships, draw the matrix with [`pairs`](plotting.md#scatterplot-matrices).
+Needs at least 2 observations; a constant column makes the correlation matrix
+undefined (an error).
+
 ## `stats.linfit`
 
 ```

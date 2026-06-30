@@ -87,6 +87,51 @@ In the web app:
 - Points evaluate to f64 for drawing, like every plotted value — the data
   itself stays exact in the workspace.
 
+## Scatterplot matrices
+
+```
+pairs(M)
+pairs(M, [name1, name2, ...])
+pairs(struct)
+```
+
+A **scatterplot matrix** (SPLOM) — the fastest way to eyeball a multivariate
+dataset. Given k variables it draws a k×k grid of panels: the **lower triangle**
+is the pairwise scatter, the **upper triangle** is the Pearson correlation
+(coloured by sign, sized by strength), and the **diagonal** names each variable.
+Every panel in a column shares one x-scale and every panel in a row shares one
+y-scale, so a relationship reads consistently across the grid.
+
+The data is a matrix whose **columns are variables** and rows are observations
+(the same layout as [`stats.cormat`](stats.md#statscovmat--statscormat)):
+
+```text
+>> pairs([1, 2; 2, 4; 3, 6])               # default labels x1, x2, …
+>> pairs(M, [mpg, weight, hp])             # name the columns
+```
+
+A [CSV import](../getting-started.md) lands as a struct of named columns, so a
+whole table plots in one call — `pairs` uses the struct's numeric columns and
+labels them by field name. Non-numeric columns (a category like `origin`) are
+skipped, the way a data-frame pair plot uses only the numeric columns:
+
+```text
+>> cars := struct(mpg = [...], weight = [...], origin = [us; eu; us; ...])
+>> pairs(cars)                              # panels for mpg & weight
+```
+
+To read off the exact numbers behind the picture, pair it with
+[`stats.cormat`](stats.md#statscovmat-statscormat) (`N(stats.cormat(M))`).
+
+In the web app:
+
+- The grid is **static** (a SPLOM is for reading, not panning); export it with
+  the **png** button or in a PDF, labels and correlations included.
+- Dense data is **decimated** by an even stride to keep the panels responsive;
+  the caption notes when it's showing a thinned view.
+- Needs 2–10 variables; beyond ten the panels are too small to read (an error
+  asks you to select fewer columns).
+
 ## `plot3d`
 
 ```

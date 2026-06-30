@@ -130,6 +130,8 @@ see [Signals](signals.md).
 | [`stats.std(v)`](stats.md#statsvar-statsstd) | Sample standard deviation (an exact surd) |
 | [`stats.cov(a, b)`](stats.md#statscov-statscor) | Sample covariance |
 | [`stats.cor(a, b)`](stats.md#statscov-statscor) | Pearson correlation (exactly ±1 for linear data) |
+| [`stats.covmat(M)`](stats.md#statscovmat-statscormat) | Covariance matrix of a data matrix (columns are variables) |
+| [`stats.cormat(M)`](stats.md#statscovmat-statscormat) | Correlation matrix (exact; unit diagonal) |
 | [`stats.linfit(x, y)`](stats.md#statslinfit) | Exact least-squares line → `struct(intercept, slope, predict)` |
 | [`stats.quantile(v, q)`](stats.md#statsquantile) | q-th quantile, exact interpolation |
 | [`stats.rmse(a, b)`](stats.md#statsrmse-statsr2) | Root mean squared error (exact surd) |
@@ -181,6 +183,7 @@ symbolic until [`N(...)`](numeric.md#n). See
 | --- | --- |
 | [`plot(f1, ..., fk, x, a, b)`](plotting.md#plot) | One or more curves in `x` over `[a, b]` |
 | [`scatter(x, y)`](plotting.md#scatter) | Data points as markers, to overlay on a plot |
+| [`pairs(M)`](plotting.md#scatterplot-matrices) | Scatterplot matrix of a multivariate dataset |
 | [`plot3d(f, x, a, b, y, c, d)`](plotting.md#plot3d) | Surface z = f(x, y) over `[a, b]` × `[c, d]` |
 
 ## Structs

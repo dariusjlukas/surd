@@ -82,6 +82,17 @@ expect(
   true,
 );
 
+// Scatterplot matrix: exact correlation matrix, and the drawable `pairs` grid.
+expect("cormat kind", ev("stats.cormat([1,2; 2,4; 3,6])").kind, "matrix");
+expect("cormat diagonal exact", ev("stats.cormat([1,4; 2,2; 3,7])[1,1]").text, "1");
+const sp = ev("pairs([1, 2; 2, 4; 3, 6])");
+expect("splom kind", sp.kind, "splom");
+expect("splom labels", sp.splom.labels, ["x1", "x2"]);
+expect("splom columns", sp.splom.columns.length, 2);
+expect("splom samples", sp.splom.shown, 3);
+expect("splom diagonal r is 1", sp.splom.cor[0], 1);
+expect("splom struct labels", ev("pairs(struct(b=[2;4;6], a=[1;2;3]))").splom.labels, ["a", "b"]);
+
 const surf = ev("plot3d(u^2 - v^2, u, -1, 1, v, -1, 1)");
 expect("plot3d kind", surf.kind, "plot3d");
 expect(
