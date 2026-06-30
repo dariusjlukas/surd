@@ -279,6 +279,20 @@ pub fn is_incomplete(src: &str) -> bool {
     depth > 0
 }
 
+/// True if the program's final statement is terminated by a `;` — the
+/// MATLAB/Julia convention for suppressing the echoed result. Purely lexical
+/// and side-effect-free: the value is still computed (and any binding still
+/// made); the front-end consults this only to decide whether to *display* it.
+///
+/// A trailing `;` is unambiguous: brackets are balanced in a complete program,
+/// so a `;` as the last token can only be a top-level statement terminator,
+/// never a matrix row separator (that needs a `]` after it). A trailing
+/// newline or comment is not a meaningful token (the lexer drops them), so
+/// `x := 5;` and `x := 5;  # note` both suppress, while `x := 5` does not.
+pub fn suppresses_output(src: &str) -> bool {
+    matches!(lex(src).as_deref(), Ok([.., Token::Semicolon, Token::Eof]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::Token::*;
@@ -367,5 +381,22 @@ mod tests {
         assert!(is_incomplete("(1 + "));
         assert!(!is_incomplete("1 + 1"));
         assert!(!is_incomplete("if x then 1 end"));
+    }
+
+    #[test]
+    fn trailing_semicolon_suppresses_output() {
+        // A trailing top-level `;` suppresses; nothing else does.
+        assert!(suppresses_output("x := 5;"));
+        assert!(suppresses_output("[1, 2; 3, 4];")); // row-separator `;` inside, terminator outside
+        assert!(suppresses_output(
+            "x := 5;  # trailing comment is not a token"
+        ));
+        assert!(suppresses_output("x := 5;\n")); // trailing newline is dropped
+        assert!(suppresses_output(";")); // empty program, but still "suppressed"
+        assert!(!suppresses_output("x := 5"));
+        assert!(!suppresses_output("[1, 2; 3, 4]")); // the inner `;` is a row separator
+        assert!(!suppresses_output("a := 5; b := 6")); // only the *final* terminator counts
+        assert!(!suppresses_output("")); // nothing to suppress
+        assert!(!suppresses_output("  # just a comment"));
     }
 }

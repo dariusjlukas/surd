@@ -46,6 +46,15 @@ struct EvalResult {
     text: String,
     /// LaTeX rendering for KaTeX.
     latex: String,
+    /// True when the input ended in `;` (MATLAB/Julia output suppression): the
+    /// value was still computed and the workspace still updated, but the cell
+    /// should render compactly instead of echoing a possibly-huge matrix.
+    #[serde(skip_serializing_if = "is_false")]
+    suppressed: bool,
+    /// A one-line shape hint (e.g. `"5×3 matrix"`, `"8-vector"`) for the
+    /// compact rendering of a suppressed result. Absent unless `suppressed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     plot: Option<PlotData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,10 +137,30 @@ fn error_result(msg: String) -> EvalResult {
         kind: "error",
         text: String::new(),
         latex: String::new(),
+        suppressed: false,
+        summary: None,
         plot: None,
         plot3d: None,
         splom: None,
         error: Some(msg),
+    }
+}
+
+/// A one-line shape hint for a suppressed result, so the compact cell still
+/// says *what* it hid — the dimensions of a matrix/vector being exactly the
+/// thing a user suppressing a "large matrix or vector" wants reassured about.
+fn shape_summary(e: &Expr) -> String {
+    match e {
+        Expr::Matrix(rows) => {
+            let r = rows.len();
+            let c = rows.first().map_or(0, |row| row.len());
+            match (r, c) {
+                (n, 1) => format!("{n}-vector"),
+                (1, n) => format!("{n}-vector"),
+                (r, c) => format!("{r}×{c} matrix"),
+            }
+        }
+        other => kind_of(other).to_string(),
     }
 }
 
@@ -830,13 +859,15 @@ impl Session {
             match surd::dataio::import(payload) {
                 Err(e) => error_result(e),
                 Ok(value) => {
-                    let summary = format!("{}: {}", name, surd::dataio::describe(&value));
+                    let descr = format!("{}: {}", name, surd::dataio::describe(&value));
                     self.interp.set_global(name, value);
                     EvalResult {
                         ok: true,
                         kind: "data",
-                        text: summary,
+                        text: descr,
                         latex: String::new(),
+                        suppressed: false,
+                        summary: None,
                         plot: None,
                         plot3d: None,
                         splom: None,
@@ -879,13 +910,15 @@ impl Session {
             match value {
                 Err(e) => error_result(e),
                 Ok(value) => {
-                    let summary = format!("{}: {}", name, surd::dataio::describe(&value));
+                    let descr = format!("{}: {}", name, surd::dataio::describe(&value));
                     self.interp.set_global(name, value);
                     EvalResult {
                         ok: true,
                         kind: "data",
-                        text: summary,
+                        text: descr,
                         latex: String::new(),
+                        suppressed: false,
+                        summary: None,
                         plot: None,
                         plot3d: None,
                         splom: None,
@@ -974,14 +1007,22 @@ impl Session {
 
     /// Evaluate one complete statement block; returns JSON ([`EvalResult`]).
     pub fn eval(&mut self, src: &str) -> String {
+        // A trailing `;` suppresses the echo (MATLAB/Julia style). The value is
+        // still computed below and the workspace still updated — only the
+        // rendering is collapsed, so replay and the workspace panel are
+        // unaffected.
+        let suppressed = surd::lexer::suppresses_output(src);
         let result = match self.interp.eval_line(src) {
             Err(e) => error_result(e),
             Ok(value) => {
+                let summary = suppressed.then(|| shape_summary(&value));
                 let ok = |kind, plot, plot3d, splom| EvalResult {
                     ok: true,
                     kind,
                     text: format!("{}", value),
                     latex: latex::to_latex(&value),
+                    suppressed,
+                    summary: summary.clone(),
                     plot,
                     plot3d,
                     splom,

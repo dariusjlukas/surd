@@ -21,6 +21,28 @@ a newline is line continuation:
 2
 ```
 
+## Suppressing output with `;`
+
+End a statement with `;` to **suppress its echoed result** — the
+MATLAB/Julia convention. The value is still computed and any binding still
+made; only the display is silenced. This keeps a large matrix or vector from
+flooding the screen when all you wanted was to store it:
+
+```text
+>> big := [1, 2, 3; 4, 5, 6];   # bound, but nothing printed
+>> big[2, 3]                    # …and still usable
+6
+```
+
+A trailing `;` is unambiguous: it can only be a statement terminator at the
+end of a program (a `;` *inside* `[...]` is a matrix row separator, with the
+`]` still to come). A trailing comment or newline doesn't change this, so
+`big := …;  # note` is suppressed too. Errors are never suppressed.
+
+In the notebook a suppressed cell collapses to a faint, clickable shape hint
+(e.g. `; 6-vector`) that expands the full output on demand; the value is also
+always listed in the workspace panel.
+
 ## Identifiers and reserved words
 
 Identifiers start with a letter or `_` and continue with letters, digits, or

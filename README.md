@@ -51,7 +51,9 @@ cargo test           # the full suite (unit + behavioral + property + fuzz + reg
 echo "sqrt(2)^2" | cargo run    # pipe mode
 ```
 
-REPL meta-commands: `:vars` lists the workspace, `:q` quits.
+REPL meta-commands: `:vars` lists the workspace, `:q` quits. End a line with
+`;` to suppress its echoed result (MATLAB/Julia style) — the value is still
+computed and bound, just not printed.
 
 ### The web app
 
@@ -217,6 +219,9 @@ cos(x)
 0.333333333333333333333333333333
 >> y = x + 1
 y = x + 1
+>> big := [1, 2, 3; 4, 5, 6];   # trailing ';' binds but suppresses the echo
+>> big[2, 3]
+6
 ```
 
 ### Arbitrary-precision floats

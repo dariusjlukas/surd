@@ -6,7 +6,7 @@
 //! adds line editing, history, and a continuation prompt.
 
 use std::io::IsTerminal;
-use surd::lexer::{is_blank, is_incomplete};
+use surd::lexer::{is_blank, is_incomplete, suppresses_output};
 use surd::Interpreter;
 
 fn main() {
@@ -40,6 +40,7 @@ fn banner() {
         surd::VERSION
     );
     println!("  ':=' assigns, '=' is an equation, 'N(x)' goes to float.");
+    println!("  end a line with ';' to suppress the echoed result.");
     println!("  if/while/function are blocks ended with 'end'.");
     println!("  try:  fact(n) := if n == 0 then 1 else n*fact(n-1) end   then   fact(20)");
     println!("  ':vars' lists the workspace, ':q' quits.");
@@ -126,7 +127,13 @@ fn run_pipe(interp: &mut Interpreter) {
 
 fn report(interp: &mut Interpreter, src: &str) {
     match interp.eval_line(src) {
-        Ok(value) => println!("{}", value),
+        // A trailing `;` suppresses the echo (MATLAB/Julia style): the value is
+        // still computed and any binding still made — we just don't print it.
+        Ok(value) => {
+            if !suppresses_output(src) {
+                println!("{}", value)
+            }
+        }
         Err(err) => println!("error: {}", err),
     }
 }

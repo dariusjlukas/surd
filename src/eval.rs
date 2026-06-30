@@ -198,6 +198,12 @@ impl Interpreter {
                 if name == "struct" && !matches!(self.get_var(name), Some(Expr::Function { .. })) {
                     return self.call_struct(args);
                 }
+                // pairs(M, [a, b]) names/selects columns by *symbol*, like a
+                // model formula — a workspace binding of `weight` must not
+                // collapse a column named `weight` to a number first.
+                if name == "pairs" && !matches!(self.get_var(name), Some(Expr::Function { .. })) {
+                    return self.call_pairs(args);
+                }
                 let evaluated = args
                     .iter()
                     .map(|a| self.eval_node(a))
@@ -683,6 +689,48 @@ impl Interpreter {
         structure(fields)
     }
 
+    /// `pairs(M)` / `pairs(M, [names])` / `pairs(struct)` /
+    /// `pairs(struct, [fields])` — a scatterplot matrix. The data evaluates
+    /// normally; the optional name list is read symbolically (see
+    /// [`Self::pairs_names`]) so it can label a matrix's columns or select a
+    /// subset of a struct's fields. Stays a tagged value the plot path (wasm
+    /// `splom_data`) turns into a grid of panels; never sampled.
+    fn call_pairs(&mut self, args: &[Node]) -> Result<Expr, String> {
+        if args.is_empty() || args.len() > 2 {
+            return Err(
+                "pairs expects pairs(M), pairs(M, [name1, ...]), pairs(struct), or \
+                 pairs(struct, [field1, ...])"
+                    .into(),
+            );
+        }
+        let data = self.eval_node(&args[0])?;
+        let names = match args.get(1) {
+            Some(node) => Some(self.pairs_names(node)?),
+            None => None,
+        };
+        build_splom(&data, names)
+    }
+
+    /// The names in a `pairs` label/selection argument. A `[a, b]` literal
+    /// keeps its bare identifiers symbolic (a binding of `weight` doesn't
+    /// disturb a column named `weight`, matching model formulas); any other
+    /// entry, or a value passed by variable, is evaluated and rendered.
+    fn pairs_names(&mut self, node: &Node) -> Result<Vec<String>, String> {
+        let Node::Matrix(rows) = node else {
+            return splom_names(&self.eval_node(node)?);
+        };
+        rows.iter()
+            .flatten()
+            .map(|entry| match entry {
+                Node::Ident(s) => Ok(s.clone()),
+                other => match self.eval_node(other)? {
+                    Expr::Symbol(s) => Ok(s),
+                    v => Ok(format!("{}", v)),
+                },
+            })
+            .collect()
+    }
+
     /// A *name* argument (the variable of diff/subs/plot): a bare identifier,
     /// or anything that evaluates to a symbol.
     fn var_name(&mut self, node: &Node) -> Result<String, String> {
@@ -1073,17 +1121,6 @@ impl Interpreter {
                     _ => return Err(format!("N expects 1 or 2 arguments, got {}", args.len())),
                 };
                 numeric_eval(&args[0], digits)
-            }
-            // pairs(M) / pairs(M, [names]) / pairs(struct) — a scatterplot
-            // matrix. Like `scatter`, it stays a tagged value the plot path
-            // (wasm `splom_data`) turns into a grid of panels; never sampled.
-            "pairs" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(
-                        "pairs expects pairs(M), pairs(M, [name1, ...]), or pairs(struct)".into(),
-                    );
-                }
-                build_splom(&args)
             }
             // Unknown name: keep it as a symbolic, unevaluated application.
             _ => Ok(func(name, args)),
@@ -1570,28 +1607,28 @@ const MAX_SPLOM_VARS: usize = 10;
 /// Build the tagged `splom` value for `pairs(...)`: the data as an n×k matrix
 /// (columns are variables) followed by one symbol per column label. The wasm
 /// `splom_data` turns it into the grid of panels; here we only validate shapes
-/// and resolve the labels.
-fn build_splom(args: &[Expr]) -> Result<Expr, String> {
-    let (data, labels) = match &args[0] {
-        Expr::Struct(fields) => {
-            if args.len() != 1 {
-                return Err(
-                    "pairs(struct) takes no second argument — the field names label the columns"
-                        .into(),
-                );
-            }
-            splom_from_struct(fields)?
-        }
+/// and resolve the labels. `names`, when given, labels a matrix's columns or
+/// *selects* a subset of a struct's fields (by name, in the order given).
+fn build_splom(data: &Expr, names: Option<Vec<String>>) -> Result<Expr, String> {
+    let (matrix_data, labels) = match data {
+        Expr::Struct(fields) => splom_from_struct(fields, names.as_deref())?,
         Expr::Matrix(rows) => {
             if rows.len() < 2 {
                 return Err("pairs needs at least 2 observations (rows)".into());
             }
             let ncols = rows[0].len();
-            let labels = match args.len() {
-                2 => splom_labels(&args[1], ncols)?,
-                _ => (1..=ncols).map(|i| format!("x{}", i)).collect(),
+            let labels = match names {
+                Some(n) if n.len() != ncols => {
+                    return Err(format!(
+                        "pairs: got {} label(s) for {} column(s)",
+                        n.len(),
+                        ncols
+                    ));
+                }
+                Some(n) => n,
+                None => (1..=ncols).map(|i| format!("x{}", i)).collect(),
             };
-            (args[0].clone(), labels)
+            (data.clone(), labels)
         }
         _ => {
             return Err(
@@ -1612,63 +1649,76 @@ fn build_splom(args: &[Expr]) -> Result<Expr, String> {
         ));
     }
     let mut out = Vec::with_capacity(k + 1);
-    out.push(data);
+    out.push(matrix_data);
     out.extend(labels.into_iter().map(Expr::Symbol));
     Ok(Expr::Func("splom".to_string(), out))
 }
 
-/// Read k column labels from a vector argument (symbols, or anything that
-/// renders to text), for `pairs(M, [a, b, ...])`.
-fn splom_labels(e: &Expr, k: usize) -> Result<Vec<String>, String> {
-    let v = vector_entries("pairs", e)?;
-    if v.len() != k {
-        return Err(format!(
-            "pairs: got {} label(s) for {} column(s)",
-            v.len(),
-            k
-        ));
-    }
-    Ok(v.iter()
-        .map(|x| match x {
-            Expr::Symbol(s) => s.clone(),
-            other => format!("{}", other),
-        })
-        .collect())
-}
-
-/// Assemble (data matrix, labels) from a struct whose fields are equal-length
-/// numeric column vectors. Non-numeric fields (e.g. a categorical column) are
-/// skipped, the way data-frame pair plots use only the numeric columns; field
-/// names become the labels (alphabetical, the struct's canonical field order).
-fn splom_from_struct(fields: &[(String, Expr)]) -> Result<(Expr, Vec<String>), String> {
+/// Assemble (data matrix, labels) from a struct of equal-length numeric column
+/// vectors. With `selection`, take exactly those fields, in that order (each
+/// must exist and be numeric). Without it, take every numeric field in the
+/// struct's canonical (alphabetical) order, skipping non-numeric ones (e.g. a
+/// categorical column) the way data-frame pair plots use only numeric columns.
+fn splom_from_struct(
+    fields: &[(String, Expr)],
+    selection: Option<&[String]>,
+) -> Result<(Expr, Vec<String>), String> {
     let mut labels = Vec::new();
     let mut columns: Vec<Vec<Expr>> = Vec::new();
-    let mut n: Option<usize> = None;
-    for (name, value) in fields {
-        let Some(col) = numeric_column(value) else {
-            continue;
-        };
-        match n {
-            None => n = Some(col.len()),
-            Some(len) if len != col.len() => {
-                return Err(format!(
-                    "pairs(struct): column '{}' has {} value(s) but other columns have {}",
-                    name,
-                    col.len(),
-                    len
-                ));
+    match selection {
+        Some(names) => {
+            for name in names {
+                let field = fields
+                    .iter()
+                    .find(|(f, _)| f == name)
+                    .ok_or_else(|| format!("pairs: struct has no field '{}'", name))?;
+                let col = numeric_column(&field.1)
+                    .ok_or_else(|| format!("pairs: field '{}' is not a numeric column", name))?;
+                labels.push(name.clone());
+                columns.push(col);
             }
-            _ => {}
         }
-        labels.push(name.clone());
-        columns.push(col);
+        None => {
+            for (name, value) in fields {
+                if let Some(col) = numeric_column(value) {
+                    labels.push(name.clone());
+                    columns.push(col);
+                }
+            }
+        }
     }
-    let n = n.ok_or("pairs(struct): no numeric columns to plot")?;
+    let n = columns
+        .first()
+        .map(Vec::len)
+        .ok_or("pairs(struct): no numeric columns to plot")?;
+    for (name, col) in labels.iter().zip(&columns) {
+        if col.len() != n {
+            return Err(format!(
+                "pairs(struct): column '{}' has {} value(s) but other columns have {}",
+                name,
+                col.len(),
+                n
+            ));
+        }
+    }
     // Columns → an n×k row-major matrix (columns are variables).
     let rows: Vec<Vec<Expr>> = (0..n)
         .map(|r| columns.iter().map(|c| c[r].clone()).collect())
         .collect();
     Ok((matrix::matrix(rows)?, labels))
+}
+
+/// Read column names from a `pairs` argument that has already evaluated to a
+/// vector — symbols pass through, anything else renders to text. (The literal
+/// `[a, b]` form keeps its names symbolic via `Interp::pairs_names`.)
+fn splom_names(e: &Expr) -> Result<Vec<String>, String> {
+    Ok(vector_entries("pairs", e)?
+        .iter()
+        .map(|x| match x {
+            Expr::Symbol(s) => s.clone(),
+            other => format!("{}", other),
+        })
+        .collect())
 }
 
 /// A struct field read as a vector of all-numeric entries, or `None` if it

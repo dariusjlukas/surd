@@ -135,26 +135,24 @@ export class SplomPlot {
       ctx.fillText(fit(ctx, d.labels[i], cell * 0.84), c, c)
     }
 
-    // Upper triangle (i < j): correlation r, color-coded by sign and sized by
-    // magnitude so strong relationships stand out at a glance.
+    // Upper triangle (i < j): the correlation r, coloured by sign. One
+    // consistent size for every panel, sized to fit the cell — the number
+    // itself carries the magnitude, so the text doesn't also encode it.
+    const corSize = Math.max(10, Math.min(20, cell * 0.22))
+    ctx.font = `600 ${corSize}px ui-sans-serif, system-ui, sans-serif`
+    const faint = cssColor('--faint', '#64748b')
     for (let i = 0; i < k; i++) {
       for (let j = i + 1; j < k; j++) {
         const r = d.cor[i * k + j]
         const cxp = j * cell + cell / 2
         const cyp = i * cell + cell / 2
         if (r === null) {
-          ctx.fillStyle = cssColor('--faint', '#64748b')
-          ctx.font = `${Math.max(10, cell * 0.16)}px ui-sans-serif, system-ui, sans-serif`
+          ctx.fillStyle = faint
           ctx.fillText('—', cxp, cyp)
           continue
         }
-        const mag = Math.abs(r)
-        const size = Math.max(11, Math.min(30, cell * (0.16 + 0.34 * mag)))
-        ctx.font = `600 ${size}px ui-sans-serif, system-ui, sans-serif`
         ctx.fillStyle = r >= 0 ? accent : negColor
-        ctx.globalAlpha = 0.4 + 0.6 * mag
-        ctx.fillText(formatTick(r), cxp, cyp)
-        ctx.globalAlpha = 1
+        ctx.fillText(fit(ctx, formatTick(r), cell * 0.84), cxp, cyp)
       }
     }
   }

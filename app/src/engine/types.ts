@@ -101,6 +101,13 @@ export interface EvalResult {
   kind: ResultKind
   text: string
   latex: string
+  /** The input ended in `;` (MATLAB/Julia output suppression): the value was
+   * computed and the workspace updated, but the cell renders compactly instead
+   * of echoing a possibly-huge matrix. Absent (falsy) on older saved results. */
+  suppressed?: boolean
+  /** One-line shape hint for the compact rendering of a suppressed result,
+   * e.g. `"5×3 matrix"` or `"8-vector"`. Present only when `suppressed`. */
+  summary?: string
   plot?: PlotData
   plot3d?: Plot3dData
   splom?: SplomData

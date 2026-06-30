@@ -38,6 +38,12 @@ function resultHtml(cell: Cell): string {
   if (!r) return ''
   if (!r.ok)
     return `<div class="report-error">error: ${escapeHtml(r.error ?? '')}</div>`
+  // A `;`-suppressed cell stays collapsed in the static report too — a printed
+  // page has no expand affordance, and the author explicitly silenced it.
+  if (r.suppressed)
+    return `<div class="report-note">${escapeHtml(
+      r.summary ?? 'output',
+    )} — suppressed with ;</div>`
   switch (r.kind) {
     case 'plot':
     case 'plot3d': {

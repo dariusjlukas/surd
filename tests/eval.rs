@@ -827,10 +827,25 @@ fn pairs_builds_a_scatterplot_matrix_value() {
     assert!(norm("pairs([1,2; 3,4; 5,6], [mpg, hp])").ends_with("mpg, hp)"));
     // A struct's numeric fields become labelled columns (alphabetical order).
     assert!(norm("pairs(struct(b = [2; 4; 6], a = [1; 2; 3]))").ends_with("a, b)"));
-    // Errors: too few variables / observations / mismatched struct columns.
+    // A second list selects a subset of the struct's fields, in that order.
+    assert!(
+        norm("pairs(struct(a = [1;2;3], b = [2;4;6], c = [1;0;1]), [c, a])").ends_with("c, a)")
+    );
+    // Column names stay symbolic — a workspace binding of `b` must not collapse
+    // the selected/labelled column to a number (the model-formula guarantee).
+    assert_eq!(
+        norm("b := 9; pairs(struct(a = [1;2;3], b = [2;4;6]), [a, b])"),
+        norm("pairs(struct(a = [1;2;3], b = [2;4;6]), [a, b])")
+    );
+    // Errors: too few variables / observations / mismatched struct columns,
+    // and a selection naming a missing or non-numeric field.
     assert!(ev("pairs([1; 2; 3])").starts_with("error: pairs needs at least 2 variables"));
     assert!(ev("pairs([1, 2])").starts_with("error: pairs needs at least 2 observations"));
     assert!(ev("pairs(struct(a = [1; 2], b = [1; 2; 3]))").starts_with("error: pairs(struct)"));
+    assert!(ev("pairs(struct(a = [1;2], b = [3;4]), [a, zzz])")
+        .starts_with("error: pairs: struct has no field 'zzz'"));
+    assert!(ev("pairs(struct(a = [1;2], g = [x; y]), [a, g])")
+        .starts_with("error: pairs: field 'g' is not a numeric column"));
 }
 
 #[test]

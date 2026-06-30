@@ -92,6 +92,7 @@ expect("splom columns", sp.splom.columns.length, 2);
 expect("splom samples", sp.splom.shown, 3);
 expect("splom diagonal r is 1", sp.splom.cor[0], 1);
 expect("splom struct labels", ev("pairs(struct(b=[2;4;6], a=[1;2;3]))").splom.labels, ["a", "b"]);
+expect("splom field selection", ev("pairs(struct(a=[1;2;3], b=[2;4;6], c=[1;0;1]), [c, a])").splom.labels, ["c", "a"]);
 
 const surf = ev("plot3d(u^2 - v^2, u, -1, 1, v, -1, 1)");
 expect("plot3d kind", surf.kind, "plot3d");
@@ -259,6 +260,19 @@ expect(
   ev("bound(dsp.window(hann, 16)) < 1/10^12").text,
   "true",
 );
+
+// Output suppression: a trailing `;` computes + binds the value but flags the
+// result `suppressed` (with a shape summary) so the cell can render compactly.
+const sup = ev("big := [1, 2, 3; 4, 5, 6];");
+expect("suppressed flag set", sup.suppressed, true);
+expect("suppressed summary is dims", sup.summary, "2×3 matrix");
+expect("suppressed value still computed", sup.text.includes("1"), true);
+expect("suppressed value is bound", ev("big[2, 3]").text, "6");
+const vecSup = ev("col := [1; 2; 3; 4];");
+expect("vector summary", vecSup.summary, "4-vector");
+const shown = ev("[1, 2, 3]");
+expect("no semicolon is not suppressed", shown.suppressed ?? false, false);
+expect("unsuppressed carries no summary", shown.summary ?? null, null);
 
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);

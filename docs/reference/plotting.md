@@ -93,17 +93,18 @@ In the web app:
 pairs(M)
 pairs(M, [name1, name2, ...])
 pairs(struct)
+pairs(struct, [field1, field2, ...])
 ```
 
 A **scatterplot matrix** (SPLOM) — the fastest way to eyeball a multivariate
 dataset. Given k variables it draws a k×k grid of panels: the **lower triangle**
 is the pairwise scatter, the **upper triangle** is the Pearson correlation
-(coloured by sign, sized by strength), and the **diagonal** names each variable.
-Every panel in a column shares one x-scale and every panel in a row shares one
-y-scale, so a relationship reads consistently across the grid.
+(coloured by sign), and the **diagonal** names each variable. Every panel in a
+column shares one x-scale and every panel in a row shares one y-scale, so a
+relationship reads consistently across the grid.
 
 The data is a matrix whose **columns are variables** and rows are observations
-(the same layout as [`stats.cormat`](stats.md#statscovmat--statscormat)):
+(the same layout as [`stats.cormat`](stats.md#statscovmat-statscormat)):
 
 ```text
 >> pairs([1, 2; 2, 4; 3, 6])               # default labels x1, x2, …
@@ -118,6 +119,14 @@ skipped, the way a data-frame pair plot uses only the numeric columns:
 ```text
 >> cars := struct(mpg = [...], weight = [...], origin = [us; eu; us; ...])
 >> pairs(cars)                              # panels for mpg & weight
+```
+
+To plot only **some** of a struct's fields, name them in a second list — they're
+selected (and ordered) by name, and column names stay symbolic, so a workspace
+binding of `weight` won't disturb the column called `weight`:
+
+```text
+>> pairs(cars, [mpg, weight])              # just these two, in this order
 ```
 
 To read off the exact numbers behind the picture, pair it with

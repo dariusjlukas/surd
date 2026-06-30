@@ -19,6 +19,16 @@ Anything a value can be is bindable: numbers, symbols, matrices, structs,
 functions, equations. `pi`, `e`, and `I` may be shadowed by user bindings;
 `true`/`false` may not.
 
+End the line with `;` to bind **without echoing** the value — handy for a
+large matrix or vector you only mean to store (see
+[Suppressing output](syntax.md#suppressing-output-with)):
+
+```text
+>> m := [1, 2, 3; 4, 5, 6];   # bound silently
+>> m[1, 2]
+2
+```
+
 An unbound name is a free **symbol**, so symbolic algebra needs no
 declarations:
 

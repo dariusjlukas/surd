@@ -9,6 +9,16 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- Output suppression with a trailing `;`, the MATLAB/Julia convention: ending a
+  statement with `;` computes and binds the value as usual but suppresses the
+  echoed result — so assigning a large matrix or vector no longer floods the
+  screen. The REPL prints nothing; the notebook collapses the cell to a faint,
+  clickable shape hint (`; 5×3 matrix`) that expands the full output on demand,
+  and the value is always still listed in the workspace panel. Errors are never
+  suppressed.
+
 ## [0.7.0] - 2026-06-29
 
 ## [0.6.0] - 2026-06-25

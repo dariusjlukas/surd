@@ -25,6 +25,7 @@ import { insertNewlineAndIndent } from '@codemirror/commands'
 import type { KeyBinding } from '@codemirror/view'
 import { CodeEditor, type CodeEditorHandle } from '../editor/CodeEditor'
 import { is_incomplete } from '../engine/lexer'
+import type { EvalResult } from '../engine/types'
 import { useNotebook, type Cell } from '../state/store'
 import { useDrafts } from '../state/staleness'
 import { openContextMenu, type MenuEntry } from '../state/contextMenu'
@@ -351,6 +352,43 @@ function Output({ cell }: { cell: Cell }) {
   if (!r.ok) {
     return <div className="font-mono text-sm text-danger">error: {r.error}</div>
   }
+  // A `;`-suppressed result is collapsed to a one-line hint (so a large matrix
+  // doesn't eat the screen) but stays expandable on demand — the value itself
+  // is already in the workspace panel.
+  if (r.suppressed) return <SuppressedOutput cell={cell} r={r} />
+  return <ResultBody cell={cell} r={r} />
+}
+
+/** The compact stand-in for a suppressed cell: a faint, clickable shape hint
+ * (`; 5×3 matrix`) that toggles the real output. */
+function SuppressedOutput({ cell, r }: { cell: Cell; r: EvalResult }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title={
+          open ? 'hide output' : 'output suppressed with ; — click to show'
+        }
+        className="inline-flex items-center gap-1 rounded font-mono text-[11px] text-faint hover:text-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50"
+      >
+        <span aria-hidden="true" className="text-accent">
+          ;
+        </span>
+        <span>{open ? 'hide output' : (r.summary ?? 'output hidden')}</span>
+      </button>
+      {open && (
+        <div className="mt-0.5">
+          <ResultBody cell={cell} r={r} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Renders an ok result by kind (plots, math, value descriptions). Shared by
+ * the normal path and the expanded view of a suppressed cell. */
+function ResultBody({ cell, r }: { cell: Cell; r: EvalResult }) {
   switch (r.kind) {
     case 'plot':
       return r.plot ? (
