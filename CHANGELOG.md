@@ -11,6 +11,15 @@ section into a dated, versioned release.
 
 ### Added
 
+- Strided slicing. An index range can carry a step as a middle field,
+  `lo:step:hi` (MATLAB/Julia order): a scalar `step` keeps every `step`-th
+  position (`v[1:2:]`), and a `(take, skip)` pair keeps `take` consecutive
+  positions then skips `skip`, repeating — the general "take N, skip M" pattern
+  (`v[1:(4, 1):]`). A scalar `step` of `k` is the pair `(1, k - 1)` and a plain
+  `lo:hi` is `(1, 0)`, so the existing range forms are unchanged. The stride
+  works on either matrix axis and on signals (producing a decimated sub-signal),
+  and the open forms (`lo:step:`, `:step:hi`, `:step:`) still apply. A step or
+  take count of `0` is a clean error.
 - Output suppression with a trailing `;`, the MATLAB/Julia convention: ending a
   statement with `;` computes and binds the value as usual but suppresses the
   echoed result — so assigning a large matrix or vector no longer floods the

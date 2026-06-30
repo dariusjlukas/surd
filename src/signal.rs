@@ -1344,6 +1344,27 @@ pub fn slice(s: &SignalData, start: usize, n: usize) -> Result<SignalData, Strin
     })
 }
 
+/// A sub-signal gathered from arbitrary 0-based positions, in order — the
+/// strided counterpart of [`slice`]. Callers validate the indices against the
+/// length (they must all be `< s.len()`).
+pub fn gather(s: &SignalData, idx: &[usize]) -> Result<SignalData, String> {
+    if idx.is_empty() {
+        return Err("slice needs at least 1 sample".into());
+    }
+    Ok(match s {
+        SignalData::F64 { lo, hi } => SignalData::F64 {
+            lo: idx.iter().map(|&i| lo[i]).collect(),
+            hi: idx.iter().map(|&i| hi[i]).collect(),
+        },
+        SignalData::Big { lo, hi, digits } => SignalData::Big {
+            lo: idx.iter().map(|&i| lo[i].clone()).collect(),
+            hi: idx.iter().map(|&i| hi[i].clone()).collect(),
+            digits: *digits,
+        },
+        SignalData::Complex { re, im } => complex(gather(re, idx)?, gather(im, idx)?)?,
+    })
+}
+
 /// Midpoint of sample `i` as a display-grade f64 (plotting only — the
 /// rigorous readback is [`midpoint`]/[`half_width`]).
 fn mid_f64(s: &SignalData, i: usize) -> f64 {

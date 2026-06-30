@@ -9,8 +9,25 @@
 //! by `then`/`do`/`else`/`end`. Block keywords and `and`/`or`/`not` are plain
 //! identifiers recognized here.
 
-use crate::ast::{IndexArg, Node, Op};
+use crate::ast::{IndexArg, Node, Op, Step};
 use crate::lexer::Token;
+
+/// The parsed middle field of a range, before we know whether it is a stride
+/// (three-field `lo:step:hi`) or an upper bound (two-field `lo:hi`). Only a
+/// stride may take the `(take, skip)` pair shape.
+enum StepField {
+    Expr(Box<Node>),
+    Pair(Box<Node>, Box<Node>),
+}
+
+impl StepField {
+    fn into_step(self) -> Step {
+        match self {
+            StepField::Expr(e) => Step::By(e),
+            StepField::Pair(t, s) => Step::TakeSkip(t, s),
+        }
+    }
+}
 
 /// Bound on nesting depth, so pathologically nested input errors gracefully
 /// instead of overflowing the stack during recursive-descent parsing.
@@ -403,28 +420,74 @@ impl Parser {
         Ok(args)
     }
 
-    /// One comma-separated index argument: a scalar `e`, or a range `lo:hi`
-    /// with either bound omitted (`lo:`, `:hi`, `:`). The `:` is bracket-local
-    /// — it never participates in ordinary expression precedence.
+    /// One comma-separated index argument: a scalar `e`, or a range with up to
+    /// three colon-separated fields — `lo:hi`, `lo:step:hi`, with any bound
+    /// omitted (`lo:`, `:hi`, `:`, `lo:step:`, …). In the three-field form the
+    /// middle field is the stride (MATLAB/Julia order): a scalar `k` keeps every
+    /// k-th position, or a `(take, skip)` pair keeps `take` then skips `skip`.
+    /// The `:` is bracket-local — it never participates in ordinary expression
+    /// precedence.
     fn parse_index_arg(&mut self) -> Result<IndexArg, String> {
+        // First field (`lo`), possibly empty when the arg leads with `:`.
+        let lo = if self.peek() == &Token::Colon {
+            None
+        } else {
+            Some(Box::new(self.parse_expr()?))
+        };
+        if !self.eat(&Token::Colon) {
+            // No colon at all → a scalar index (`lo` is necessarily present).
+            return Ok(IndexArg::Scalar(*lo.unwrap()));
+        }
+        // We have a range. The second field is `hi` (two-field form) or the
+        // stride (three-field form) — we only learn which after looking for a
+        // third colon, so allow the `(take, skip)` pair shape here.
+        let second = if self.at_index_end() || self.peek() == &Token::Colon {
+            None
+        } else {
+            Some(self.parse_step_field()?)
+        };
         if self.eat(&Token::Colon) {
-            // `:` (whole axis) or `:hi`.
-            return Ok(if self.at_index_end() {
-                IndexArg::Range(None, None)
+            // Three fields: the second was the stride, the third is `hi`.
+            let hi = if self.at_index_end() {
+                None
             } else {
-                IndexArg::Range(None, Some(Box::new(self.parse_expr()?)))
+                Some(Box::new(self.parse_expr()?))
+            };
+            return Ok(IndexArg::Range {
+                lo,
+                hi,
+                step: second.map(StepField::into_step),
             });
         }
-        let lo = self.parse_expr()?;
-        if self.eat(&Token::Colon) {
-            // `lo:` (to the end) or `lo:hi`.
-            return Ok(if self.at_index_end() {
-                IndexArg::Range(Some(Box::new(lo)), None)
-            } else {
-                IndexArg::Range(Some(Box::new(lo)), Some(Box::new(self.parse_expr()?)))
-            });
+        // Two fields: the second is `hi`, which may not be a `(take, skip)` pair.
+        let hi = match second {
+            None => None,
+            Some(StepField::Expr(e)) => Some(e),
+            Some(StepField::Pair(..)) => {
+                return Err("a (take, skip) pair is only valid as the stride, \
+                            as in lo:(take, skip):hi"
+                    .into())
+            }
+        };
+        Ok(IndexArg::Range { lo, hi, step: None })
+    }
+
+    /// The middle field of a range. A leading `(` introduces either a
+    /// `(take, skip)` pair (a comma follows the first expression) or an ordinary
+    /// parenthesized expression used as a scalar stride; anything else is a bare
+    /// scalar-stride expression.
+    fn parse_step_field(&mut self) -> Result<StepField, String> {
+        if self.eat(&Token::LParen) {
+            let first = self.parse_expr()?;
+            if self.eat(&Token::Comma) {
+                let second = self.parse_expr()?;
+                self.expect(Token::RParen)?;
+                return Ok(StepField::Pair(Box::new(first), Box::new(second)));
+            }
+            self.expect(Token::RParen)?;
+            return Ok(StepField::Expr(Box::new(first)));
         }
-        Ok(IndexArg::Scalar(lo))
+        Ok(StepField::Expr(Box::new(self.parse_expr()?)))
     }
 
     /// True at the close of an index argument — a comma or the closing `]`.

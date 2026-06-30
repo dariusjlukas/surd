@@ -133,5 +133,24 @@ the [linear-algebra reference](../reference/linear-algebra.md).
 row. Any position can also be a **range** `lo:hi` (with `lo:`, `:hi`, and `:`
 as the open and whole-axis forms) — a scalar collapses that axis, a range keeps
 it, so `m[2, :]` is a row, `m[:, 2]` a column, and `m[1:2, 1:3]` a submatrix.
+
+A range may carry a **stride** as a middle field, `lo:step:hi` (MATLAB/Julia
+order). A scalar `step` keeps every `step`-th position; a `(take, skip)` pair
+keeps `take` consecutive positions, then skips `skip`, repeating. A scalar
+`step` of `k` is just the pair `(1, k - 1)`, and a plain `lo:hi` is `(1, 0)`.
+The stride works on either axis and on signals, and the open forms still apply
+(`lo:step:`, `:step:hi`, `:step:`).
+
+```
+>> v := [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+>> v[1:2:]          # every 2nd element
+[ 10  30  50  70  90 ]
+>> v[1:(4, 1):]     # take 4, skip 1, repeat
+[ 10  20  30  40  60  70  80  90 ]
+>> [1,2,3;4,5,6;7,8,9][1:2:3, :]   # every 2nd row
+[ 1  2  3 ]
+[ 7  8  9 ]
+```
+
 `.*` `./` `.^` operate entrywise; scalar functions map over entries
 automatically. See [Vectors and data](../reference/data.md).

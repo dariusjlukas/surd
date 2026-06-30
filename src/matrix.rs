@@ -113,19 +113,60 @@ pub fn mat_mul(a: &Expr, b: &Expr) -> Result<Expr, String> {
 }
 
 /// A per-axis index selector, resolved from `a` (scalar), `a:b`, `a:`, `:b`,
-/// or `:`. A `One` collapses its axis; a `Range` keeps it. Open ends are
-/// filled against the axis length when the selection is performed.
+/// `:`, or a strided `a:s:b`. A `One` collapses its axis; a `Range` keeps it.
+/// Open ends are filled against the axis length when the selection is performed.
+/// The stride is carried as a `(take, skip)` pair (keep `take` consecutive
+/// positions, then skip `skip`, repeating): a contiguous range is `take = 1,
+/// skip = 0`, and a plain stride `k` is `take = 1, skip = k - 1`.
 #[derive(Clone, Copy, Debug)]
 pub enum Sel {
     One(usize),
-    Range(Option<usize>, Option<usize>),
+    Range {
+        lo: Option<usize>,
+        hi: Option<usize>,
+        take: usize,
+        skip: usize,
+    },
 }
 
 /// A resolved, 1-based selector for one axis of known length.
 enum Axis {
     One(usize),
-    /// Inclusive `[lo, hi]`.
-    Range(usize, usize),
+    /// Inclusive `[lo, hi]`, kept in a `take`-then-`skip` pattern.
+    Range {
+        lo: usize,
+        hi: usize,
+        take: usize,
+        skip: usize,
+    },
+}
+
+/// The 1-based positions a resolved axis selects, in order. A `One` is the
+/// single position; a `Range` walks `[lo, hi]`, keeping `take` consecutive
+/// positions then skipping `skip`, repeating. `take >= 1` (guaranteed by the
+/// evaluator) makes the walk strictly advance, so it always terminates.
+fn axis_span(a: &Axis) -> Vec<usize> {
+    match *a {
+        Axis::One(i) => vec![i],
+        Axis::Range { lo, hi, take, skip } => {
+            let mut out = Vec::new();
+            let mut i = lo;
+            'outer: loop {
+                for _ in 0..take {
+                    if i > hi {
+                        break 'outer;
+                    }
+                    out.push(i);
+                    i += 1;
+                }
+                i = match i.checked_add(skip) {
+                    Some(v) if v <= hi => v,
+                    _ => break,
+                };
+            }
+            out
+        }
+    }
 }
 
 /// Resolve a selector against an axis of length `len`, validating bounds.
@@ -142,7 +183,7 @@ fn resolve(sel: &Sel, len: usize, what: &str) -> Result<Axis, String> {
                 ))
             }
         }
-        Sel::Range(lo, hi) => {
+        Sel::Range { lo, hi, take, skip } => {
             let lo = lo.unwrap_or(1);
             let hi = hi.unwrap_or(len);
             if lo < 1 || hi > len || lo > hi {
@@ -151,10 +192,17 @@ fn resolve(sel: &Sel, len: usize, what: &str) -> Result<Axis, String> {
                     lo, hi, what, len
                 ))
             } else {
-                Ok(Axis::Range(lo, hi))
+                Ok(Axis::Range { lo, hi, take, skip })
             }
         }
     }
+}
+
+/// The 1-based positions a selector picks from an axis of length `len`,
+/// validating bounds. A scalar picks a single position. Used by callers outside
+/// this module (e.g. signal indexing) that gather rather than slice.
+pub fn strided_indices(sel: &Sel, len: usize, what: &str) -> Result<Vec<usize>, String> {
+    Ok(axis_span(&resolve(sel, len, what)?))
 }
 
 /// Index or slice a matrix. `sels` carries one selector per axis: a single
@@ -171,17 +219,24 @@ pub fn select(m: &Expr, sels: &[Sel]) -> Result<Expr, String> {
         // One selector on a row vector → along its single row of columns.
         [s] if nr == 1 => match resolve(s, nc, "the vector")? {
             Axis::One(j) => Ok(rows[0][j - 1].clone()),
-            Axis::Range(lo, hi) => Ok(Expr::Matrix(vec![rows[0][lo - 1..hi].to_vec()])),
+            a => Ok(Expr::Matrix(vec![axis_span(&a)
+                .iter()
+                .map(|&j| rows[0][j - 1].clone())
+                .collect()])),
         },
         // One selector on a column vector → along its rows.
         [s] if nc == 1 => match resolve(s, nr, "the vector")? {
             Axis::One(i) => Ok(rows[i - 1][0].clone()),
-            Axis::Range(lo, hi) => Ok(Expr::Matrix(rows[lo - 1..hi].to_vec())),
+            a => Ok(Expr::Matrix(
+                axis_span(&a).iter().map(|&i| rows[i - 1].clone()).collect(),
+            )),
         },
         // One selector on a 2-D matrix → a whole row (scalar) or block of rows.
         [s] => match resolve(s, nr, "the matrix")? {
             Axis::One(i) => Ok(Expr::Matrix(vec![rows[i - 1].clone()])),
-            Axis::Range(lo, hi) => Ok(Expr::Matrix(rows[lo - 1..hi].to_vec())),
+            a => Ok(Expr::Matrix(
+                axis_span(&a).iter().map(|&i| rows[i - 1].clone()).collect(),
+            )),
         },
         // Two selectors → (row, column).
         [rs, cs] => {
@@ -196,13 +251,7 @@ pub fn select(m: &Expr, sels: &[Sel]) -> Result<Expr, String> {
 /// Gather the `(row, column)` block. Both scalar → the bare element; exactly
 /// one scalar → a vector (collapsed axis); both ranges → a submatrix.
 fn submatrix(rows: &[Vec<Expr>], r: &Axis, c: &Axis) -> Expr {
-    let span = |a: &Axis| -> Vec<usize> {
-        match *a {
-            Axis::One(i) => vec![i],
-            Axis::Range(lo, hi) => (lo..=hi).collect(),
-        }
-    };
-    let (ri, ci) = (span(r), span(c));
+    let (ri, ci) = (axis_span(r), axis_span(c));
     let out: Vec<Vec<Expr>> = ri
         .iter()
         .map(|&i| ci.iter().map(|&j| rows[i - 1][j - 1].clone()).collect())

@@ -1,7 +1,7 @@
 //! The tree-walking evaluator: lowers an [`crate::ast::Node`] into a canonical
 //! [`Expr`] within a scope, dispatches builtins, and runs control flow.
 
-use crate::ast::{IndexArg, Node, Op};
+use crate::ast::{IndexArg, Node, Op, Step};
 use crate::dsp;
 use crate::expr::*;
 use crate::interval;
@@ -116,6 +116,24 @@ impl Interpreter {
         }
     }
 
+    /// Lower a range's stride to a `(take, skip)` pair: keep `take` consecutive
+    /// positions, then skip `skip`, repeating. No stride means contiguous
+    /// (`1, 0`); a scalar stride `k` keeps every k-th position (`1, k - 1`).
+    fn eval_step(&mut self, step: &Option<Step>) -> Result<(usize, usize), String> {
+        match step {
+            None => Ok((1, 0)),
+            Some(Step::By(k)) => {
+                let k = as_positive(&self.eval_node(k)?, "a stride")?;
+                Ok((1, k - 1))
+            }
+            Some(Step::TakeSkip(t, s)) => {
+                let take = as_positive(&self.eval_node(t)?, "a take count")?;
+                let skip = as_count(&self.eval_node(s)?, "a skip count")?;
+                Ok((take, skip))
+            }
+        }
+    }
+
     fn eval_node_inner(&mut self, node: &Node) -> Result<Expr, String> {
         match node {
             Node::Num(s) => Ok(parse_number(s)),
@@ -172,8 +190,14 @@ impl Interpreter {
                 for arg in idxs {
                     sels.push(match arg {
                         IndexArg::Scalar(n) => matrix::Sel::One(as_index(&self.eval_node(n)?)?),
-                        IndexArg::Range(lo, hi) => {
-                            matrix::Sel::Range(self.eval_opt_index(lo)?, self.eval_opt_index(hi)?)
+                        IndexArg::Range { lo, hi, step } => {
+                            let (take, skip) = self.eval_step(step)?;
+                            matrix::Sel::Range {
+                                lo: self.eval_opt_index(lo)?,
+                                hi: self.eval_opt_index(hi)?,
+                                take,
+                                skip,
+                            }
                         }
                     });
                 }
@@ -1168,12 +1192,17 @@ fn collect_node_idents(node: &Node, out: &mut Vec<String>) {
             for arg in idx {
                 match arg {
                     IndexArg::Scalar(n) => collect_node_idents(n, out),
-                    IndexArg::Range(lo, hi) => {
-                        if let Some(n) = lo {
+                    IndexArg::Range { lo, hi, step } => {
+                        for n in [lo, hi].into_iter().flatten() {
                             collect_node_idents(n, out);
                         }
-                        if let Some(n) = hi {
-                            collect_node_idents(n, out);
+                        match step {
+                            None => {}
+                            Some(Step::By(k)) => collect_node_idents(k, out),
+                            Some(Step::TakeSkip(t, s)) => {
+                                collect_node_idents(t, out);
+                                collect_node_idents(s, out);
+                            }
                         }
                     }
                 }
@@ -1318,20 +1347,26 @@ fn index_signal(s: &Rc<signal::SignalData>, sels: &[matrix::Sel]) -> Result<Expr
             }
             Ok(signal::midpoint(s, i - 1))
         }
-        matrix::Sel::Range(lo, hi) => {
-            let lo = lo.unwrap_or(1);
-            let hi = hi.unwrap_or(len);
+        matrix::Sel::Range { lo, hi, take, skip } => {
+            let (lo, hi) = (lo.unwrap_or(1), hi.unwrap_or(len));
             if lo < 1 || hi > len || lo > hi {
                 return Err(format!(
                     "range {}:{} is out of range (the signal has {})",
                     lo, hi, len
                 ));
             }
-            Ok(Expr::Signal(Rc::new(signal::slice(
-                s,
-                lo - 1,
-                hi - lo + 1,
-            )?)))
+            // A contiguous range keeps the fast slice path; a stride or
+            // take/skip gathers the selected samples into a new sub-signal.
+            let sub = if take == 1 && skip == 0 {
+                signal::slice(s, lo - 1, hi - lo + 1)?
+            } else {
+                let idx0: Vec<usize> = matrix::strided_indices(sel, len, "the signal")?
+                    .into_iter()
+                    .map(|i| i - 1)
+                    .collect();
+                signal::gather(s, &idx0)?
+            };
+            Ok(Expr::Signal(Rc::new(sub)))
         }
     }
 }
@@ -1357,6 +1392,19 @@ fn as_index(e: &Expr) -> Result<usize, String> {
             e
         )),
     }
+}
+
+/// A stride / take count: a positive integer. `what` names it for errors.
+fn as_positive(e: &Expr, what: &str) -> Result<usize, String> {
+    match as_usize(e) {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(format!("{} must be a positive integer, got '{}'", what, e)),
+    }
+}
+
+/// A skip count: a non-negative integer. `what` names it for errors.
+fn as_count(e: &Expr, what: &str) -> Result<usize, String> {
+    as_usize(e).map_err(|_| format!("{} must be a non-negative integer, got '{}'", what, e))
 }
 
 /// Linear-algebra dispatch for binary operators when a matrix is involved.

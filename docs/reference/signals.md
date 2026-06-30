@@ -124,7 +124,9 @@ stands.)
 trimming to a power of two before `dsp.fft`. (`slice` works on exact vectors
 too.) Range indexing does the same by endpoint: `s[2:5]` is a sub-signal,
 `s[:512]` the first 512 samples, `s[:]` the whole thing — staying inside the
-signal substrate, where a scalar `s[i]` instead crosses out to the midpoint.
+signal substrate, where a scalar `s[i]` instead crosses out to the midpoint. A
+[strided range](data.md#strided-ranges-lostephi) decimates: `s[1:2:]` keeps
+every 2nd sample, `s[1:(4, 1):]` takes 4 and skips 1, each a shorter sub-signal.
 
 ## Bulk imports
 

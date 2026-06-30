@@ -54,6 +54,38 @@ Bounds are evaluated like any expression, so `v[2:n]` and `v[(k+1):]` work. A
 range that runs past the end or reverses (`hi < lo`) is a clean error naming the
 axis.
 
+### Strided ranges: `lo:step:hi`
+
+A range can carry a **stride** as a middle field — `lo:step:hi`, with the step
+in the middle (MATLAB/Julia order). The step takes two forms:
+
+- a **scalar** `k` keeps every `k`-th position (so `k = 1` is the plain range);
+- a **`(take, skip)` pair** keeps `take` consecutive positions, then skips
+  `skip`, and repeats — the general "take N, skip M" pattern.
+
+A scalar step `k` is exactly the pair `(1, k - 1)`, and a plain `lo:hi` is
+`(1, 0)`. The open forms still apply (`lo:step:`, `:step:hi`, `:step:`), the
+stride works on either matrix axis, and the parenthesized scalar `(k)` stays a
+scalar step — only the comma makes a pair.
+
+```text
+>> v := [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+>> v[1:2:]             # every 2nd element
+[ 10  30  50  70  90 ]
+>> v[2:2:8]            # every 2nd, from 2 through 8
+[ 20  40  60  80 ]
+>> v[1:(4, 1):]        # take 4, skip 1, repeat
+[ 10  20  30  40  60  70  80  90 ]
+>> m := [1, 2, 3, 4; 5, 6, 7, 8; 9, 10, 11, 12]
+>> m[1:2:3, 1:2:4]     # every 2nd row and column
+[  1   3 ]
+[  9  11 ]
+```
+
+A step of `0` (or a take count of `0`) is a clean error; the skip count may be
+`0` (a contiguous take). Strided indexing applies to signals too, producing a
+decimated sub-signal that stays in the signal substrate.
+
 ## Elementwise operators: `.*` `./` `.^`
 
 Entrywise versions of `*` `/` `^`. Shapes must match when both sides are

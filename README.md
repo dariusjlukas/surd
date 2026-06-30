@@ -502,9 +502,13 @@ binary / CSV into signals, and exports them losslessly in both substrates.
 ### Vectors, data, and plotting
 
 Vectors are 1×n / n×1 matrices; indexing is 1-based (`v[2]`, `m[2, 1]`, with
-`m[i]` the whole row), elementwise operators are `.*` `./` `.^`, and scalar
-functions map over a matrix automatically. Helpers: `map`, `len`/`size`,
-`slice`, `dot`, `vcat`/`hcat`, and `linspace` (with an exact rational step).
+`m[i]` the whole row). Ranges slice an axis — `v[2:4]`, `m[:, 2]` — and a
+**stride** in the middle field (`lo:step:hi`, MATLAB/Julia order) picks a
+strided subset: a scalar `step` keeps every `step`-th position, a `(take, skip)`
+pair keeps `take` then skips `skip` (so `v[1:(4,1):]` is "take 4, skip 1"). The
+elementwise operators are `.*` `./` `.^`, and scalar functions map over a matrix
+automatically. Helpers: `map`, `len`/`size`, `slice`, `dot`, `vcat`/`hcat`, and
+`linspace` (with an exact rational step).
 
 ```
 >> map(abs, dsp.freqz([0, 1], [0, pi/3]))    # a pure delay: unit magnitude

@@ -23,9 +23,37 @@ export function NotebookView() {
     [notebook.cells, drafts],
   )
 
+  // Keep the right cell in view as the list changes. Entering a notebook (mount
+  // or switch) and appending a cell (input-bar submit, import, or an "end"
+  // insert) snap to the bottom so the latest row shows. A *middle* insert must
+  // NOT jump to the bottom — that buries the just-created cell the user is about
+  // to edit (see the +code/+text inserters); scroll only that cell into view.
+  // Deletes and bulk changes (added.length ≠ 1) leave the scroll position be.
+  const prevIds = useRef<string[] | null>(null)
+  const prevNotebookId = useRef(notebook.id)
   useEffect(() => {
-    if (autoScroll) endRef.current?.scrollIntoView({ block: 'end' })
-  }, [count, notebook.id, autoScroll])
+    const ids = notebook.cells.map((c) => c.id)
+    const last = prevIds.current
+    const switched = prevNotebookId.current !== notebook.id
+    prevIds.current = ids
+    prevNotebookId.current = notebook.id
+
+    if (!autoScroll) return
+    if (last === null || switched) {
+      endRef.current?.scrollIntoView({ block: 'end' })
+      return
+    }
+    const added = ids.filter((id) => !last.includes(id))
+    if (added.length !== 1) return
+    const id = added[0]
+    if (ids[ids.length - 1] === id) {
+      endRef.current?.scrollIntoView({ block: 'end' })
+    } else {
+      document
+        .getElementById(`cell-${id}`)
+        ?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [notebook.cells, notebook.id, autoScroll])
 
   return (
     <div
@@ -72,7 +100,9 @@ export function NotebookView() {
       {count > 0 && <CellInserter pos="start" />}
       {notebook.cells.map((c) => (
         <Fragment key={c.id}>
-          <CellView cell={c} stale={stale.has(c.id)} />
+          <div id={`cell-${c.id}`}>
+            <CellView cell={c} stale={stale.has(c.id)} />
+          </div>
           <CellInserter pos={{ after: c.id }} />
         </Fragment>
       ))}

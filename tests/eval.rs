@@ -1334,6 +1334,78 @@ fn range_slicing_signals() {
 }
 
 #[test]
+fn strided_slicing() {
+    // `lo:step:hi` keeps every step-th position (MATLAB/Julia order).
+    assert_eq!(norm("[10,20,30,40,50][1:2:5]"), "[ 10 30 50 ]");
+    assert_eq!(norm("[10,20,30,40,50][2:2:5]"), "[ 20 40 ]"); // stops within bounds
+    assert_eq!(norm("[10,20,30,40,50][1:2:]"), "[ 10 30 50 ]"); // open stop
+    assert_eq!(norm("[10,20,30,40,50][:2:]"), "[ 10 30 50 ]"); // open start and stop
+    assert_eq!(norm("[10,20,30,40,50][1:3:]"), "[ 10 40 ]");
+    assert_eq!(norm("[10,20,30,40,50][1:1:5]"), "[ 10 20 30 40 50 ]"); // step 1 == range
+    assert_eq!(norm("[10,20,30,40,50][1:9:5]"), "[ 10 ]"); // step past the end → just lo
+
+    // A column vector keeps its orientation.
+    assert_eq!(norm("[10;20;30;40;50][1:2:5]"), "[ 10 ] [ 30 ] [ 50 ]");
+
+    // Both matrix axes can stride independently.
+    let m = "[1,2,3;4,5,6;7,8,9]";
+    assert_eq!(norm(&format!("{m}[1:2:3, :]")), "[ 1 2 3 ] [ 7 8 9 ]"); // rows 1,3
+    assert_eq!(norm(&format!("{m}[:, 1:2:3]")), "[ 1 3 ] [ 4 6 ] [ 7 9 ]"); // cols 1,3
+    assert_eq!(norm(&format!("{m}[1:2:3, 1:2:3]")), "[ 1 3 ] [ 7 9 ]"); // both
+
+    // The stride may be any expression; a parenthesized one stays a scalar
+    // stride (it is the comma that makes a (take, skip) pair).
+    assert_eq!(norm("[10,20,30,40,50][1:(1+1):5]"), "[ 10 30 50 ]");
+    assert_eq!(norm("[10,20,30,40,50][1:(1+1):(2+3)]"), "[ 10 30 50 ]");
+
+    // A stride of 0 is rejected.
+    assert_eq!(
+        ev("[1,2,3,4,5][1:0:5]"),
+        "error: a stride must be a positive integer, got '0'"
+    );
+}
+
+#[test]
+fn take_skip_slicing() {
+    // `lo:(take, skip):hi` keeps `take` consecutive, then skips `skip`.
+    let v = "[10,20,30,40,50,60,70,80,90,100]";
+    assert_eq!(
+        norm(&format!("{v}[1:(4,1):]")),
+        "[ 10 20 30 40 60 70 80 90 ]"
+    );
+    assert_eq!(norm(&format!("{v}[2:(2,3):]")), "[ 20 30 70 80 ]");
+    assert_eq!(norm(&format!("{v}[1:(4,1):6]")), "[ 10 20 30 40 60 ]"); // bounded stop
+
+    // A scalar stride k is the pair (1, k - 1).
+    assert_eq!(norm(&format!("{v}[1:3:]")), norm(&format!("{v}[1:(1,2):]")));
+
+    // skip 0 keeps everything (a contiguous take); take must be positive.
+    assert_eq!(norm("[1,2,3][1:(2,0):]"), "[ 1 2 3 ]");
+    assert_eq!(
+        ev("[1,2,3,4,5][1:(0,1):]"),
+        "error: a take count must be a positive integer, got '0'"
+    );
+
+    // A pair is only meaningful as the stride, not as an upper bound.
+    assert_eq!(
+        ev("[10,20,30][1:(4,1)]"),
+        "error: a (take, skip) pair is only valid as the stride, as in lo:(take, skip):hi"
+    );
+}
+
+#[test]
+fn strided_slicing_signals() {
+    let s = "s := signal([10; 20; 30; 40; 50])";
+    assert_eq!(ev_all(&[s, "len(s[1:2:5])"]), "3"); // still a sub-signal
+    assert_eq!(ev_all(&[s, "s[1:2:5][2]"]), "30"); // re-index into the stride
+    let big = "s := signal([1; 2; 3; 4; 5; 6; 7; 8; 9; 10])";
+    assert_eq!(ev_all(&[big, "len(s[1:(4,1):])"]), "8"); // take 4, skip 1
+    assert_eq!(ev_all(&[big, "s[1:(4,1):][5]"]), "6"); // gathered sample
+    assert!(ev_all(&["s := signal([1; 2; 3])", "s[1:0:3]"])
+        .starts_with("error: a stride must be a positive integer"));
+}
+
+#[test]
 fn plotting_signals() {
     // plot over signals produces the static signal-plot value.
     assert!(ev_all(&["s := signal([1; 2; 3])", "plot(s)"]).starts_with("plotsignal("));

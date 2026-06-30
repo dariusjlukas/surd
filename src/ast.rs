@@ -24,7 +24,8 @@ pub enum Node {
     FieldCall(Box<Node>, String, Vec<Node>),
     /// Indexing, 1-based: `v[i]` (vector element or matrix row), `m[i, j]`
     /// (matrix element). Each argument is a scalar or a range (`a:b`, `a:`,
-    /// `:b`, `:`) — a scalar collapses its axis, a range keeps it.
+    /// `:b`, `:`, with an optional stride `a:s:b`) — a scalar collapses its
+    /// axis, a range keeps it.
     Index(Box<Node>, Vec<IndexArg>),
     /// A matrix literal, rows of cells: `[1, 2; 3, 4]`.
     Matrix(Vec<Vec<Node>>),
@@ -46,12 +47,27 @@ pub enum Node {
 }
 
 /// One argument of an [`Node::Index`]. `Scalar` selects a single position and
-/// collapses that axis; `Range(lo, hi)` keeps the axis, with either bound left
-/// open (`None`) to mean "to the start/end of the axis".
+/// collapses that axis; `Range` keeps the axis, with either bound left open
+/// (`None`) to mean "to the start/end of the axis", and an optional stride
+/// (`None` = every element).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum IndexArg {
     Scalar(Node),
-    Range(Option<Box<Node>>, Option<Box<Node>>),
+    Range {
+        lo: Option<Box<Node>>,
+        hi: Option<Box<Node>>,
+        step: Option<Step>,
+    },
+}
+
+/// The stride between kept positions in a range `lo:step:hi` (MATLAB/Julia
+/// order — the step sits in the middle). A scalar `By(k)` keeps every k-th
+/// position; a `TakeSkip(t, s)` keeps `t` consecutive then skips `s`, repeating.
+/// `By(k)` is the special case `TakeSkip(1, k - 1)`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Step {
+    By(Box<Node>),
+    TakeSkip(Box<Node>, Box<Node>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
