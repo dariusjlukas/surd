@@ -203,6 +203,50 @@ The n×n identity matrix. `eye` is an alias.
 [ 0  0  1 ]
 ```
 
+## `fill`
+
+```
+fill(value, n)
+fill(value, rows, cols)
+```
+
+A matrix with every entry equal to `value`. One size argument fills an n×n
+square (like `eye`); two give a `rows`×`cols` matrix. A `1×n` fill is the
+convenient way to make a constant row vector. The value can be any scalar
+expression, so the matrix may be symbolic.
+
+```text
+>> fill(0, 2)
+[ 0  0 ]
+[ 0  0 ]
+
+>> fill(7, 2, 3)
+[ 7  7  7 ]
+[ 7  7  7 ]
+
+>> fill(1, 1, 4)
+[ 1  1  1  1 ]
+```
+
+When the first argument is a **function**, it is called at each entry's
+coordinate `f(row, col)` — 1-based, matching `m[row, col]` indexing — and the
+result becomes that entry. The body is ordinary surd, so entries can be
+computed, symbolic, or chosen by a conditional.
+
+```text
+>> g(i, j) := (i - 1)*3 + j
+>> fill(g, 3)
+[ 1  2  3 ]
+[ 4  5  6 ]
+[ 7  8  9 ]
+
+>> d(i, j) := if i == j then 1 else 0 end
+>> fill(d, 3)                       # the identity, the long way
+[ 1  0  0 ]
+[ 0  1  0 ]
+[ 0  0  1 ]
+```
+
 ## `charpoly`
 
 ```

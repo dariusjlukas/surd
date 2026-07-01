@@ -5,7 +5,8 @@
 //! surd — `stats.std([1; 2; 3; 4])` is `sqrt(5/3)`, with `N(...)` taking it
 //! to floats only on request. `var`, `std`, `cov`, and `cor` are the
 //! *sample* estimators (n−1 denominator). Symbolic entries flow through
-//! everything that doesn't need ordering; `median` requires numeric data.
+//! everything that doesn't need ordering; `median`, `min`, and `max` require
+//! numeric data.
 
 use crate::expr::*;
 use crate::f64eval::eval_f64;
@@ -16,19 +17,26 @@ use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
-    "mean", "median", "quantile", "var", "std", "cov", "cor", "covmat", "cormat", "linfit",
-    "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "logit", "predict",
-    "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf", "normpdf",
-    "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf", "fpdf", "finv",
+    "sum", "mean", "median", "quantile", "min", "max", "var", "std", "cov", "cor", "covmat",
+    "cormat", "linfit", "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "logit",
+    "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf",
+    "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf",
+    "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
     match name {
+        "sum" => {
+            let xs = one_vector("stats.sum", &args)?;
+            Ok(add(xs))
+        }
         "mean" => {
             let xs = one_vector("stats.mean", &args)?;
             Ok(mean_of(&xs))
         }
         "median" => median(&one_vector("stats.median", &args)?),
+        "min" => extremum("stats.min", &one_vector("stats.min", &args)?, false),
+        "max" => extremum("stats.max", &one_vector("stats.max", &args)?, true),
         "quantile" => {
             if args.len() != 2 {
                 return Err(format!(
@@ -1756,25 +1764,55 @@ fn chisq_test(statistic: Expr, df: i64) -> Result<Expr, String> {
     ])
 }
 
+/// The exact numeric ordering key for an entry (a float by its exact binary
+/// value). Errors on anything unorderable — symbolic reals can't be compared.
+fn order_key(name: &str, x: &Expr) -> Result<BigRational, String> {
+    match x {
+        Expr::Float(bf, _) => float_to_rational(bf),
+        other => numeric_value(other),
+    }
+    .ok_or_else(|| {
+        format!(
+            "{} needs numeric entries; '{}' can't be ordered (try N(...))",
+            name, x
+        )
+    })
+}
+
 /// Entries sorted by exact numeric value (floats by their exact binary
 /// value). Errors on anything unorderable.
 fn sorted_numeric(name: &str, xs: &[Expr]) -> Result<Vec<Expr>, String> {
     let mut keyed: Vec<(BigRational, &Expr)> = Vec::with_capacity(xs.len());
     for x in xs {
-        let key = match x {
-            Expr::Float(bf, _) => float_to_rational(bf),
-            other => numeric_value(other),
-        }
-        .ok_or_else(|| {
-            format!(
-                "{} needs numeric entries; '{}' can't be ordered (try N(...))",
-                name, x
-            )
-        })?;
-        keyed.push((key, x));
+        keyed.push((order_key(name, x)?, x));
     }
     keyed.sort_by(|p, q| p.0.cmp(&q.0));
     Ok(keyed.into_iter().map(|(_, x)| x.clone()).collect())
+}
+
+/// The entry with the smallest (`want_max = false`) or largest exact numeric
+/// value, returned verbatim. Like `median`, ordering is undecidable for
+/// symbolic entries, so those error. Ties keep the first such entry.
+fn extremum(name: &str, xs: &[Expr], want_max: bool) -> Result<Expr, String> {
+    let mut best: Option<(BigRational, &Expr)> = None;
+    for x in xs {
+        let key = order_key(name, x)?;
+        let better = match &best {
+            None => true,
+            Some((bk, _)) => {
+                if want_max {
+                    key > *bk
+                } else {
+                    key < *bk
+                }
+            }
+        };
+        if better {
+            best = Some((key, x));
+        }
+    }
+    best.map(|(_, x)| x.clone())
+        .ok_or_else(|| format!("{} expects at least 1 data point", name))
 }
 
 // -- argument plumbing --------------------------------------------------------

@@ -109,6 +109,11 @@ const BUILTINS: Builtin[] = [
     params: ['n'],
     doc: 'n×n identity matrix (alias of identity).',
   },
+  {
+    name: 'fill',
+    params: ['value', 'rows', 'cols?'],
+    doc: 'Matrix of a constant value: fill(v, n) is n×n, fill(v, rows, cols) is rows×cols. If value is a function, each entry is f(row, col).',
+  },
   { name: 'identity', params: ['n'], doc: 'n×n identity matrix.' },
   { name: 'im', params: ['z'], doc: 'Imaginary part (alias of imag).' },
   { name: 'imag', params: ['z'], doc: 'Imaginary part.' },

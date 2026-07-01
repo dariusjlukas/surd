@@ -341,7 +341,7 @@ Builtins: `sqrt`, `sin`, `cos`, `tan`, `exp`, `ln`, `diff`/`D`, `subs`, `expand`
 `plot`/`plot3d`/`scatter`/`scatter3d`, `struct`,
 `signal`,
 `mid`, `bound`; and matrix ops `det`, `inv`, `transpose`/`T`, `solve`, `rref`,
-`rank`, `nullspace`/`kernel`, `lu`, `qr`, `eye`/`identity`, `charpoly`,
+`rank`, `nullspace`/`kernel`, `lu`, `qr`, `eye`/`identity`, `fill`, `charpoly`,
 `eigenvalues`/`eig`, `eigenvectors`. Domain toolkits live behind **namespaces**
 (`dsp.dft(v)`, `stats.mean(v)`) so they don't claim bare names. Constants:
 `pi`, `e`, `I` (imaginary unit) — all three are ordinary names that user

@@ -382,6 +382,9 @@ impl Interpreter {
         if name == "map" {
             return self.call_map(args);
         }
+        if name == "fill" {
+            return self.call_fill(args);
+        }
         self.call_builtin(name, args)
     }
 
@@ -417,6 +420,56 @@ impl Interpreter {
             out.push(new_row);
         }
         Ok(Expr::Matrix(out))
+    }
+
+    /// `fill(value, n)` / `fill(value, rows, cols)` — a matrix whose every entry
+    /// is `value`, or, when `value` is a function, the value `f(row, col)` at
+    /// each 1-based coordinate (matching `m[row, col]` indexing). The function
+    /// form calls back into user code, so — like `map` — this lives here rather
+    /// than among the read-only builtins.
+    fn call_fill(&mut self, args: Vec<Expr>) -> Result<Expr, String> {
+        let (rows, cols) = match args.len() {
+            2 => {
+                let n = as_usize(&args[1])?;
+                (n, n)
+            }
+            3 => (as_usize(&args[1])?, as_usize(&args[2])?),
+            _ => {
+                return Err(format!(
+                "fill expects 2 or 3 arguments: fill(value, n) or fill(value, rows, cols), got {}",
+                args.len()
+            ))
+            }
+        };
+        if rows == 0 || cols == 0 {
+            return Err("fill needs positive dimensions (there is no empty matrix)".into());
+        }
+        // A function is applied at each coordinate; anything else is repeated.
+        if let Expr::Function { params, body } = &args[0] {
+            let (params, body) = (params.clone(), body.clone());
+            let mut out = Vec::with_capacity(rows);
+            for i in 1..=rows {
+                let mut row = Vec::with_capacity(cols);
+                for j in 1..=cols {
+                    row.push(self.call_function(
+                        "the fill function",
+                        params.clone(),
+                        body.clone(),
+                        vec![int(i as i64), int(j as i64)],
+                    )?);
+                }
+                out.push(row);
+            }
+            return Ok(Expr::Matrix(out));
+        }
+        let value = &args[0];
+        if matrix::is_matrix(value) || is_opaque_value(value) || matches!(value, Expr::Signal(_)) {
+            return Err(format!(
+                "fill needs a scalar value or a function of (row, col), not '{}'",
+                value
+            ));
+        }
+        matrix::fill(value, rows, cols)
     }
 
     /// Invoke a function value: bind the arguments in a fresh frame, run the
@@ -1137,6 +1190,8 @@ impl Interpreter {
                 arity(name, &args, 1)?;
                 Ok(matrix::identity(as_usize(&args[0])?))
             }
+            // ("fill" never reaches here — a function argument needs &mut self to
+            // call back into, so it's intercepted in `call` like `map`.)
             "N" => {
                 // N(x) uses a default precision; N(x, digits) sets it.
                 let digits = match args.len() {
@@ -1412,10 +1467,13 @@ fn matrix_binop(op: Op, x: Expr, y: Expr) -> Result<Expr, String> {
     let (xm, ym) = (matrix::is_matrix(&x), matrix::is_matrix(&y));
     match op {
         Op::Add | Op::Sub => {
+            let subtract = matches!(op, Op::Sub);
             if xm && ym {
-                matrix::mat_add(&x, &y, matches!(op, Op::Sub))
+                matrix::mat_add(&x, &y, subtract)
+            } else if xm {
+                Ok(matrix::scalar_add(&y, &x, subtract, true))
             } else {
-                Err("matrix addition needs two matrices (a matrix and a scalar don't add)".into())
+                Ok(matrix::scalar_add(&x, &y, subtract, false))
             }
         }
         Op::Mul => {

@@ -11,6 +11,24 @@ section into a dated, versioned release.
 
 ### Added
 
+- `fill`, a matrix builder. `fill(v, n)` makes an n×n matrix with every entry
+  `v` (square, like `eye`), and `fill(v, rows, cols)` a rows×cols one; a `1×n`
+  fill is the easy way to a constant row vector. The value is any scalar
+  expression, so `fill(x, 2)` is a symbolic matrix. When the first argument is a
+  function, each entry is `f(row, col)` at its 1-based coordinate (matching
+  `m[row, col]`), so `fill(g, 3)` with `g(i, j) := (i-1)*3 + j` numbers the grid
+  1–9. Zero dimensions and non-scalar constant values (a matrix, a signal) are
+  rejected.
+- `stats.sum`, `stats.min`, and `stats.max`. `stats.sum(v)` adds every element
+  exactly, flowing symbolic entries through like `stats.mean` (so
+  `stats.sum([a; b; 2])` is `2 + a + b`). `stats.min`/`stats.max` return the
+  smallest/largest element by the same exact ordering as `stats.median` — a
+  rational beats a nearby float — with the matching entry returned verbatim;
+  symbolic entries can't be ordered, so they error.
+- Scalar broadcast over matrix `+` and `-`, mirroring `*` and `/`. `A + 2`,
+  `2 + A`, `A - 2`, and `2 - A` now add or subtract the scalar from every entry
+  (with `2 - A` negating each entry first), instead of raising "a matrix and a
+  scalar don't add". Matrix-with-matrix `+`/`-` still require equal shapes.
 - Strided slicing. An index range can carry a step as a middle field,
   `lo:step:hi` (MATLAB/Julia order): a scalar `step` keeps every `step`-th
   position (`v[1:2:]`), and a `(take, skip)` pair keeps `take` consecutive

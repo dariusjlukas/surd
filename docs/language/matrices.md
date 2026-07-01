@@ -25,12 +25,17 @@ operation is exact. No rounding, ever.
 
 | Expression | Meaning |
 | --- | --- |
-| `A + B`, `A - B` | entrywise sum/difference (two matrices only — a matrix and a scalar don't add) |
+| `A + B`, `A - B` | entrywise sum/difference (matrices of equal shape) |
+| `A + 2`, `2 + A`, `A - 2`, `2 - A` | scalar broadcast over every entry |
 | `A * B` | matrix product |
 | `2 * A`, `A * 2` | scalar product |
 | `A / B` | `A · B⁻¹` |
 | `A / 2`, `2 / A` | scalar division / `2 · A⁻¹` |
 | `A ^ n` | matrix power, **integer** exponents only; `A^(-1)` is the inverse |
+
+A scalar broadcasts over `+ - * /` alike — `A + 2` adds `2` to every entry, and
+`2 - A` negates each entry then adds `2`. (`2 / A` is the one that isn't
+entrywise: it means `2 · A⁻¹`. For entrywise reciprocal-scaling use `2 ./ A`.)
 
 ```text
 >> A^2
@@ -124,8 +129,8 @@ for exactly which cases are covered.
 
 Full signatures and examples for every matrix built-in — `det`, `inv`,
 `transpose`/`T`, `solve`, `rref`, `rank`, `nullspace`/`kernel`, `lu`, `qr`,
-`eye`/`identity`, `charpoly`, `eigenvalues`/`eig`, `eigenvectors` — are in
-the [linear-algebra reference](../reference/linear-algebra.md).
+`eye`/`identity`, `fill`, `charpoly`, `eigenvalues`/`eig`, `eigenvectors` — are
+in the [linear-algebra reference](../reference/linear-algebra.md).
 
 ## Indexing and elementwise operations
 

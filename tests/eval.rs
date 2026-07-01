@@ -126,9 +126,61 @@ fn matrix_arithmetic() {
     assert_eq!(norm("[1,2;3,4] * [5,6;7,8]"), "[ 19 22 ] [ 43 50 ]");
     assert_eq!(norm("2 * [1,2;3,4]"), "[ 2 4 ] [ 6 8 ]");
     assert_eq!(norm("[1,2;3,4] / 2"), "[ 1/2 1 ] [ 3/2 2 ]");
+    // A scalar broadcasts over + and − just as it does over * and /.
+    assert_eq!(norm("[1,2;3,4] + 10"), "[ 11 12 ] [ 13 14 ]");
+    assert_eq!(norm("10 + [1,2;3,4]"), "[ 11 12 ] [ 13 14 ]");
+    assert_eq!(norm("[1,2;3,4] - 1"), "[ 0 1 ] [ 2 3 ]");
+    // Subtraction order matters: `s − M` negates each entry.
+    assert_eq!(norm("10 - [1,2;3,4]"), "[ 9 8 ] [ 7 6 ]");
     assert_eq!(norm("[1,2;3,4]^2"), "[ 7 10 ] [ 15 22 ]");
     assert_eq!(norm("transpose([1,2,3;4,5,6])"), "[ 1 4 ] [ 2 5 ] [ 3 6 ]");
     assert_eq!(norm("eye(3)"), "[ 1 0 0 ] [ 0 1 0 ] [ 0 0 1 ]");
+}
+
+#[test]
+fn fill_constant_matrices() {
+    // One size argument fills a square matrix, like eye(n).
+    assert_eq!(norm("fill(0, 2)"), "[ 0 0 ] [ 0 0 ]");
+    // Two sizes give rows×cols.
+    assert_eq!(norm("fill(7, 2, 3)"), "[ 7 7 7 ] [ 7 7 7 ]");
+    // A 1×n fill is the convenient constant row vector.
+    assert_eq!(norm("fill(1, 1, 4)"), "[ 1 1 1 1 ]");
+    // The value can be any scalar expression — symbols included.
+    assert_eq!(norm("fill(x, 2)"), "[ x x ] [ x x ]");
+    // It composes: a constant matrix is a normal matrix.
+    assert_eq!(norm("fill(2, 2) + eye(2)"), "[ 3 2 ] [ 2 3 ]");
+    // Zero dimensions, non-scalar values, and a missing size are all errors.
+    assert!(ev("fill(5, 0)").starts_with("error:"));
+    assert!(ev("fill([1,2], 2)").starts_with("error:"));
+    assert!(ev("fill(3)").starts_with("error:"));
+}
+
+#[test]
+fn fill_with_coordinate_function() {
+    // Collapse whitespace so multi-line matrix output compares cleanly.
+    let nw = |lines: &[&str]| {
+        ev_all(lines)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // A function argument is applied at each 1-based (row, col), like m[i, j].
+    assert_eq!(
+        nw(&["g(i, j) := (i - 1)*3 + j", "fill(g, 3)"]),
+        "[ 1 2 3 ] [ 4 5 6 ] [ 7 8 9 ]"
+    );
+    // Non-square shapes get the same (row, col) treatment.
+    assert_eq!(
+        nw(&["s(i, j) := i + j", "fill(s, 2, 3)"]),
+        "[ 2 3 4 ] [ 3 4 5 ]"
+    );
+    // The body is ordinary surd, so a conditional rebuilds the identity.
+    assert_eq!(
+        nw(&["d(i, j) := if i == j then 1 else 0 end", "fill(d, 3)"]),
+        "[ 1 0 0 ] [ 0 1 0 ] [ 0 0 1 ]"
+    );
+    // A function of the wrong arity reports it, rather than filling nonsense.
+    assert!(ev_all(&["p(x) := x^2", "fill(p, 3)"]).starts_with("error:"));
 }
 
 #[test]
@@ -781,15 +833,20 @@ fn pentagonal_dft_folds_and_round_trips() {
 
 #[test]
 fn stats_estimators_are_exact() {
+    assert_eq!(ev("stats.sum([1; 2; 3; 4])"), "10");
+    assert_eq!(ev("stats.sum([1/2; 1/3; 1/4])"), "13/12"); // exact rational sum
     assert_eq!(ev("stats.mean([1; 2; 3; 4])"), "5/2");
     assert_eq!(ev("stats.var([1; 2; 3; 4])"), "5/3"); // sample variance, n−1
     assert_eq!(ev("stats.std([1; 2; 3; 4])"), "sqrt(5/3)"); // an exact surd
     assert_eq!(ev("stats.median([3; 1; 2])"), "2");
     assert_eq!(ev("stats.median([1; 2; 3; 4])"), "5/2"); // mean of middle two
     assert_eq!(ev("stats.median([1/2; 1/3; 1/4])"), "1/3"); // exact ordering
+    assert_eq!(ev("stats.min([1/2; 1/3; 1/4])"), "1/4"); // exact ordering
+    assert_eq!(ev("stats.max([1/3; 0.34; 3/8])"), "3/8"); // rational beats the float
     assert_eq!(ev("stats.cov([1; 2; 3], [2; 4; 6])"), "2");
     // Symbolic entries flow through estimators that don't need ordering.
     assert_eq!(ev("stats.mean([a; b])"), "1/2*a + 1/2*b");
+    assert_eq!(ev("stats.sum([a; b; 2])"), "2 + a + b");
 }
 
 #[test]
@@ -877,6 +934,7 @@ fn linfit_is_exact_least_squares() {
 #[test]
 fn stats_errors_are_graceful() {
     assert!(ev("stats.median([x; 1])").starts_with("error: stats.median needs numeric"));
+    assert!(ev("stats.min([x; 1])").starts_with("error: stats.min needs numeric"));
     assert!(ev("stats.var([1])").starts_with("error: stats.var expects at least 2"));
     assert!(ev("stats.cor([1; 1; 1], [1; 2; 3])")
         .starts_with("error: stats.cor is undefined for zero-variance"));

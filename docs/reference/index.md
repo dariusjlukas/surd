@@ -100,6 +100,7 @@ see [Signals](signals.md).
 | [`lu(M)`](linear-algebra.md#lu) | LU decomposition → `struct(L, U, P)` |
 | [`qr(M)`](linear-algebra.md#qr) | QR decomposition → `struct(Q, R)` |
 | [`eye(n)` / `identity(n)`](linear-algebra.md#eye-identity) | n×n identity matrix |
+| [`fill(v, n)` / `fill(v, rows, cols)`](linear-algebra.md#fill) | Matrix of a constant, or of `f(row, col)` |
 | [`charpoly(M, var?)`](linear-algebra.md#charpoly) | Characteristic polynomial |
 | [`eigenvalues(M)` / `eig(M)`](linear-algebra.md#eigenvalues-eig) | Eigenvalues, exact |
 | [`eigenvectors(M)`](linear-algebra.md#eigenvectors) | Eigenvectors, paired with `eigenvalues(M)` |
@@ -124,8 +125,10 @@ see [Signals](signals.md).
 
 | Function | Description |
 | --- | --- |
+| [`stats.sum(v)`](stats.md#statssum) | Sum of all elements, exact |
 | [`stats.mean(v)`](stats.md#statsmean) | Mean, exact |
 | [`stats.median(v)`](stats.md#statsmedian) | Median by exact ordering |
+| [`stats.min(v)` / `stats.max(v)`](stats.md#statsmin-statsmax) | Smallest / largest element by exact ordering |
 | [`stats.var(v)`](stats.md#statsvar-statsstd) | Sample variance |
 | [`stats.std(v)`](stats.md#statsvar-statsstd) | Sample standard deviation (an exact surd) |
 | [`stats.cov(a, b)`](stats.md#statscov-statscor) | Sample covariance |

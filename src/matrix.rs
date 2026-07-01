@@ -88,6 +88,21 @@ pub fn scalar_mul(s: &Expr, m: &Expr) -> Expr {
     Expr::Matrix(map_entries(rows_of(m), |e| mul(vec![s.clone(), e.clone()])))
 }
 
+/// Add (or subtract) a scalar to every entry, broadcasting it over the matrix.
+/// `matrix_first` distinguishes `M ± s` from `s ± M`; it only matters for
+/// subtraction, where `s - M` negates each entry.
+pub fn scalar_add(s: &Expr, m: &Expr, subtract: bool, matrix_first: bool) -> Expr {
+    Expr::Matrix(map_entries(rows_of(m), |e| {
+        if !subtract {
+            add(vec![e.clone(), s.clone()])
+        } else if matrix_first {
+            add(vec![e.clone(), mul(vec![int(-1), s.clone()])])
+        } else {
+            add(vec![s.clone(), mul(vec![int(-1), e.clone()])])
+        }
+    }))
+}
+
 pub fn mat_mul(a: &Expr, b: &Expr) -> Result<Expr, String> {
     let (m, k) = dims(a);
     let (k2, n) = dims(b);
@@ -327,6 +342,15 @@ pub fn identity(n: usize) -> Expr {
         .map(|i| (0..n).map(|j| int(if i == j { 1 } else { 0 })).collect())
         .collect();
     Expr::Matrix(rows)
+}
+
+/// An `r`×`c` matrix with every entry equal to `value`. Both dimensions must be
+/// positive — there is no empty matrix.
+pub fn fill(value: &Expr, r: usize, c: usize) -> Result<Expr, String> {
+    if r == 0 || c == 0 {
+        return Err("fill needs positive dimensions (there is no empty matrix)".into());
+    }
+    Ok(Expr::Matrix(vec![vec![value.clone(); c]; r]))
 }
 
 /// Integer matrix power. Negative powers invert first.

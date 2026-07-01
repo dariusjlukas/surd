@@ -12,6 +12,24 @@ numeric data (ordering symbolic reals is undecidable).
 
 A *vector* argument is a 1×n or n×1 matrix.
 
+## `stats.sum`
+
+```
+stats.sum(v)
+```
+
+The exact sum of every element. Like `mean`, it flows symbolic entries
+through, so it stays exact whatever the data:
+
+```text
+>> stats.sum([1; 2; 3; 4])
+10
+>> stats.sum([1/2; 1/3; 1/4])
+13/12
+>> stats.sum([a; b; 2])
+2 + a + b
+```
+
 ## `stats.mean`
 
 ```
@@ -39,6 +57,24 @@ the two middle values for even length.
 1/3
 >> stats.median([1; 2; 3; 4])
 5/2
+```
+
+## `stats.min` / `stats.max`
+
+```
+stats.min(v)
+stats.max(v)
+```
+
+The smallest and largest element, by the same exact ordering as `median` —
+`1/3` beats `0.34` here. The matching entry comes back verbatim, so its exact
+form is preserved. Symbolic entries can't be ordered, so they error.
+
+```text
+>> stats.min([1/2; 1/3; 1/4])
+1/4
+>> stats.max([1/3; 0.34; 3/8])
+3/8
 ```
 
 ## `stats.var` / `stats.std`
