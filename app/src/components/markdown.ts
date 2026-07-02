@@ -86,6 +86,37 @@ export function renderMarkdown(src: string): string {
   return DOMPurify.sanitize(md.parse(src, { async: false }))
 }
 
+/** Close the KaTeX font-loading race (call once at startup). The 20 KaTeX
+ * faces are declared `font-display: block` and load lazily — each face only on
+ * the first paint that uses it — so math laid out while its face is in flight
+ * paints invisible. WKWebView then doesn't reliably repaint the glyph runs
+ * when the face lands (same family of paint bugs as the caret quirks in
+ * editor/CodeEditor), and a markdown cell never re-renders on its own, so the
+ * math stayed blank until an edit remounted the cell. Two guards:
+ *   1. Kick off every KaTeX face load up front (after `load`, when the
+ *      stylesheet's @font-face rules are in), instead of waiting for the
+ *      first `\mathcal`/big-delimiter/whatever to need each face.
+ *   2. When a load batch settles, reflow every rendered formula. The
+ *      hide/measure/show is synchronous — nothing paints in between — so the
+ *      nudge itself is invisible; it only forces fresh glyph runs. */
+export function primeKatexFonts(): void {
+  const start = () => {
+    document.fonts.forEach((f) => {
+      if (f.family.startsWith('KaTeX')) f.load().catch(() => {})
+    })
+  }
+  if (document.readyState === 'complete') start()
+  else window.addEventListener('load', start, { once: true })
+
+  document.fonts.addEventListener('loadingdone', () => {
+    document.querySelectorAll<HTMLElement>('.katex').forEach((el) => {
+      el.style.display = 'none'
+      void el.offsetHeight
+      el.style.display = ''
+    })
+  })
+}
+
 /** Render every math placeholder under `root` in place with KaTeX. Idempotent:
  * a placeholder loses its `data-tex` once rendered, so a re-run (e.g. React
  * StrictMode's double effect) skips it. */

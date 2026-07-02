@@ -101,7 +101,8 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             arity("dsp.window", &args, 2)?;
             let Expr::Symbol(name) = &args[0] else {
                 return Err(
-                    "dsp.window expects a window name first: dsp.window(hann, n) —                      hann, hamming, or blackman"
+                    "dsp.window expects a window name first: dsp.window(hann, n) — \
+                     hann, hamming, or blackman"
                         .into(),
                 );
             };

@@ -14,6 +14,7 @@ use astro_float::{BigFloat, Consts, Radix, RoundingMode};
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
 
@@ -152,6 +153,27 @@ pub fn numeric_value(e: &Expr) -> Option<BigRational> {
         Expr::Rat(r) => Some(r.clone()),
         _ => None,
     }
+}
+
+/// Is this a scalar expression — a number or a symbolic formula that
+/// `add`/`mul`/`pow` know how to canonicalize? Container and opaque values
+/// (matrices, signals, booleans, functions, equations, formulas, structs) are
+/// not: the smart constructors would treat one as an opaque basis term and
+/// build a well-sorted piece of nonsense like `8 + 3*[ 1  2 ]`, violating the
+/// canonical-form invariants everything downstream assumes. Every path that
+/// feeds user values into scalar positions (matrix entries, `subs`
+/// replacements, `linspace` endpoints) checks this first.
+pub fn is_scalar(e: &Expr) -> bool {
+    !matches!(
+        e,
+        Expr::Matrix(_)
+            | Expr::Signal(_)
+            | Expr::Bool(_)
+            | Expr::Function { .. }
+            | Expr::Struct(_)
+            | Expr::Equation(..)
+            | Expr::Formula(..)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1883,15 +1905,94 @@ fn extract_square_rational(b: &BigRational) -> (BigRational, BigRational) {
     (BigRational::new(sn, sd), BigRational::new(fnum, fden))
 }
 
-/// Deterministic total order for canonical operand sorting. The key is
-/// (type rank, rendered string) — cheap, stable, and good enough to make
-/// structurally-equal expressions compare equal.
+/// Deterministic total order for canonical operand sorting: type rank first,
+/// then a structural walk. An earlier version keyed on the *rendered string*
+/// of each operand, which re-formatted entire subtrees on every `add`/`mul` —
+/// quadratic in expression depth, on the hottest path in the engine. The
+/// structural walk allocates nothing and exits at the first difference; all
+/// canonicalization needs from it is a stable order in which structurally
+/// equal expressions compare equal.
 fn sort_operands(v: &mut [Expr]) {
-    v.sort_by_key(sort_key);
+    v.sort_by(cmp_operands);
 }
 
-fn sort_key(e: &Expr) -> (u8, String) {
-    (type_rank(e), format!("{}", e))
+fn cmp_operands(a: &Expr, b: &Expr) -> Ordering {
+    type_rank(a)
+        .cmp(&type_rank(b))
+        .then_with(|| cmp_within_rank(a, b))
+}
+
+/// Compare two expressions of the same type rank. Variants that share a rank
+/// (the numeric kinds at 0; signal/equation/formula at 10) are separated by a
+/// sub-rank first, so the structural match below only sees like with like.
+fn cmp_within_rank(a: &Expr, b: &Expr) -> Ordering {
+    fn sub_rank(e: &Expr) -> u8 {
+        match e {
+            Expr::Float(..) | Expr::Equation(..) => 1,
+            Expr::Complex(..) | Expr::Formula(..) => 2,
+            _ => 0,
+        }
+    }
+    sub_rank(a).cmp(&sub_rank(b)).then_with(|| match (a, b) {
+        (Expr::Int(_) | Expr::Rat(_), Expr::Int(_) | Expr::Rat(_)) => {
+            // Both admit a numeric_value; compare by it.
+            numeric_value(a).unwrap().cmp(&numeric_value(b).unwrap())
+        }
+        (Expr::Float(x, dx), Expr::Float(y, dy)) => {
+            // bf_lt, not BigFloat's PartialOrd — see its footgun note.
+            if bf_lt(x, y) {
+                Ordering::Less
+            } else if bf_lt(y, x) {
+                Ordering::Greater
+            } else {
+                dx.cmp(dy)
+            }
+        }
+        (Expr::Complex(xr, xi), Expr::Complex(yr, yi)) => {
+            cmp_operands(xr, yr).then_with(|| cmp_operands(xi, yi))
+        }
+        (Expr::Const(x), Expr::Const(y)) => {
+            // Alphabetical by rendered name, matching the old string order.
+            fn k(c: &Constant) -> u8 {
+                match c {
+                    Constant::E => 0,
+                    Constant::Pi => 1,
+                }
+            }
+            k(x).cmp(&k(y))
+        }
+        (Expr::Symbol(x), Expr::Symbol(y)) => x.cmp(y),
+        (Expr::Pow(xb, xe), Expr::Pow(yb, ye)) => {
+            cmp_operands(xb, yb).then_with(|| cmp_operands(xe, ye))
+        }
+        (Expr::Func(xn, xa), Expr::Func(yn, ya)) => xn.cmp(yn).then_with(|| cmp_slices(xa, ya)),
+        (Expr::Mul(xs), Expr::Mul(ys)) | (Expr::Add(xs), Expr::Add(ys)) => cmp_slices(xs, ys),
+        (Expr::Matrix(xr), Expr::Matrix(yr)) => xr.len().cmp(&yr.len()).then_with(|| {
+            xr.iter()
+                .zip(yr)
+                .map(|(rx, ry)| cmp_slices(rx, ry))
+                .find(|o| o.is_ne())
+                .unwrap_or(Ordering::Equal)
+        }),
+        (Expr::Bool(x), Expr::Bool(y)) => x.cmp(y),
+        (Expr::Equation(xl, xr), Expr::Equation(yl, yr))
+        | (Expr::Formula(xl, xr), Expr::Formula(yl, yr)) => {
+            cmp_operands(xl, yl).then_with(|| cmp_operands(xr, yr))
+        }
+        // Opaque values (functions, signals, structs) can't legitimately sit
+        // in a sum or product at all; any deterministic order will do, so fall
+        // back to the rendered form — its cost doesn't matter on a dead path.
+        _ => format!("{}", a).cmp(&format!("{}", b)),
+    })
+}
+
+/// Element-wise comparison, shorter-first on a shared prefix.
+fn cmp_slices(x: &[Expr], y: &[Expr]) -> Ordering {
+    x.iter()
+        .zip(y)
+        .map(|(a, b)| cmp_operands(a, b))
+        .find(|o| o.is_ne())
+        .unwrap_or_else(|| x.len().cmp(&y.len()))
 }
 
 fn type_rank(e: &Expr) -> u8 {

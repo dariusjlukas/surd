@@ -213,3 +213,41 @@ fn low_precision_n_of_products_and_sums_works() {
     assert_eq!(ev("N(2*sqrt(2), 1)"), "3");
     assert_eq!(ev("N(cos(2/5*pi), 8)"), "0.30901699");
 }
+
+#[test]
+fn container_values_cannot_reach_scalar_positions() {
+    // Was: a container value could slip into a scalar position and come out of
+    // canonicalization as well-sorted nonsense — `dot([[1,2], 2], [3,4])`
+    // evaluated to `8 + 3*[ 1  2 ]`, `[[1,2], 3]` built a nested matrix, and
+    // `linspace(1, [1,2], 3)` put matrices inside entries. Every path that
+    // feeds user values into scalar positions (matrix entries, `subs`
+    // replacements, `linspace` endpoints, `map`/`fill` results) now checks
+    // `is_scalar` first. (Found by code review.)
+    assert!(ev("[[1,2], 3]").starts_with("error: matrices don't nest"));
+    assert!(ev("dot([[1,2], 2], [3, 4])").starts_with("error: matrices don't nest"));
+    assert!(ev("linspace(1, [1, 2], 3)").starts_with("error: linspace expects scalar endpoints"));
+    assert!(ev("subs(x + 1, x, [1, 2])").starts_with("error: subs replaces a variable"));
+    assert!(ev("[true, false]").starts_with("error: a matrix entry must be a scalar"));
+    assert!(ev_all(&["g(i, j) := [i, j]", "fill(g, 2)"])
+        .starts_with("error: fill: the fill function must return a scalar"));
+    assert!(ev_all(&["g(x) := [x, x]", "map(g, [1, 2])"])
+        .starts_with("error: map: the mapped function must return a scalar"));
+    assert!(ev_all(&["x := [1; 2]", "D(x^2, x)"]).starts_with("error: x is bound to"));
+    // Symbolic entries are still the point of a CAS matrix, and a *matrix*
+    // substituted for the whole target of subs was never the contract.
+    assert_eq!(norm("[a + 1, 2]"), "[ 1 + a 2 ]");
+    assert_eq!(ev("subs(x^2 + x, x, y + 1)"), "1 + y + (1 + y)^2");
+}
+
+#[test]
+fn wls_rejects_symbolic_and_nonpositive_weights() {
+    // Was: the positivity check only looked at *numeric* weights, so a
+    // symbolic weight sailed through into √wᵢ and ln wᵢ and surfaced later as
+    // a confusing downstream error. (Found by code review.)
+    assert!(ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; w])")
+        .starts_with("error: stats.wls: weights must be positive numbers"));
+    assert!(ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; 0])")
+        .starts_with("error: stats.wls: weights must be positive numbers"));
+    assert!(ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; -2])")
+        .starts_with("error: stats.wls: weights must be positive numbers"));
+}

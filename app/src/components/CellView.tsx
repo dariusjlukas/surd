@@ -1,4 +1,4 @@
-// One notebook cell. Math cells show source + result; a single click drops
+// One notebook cell. Math cells show source + result; a double click drops
 // the source into an in-place editor with the input bar's line discipline.
 // Editing without re-running leaves the shown result STALE — and not only this
 // cell's: any later cell that reads what the edit changes is stale too (see
@@ -253,7 +253,7 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
           </>
         ) : (
           <pre
-            onClick={open}
+            onDoubleClick={open}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
@@ -262,7 +262,7 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
             }}
             role="button"
             tabIndex={0}
-            title="edit (or press Enter)"
+            title="double-click to edit (or press Enter)"
             className="min-w-0 flex-1 cursor-text whitespace-pre-wrap rounded font-mono text-sm text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
           >
             <span aria-hidden="true" className="select-none text-accent">

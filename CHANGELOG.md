@@ -9,6 +9,36 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Container values can no longer reach scalar positions. A matrix (or signal,
+  boolean, function, struct) slipped into scalar arithmetic came out of
+  canonicalization as well-sorted nonsense — `dot([[1,2], 2], [3,4])` evaluated
+  to `8 + 3*[ 1  2 ]`, `[[1,2], 3]` built a nested matrix, and
+  `linspace(1, [1,2], 3)` put matrices inside entries. Every path that feeds a
+  user value into a scalar position — matrix literals, `map`/`fill` results,
+  `linspace` endpoints, `subs` replacements, evaluating `D` at a bound
+  variable, and the scalar pieces of `vcat`/`hcat` — now rejects non-scalar
+  values with a clear error. Symbolic entries are untouched (they're the
+  point).
+- `stats.wls` now insists every weight is a positive *number*. A symbolic
+  weight used to pass the positivity check (which only tested numeric weights)
+  and surface later as a confusing downstream error.
+- The `dsp.window` unknown-window error message no longer contains a run of
+  stray spaces from a wrapped string literal.
+
+### Changed
+
+- Canonical operand ordering (the sorted form of sums and products) now uses a
+  structural comparison instead of rendering each operand to a string. The old
+  key re-formatted entire subtrees on every `add`/`mul` — quadratic in
+  expression depth on the hottest path in the engine. Output order is unchanged
+  except in corner cases where the string order was an artifact (e.g. numeric
+  values now compare numerically, so `x^2` sorts before `x^10`).
+- The lasso `df` convention is now documented: it counts every nonzero
+  coefficient including the unpenalized intercept (R's glmnet reports one
+  less).
+
 ### Added
 
 - `fill`, a matrix builder. `fill(v, n)` makes an n×n matrix with every entry

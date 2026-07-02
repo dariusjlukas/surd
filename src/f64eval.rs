@@ -373,7 +373,7 @@ mod tests {
     fn adaptive_curves_mirror_surfaces() {
         // smooth: stays at the base resolution
         let e = expr_of("sin(x)");
-        let c = sample_adaptive(&e, "x", 0.0, 6.28, 601, 4801);
+        let c = sample_adaptive(&e, "x", 0.0, std::f64::consts::TAU, 601, 4801);
         assert_eq!(c.points.len(), 601);
         assert!(!c.undersampled);
 

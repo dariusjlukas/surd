@@ -385,7 +385,9 @@ classical standard errors don't apply): `coefficients`, `fitted`, `residuals`,
 `rss`, `r2`, `lambda`, `intercept`, the number of active (nonzero) coefficients
 `df`, the coordinate-descent `iterations` and whether they `converged`, and the
 counts `n`, `k`. `lambda = 0` recovers OLS; as `lambda` grows, coefficients drop
-out one by one and `df` falls.
+out one by one and `df` falls. `df` counts *every* nonzero coefficient,
+including the (unpenalized) intercept — so an intercept-only fit has `df = 1`.
+(R's glmnet reports only the penalized coefficients; its `df` is one less.)
 
 ```text
 >> l := stats.lasso([1; 2; 3; 4; 5], [2; 4; 5; 4; 5], 1/5)

@@ -16,7 +16,10 @@ pub fn is_matrix(e: &Expr) -> bool {
     matches!(e, Expr::Matrix(_))
 }
 
-/// Validate and build a matrix from rows. Rejects empty or ragged input.
+/// Validate and build a matrix from rows. Rejects empty or ragged input, and
+/// non-scalar entries — an entry is a scalar position (see [`is_scalar`]), so
+/// this is the choke point that keeps matrices, signals, and other opaque
+/// values out of entry arithmetic.
 pub fn matrix(rows: Vec<Vec<Expr>>) -> Result<Expr, String> {
     if rows.is_empty() || rows[0].is_empty() {
         return Err("a matrix needs at least one entry".into());
@@ -24,6 +27,13 @@ pub fn matrix(rows: Vec<Vec<Expr>>) -> Result<Expr, String> {
     let cols = rows[0].len();
     if rows.iter().any(|r| r.len() != cols) {
         return Err("every row of a matrix must have the same number of entries".into());
+    }
+    if let Some(bad) = rows.iter().flatten().find(|e| !is_scalar(e)) {
+        return Err(if is_matrix(bad) {
+            "matrices don't nest: every entry must be a scalar expression (vcat/hcat combine matrices)".into()
+        } else {
+            format!("a matrix entry must be a scalar expression, not '{}'", bad)
+        });
     }
     Ok(Expr::Matrix(rows))
 }

@@ -494,10 +494,16 @@ fn wls(args: &[Expr]) -> Result<Expr, String> {
             y.len()
         ));
     }
-    if w.iter()
-        .any(|wi| numeric_value(wi).is_some_and(|v| v <= BigRational::from_integer(0.into())))
-    {
-        return Err("stats.wls: weights must be positive".into());
+    // Every weight must be a positive *number* — a symbolic weight would slip
+    // silently into √wᵢ and ln wᵢ and surface as a confusing error downstream.
+    if let Some(bad) = w.iter().find(|wi| !match wi {
+        Expr::Float(bf, _) => bf_strictly_pos(bf),
+        _ => numeric_value(wi).is_some_and(|v| v > BigRational::from_integer(0.into())),
+    }) {
+        return Err(format!(
+            "stats.wls: weights must be positive numbers, got '{}'",
+            bad
+        ));
     }
     fit_linear("stats.wls", &x, y, w)
 }

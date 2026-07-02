@@ -415,6 +415,12 @@ impl Interpreter {
                         ))
                     }
                 };
+                if !is_scalar(&v) {
+                    return Err(format!(
+                        "map: the mapped function must return a scalar for each entry, got '{}'",
+                        v
+                    ));
+                }
                 new_row.push(v);
             }
             out.push(new_row);
@@ -451,19 +457,26 @@ impl Interpreter {
             for i in 1..=rows {
                 let mut row = Vec::with_capacity(cols);
                 for j in 1..=cols {
-                    row.push(self.call_function(
+                    let v = self.call_function(
                         "the fill function",
                         params.clone(),
                         body.clone(),
                         vec![int(i as i64), int(j as i64)],
-                    )?);
+                    )?;
+                    if !is_scalar(&v) {
+                        return Err(format!(
+                            "fill: the fill function must return a scalar for each entry, got '{}'",
+                            v
+                        ));
+                    }
+                    row.push(v);
                 }
                 out.push(row);
             }
             return Ok(Expr::Matrix(out));
         }
         let value = &args[0];
-        if matrix::is_matrix(value) || is_opaque_value(value) || matches!(value, Expr::Signal(_)) {
+        if !is_scalar(value) {
             return Err(format!(
                 "fill needs a scalar value or a function of (row, col), not '{}'",
                 value
@@ -629,11 +642,23 @@ impl Interpreter {
 
         if name == "subs" {
             let val = self.eval_node(&args[2])?;
+            // `substitute` splices the value into scalar positions directly,
+            // so a container value would corrupt the canonical form.
+            if !is_scalar(&val) {
+                return Err(format!(
+                    "subs replaces a variable with a scalar expression, not '{}'",
+                    val
+                ));
+            }
             return Ok(substitute(&target, &var, &val));
         }
         let deriv = differentiate(&target, &var);
         match self.lookup(&var) {
             Expr::Symbol(s) if s == var => Ok(deriv),
+            bound if !is_scalar(&bound) => Err(format!(
+                "{} is bound to '{}', but a derivative can only be evaluated at a scalar",
+                var, bound
+            )),
             bound => Ok(substitute(&deriv, &var, &bound)),
         }
     }
@@ -1095,6 +1120,9 @@ impl Interpreter {
                 let n = as_usize(&args[2])?;
                 if n < 2 {
                     return Err("linspace expects at least 2 points".into());
+                }
+                if let Some(bad) = args[..2].iter().find(|e| !is_scalar(e)) {
+                    return Err(format!("linspace expects scalar endpoints, not '{}'", bad));
                 }
                 // a + k·(b−a)/(n−1): exact when the endpoints are.
                 let step = mul(vec![
@@ -1648,7 +1676,7 @@ fn concat(name: &str, args: &[Expr]) -> Result<Expr, String> {
     for a in args {
         match a {
             Expr::Matrix(rows) => blocks.push(rows.clone()),
-            e if is_opaque_value(e) => return Err(format!("{} cannot include '{}'", name, e)),
+            e if !is_scalar(e) => return Err(format!("{} cannot include '{}'", name, e)),
             scalar => blocks.push(vec![vec![scalar.clone()]]),
         }
     }

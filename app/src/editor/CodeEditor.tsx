@@ -43,9 +43,15 @@ interface Props {
 // stop relying on the native caret and let CodeMirror draw its own: drawSelection
 // re-measures and repositions a DOM caret synchronously on every transaction, and
 // hides the native one. The blink is a CSS opacity animation, independent of
-// position. The one WebKit quirk drawSelection hits is an empty line, where
-// coordsAtPos reports a zero-height rect and the caret div would get height:0px
-// (invisible) — the .cm-cursor min-height below backstops that.
+// position. Two WebKit quirks the drawn caret hits:
+//  - On an empty line coordsAtPos reports a zero-height rect and the caret div
+//    would get height:0px (invisible) — the .cm-cursor min-height backstops that.
+//  - CM centers the caret on the character boundary with margin-left:-0.6px.
+//    Our .cm-line has no left padding, so at position 0 (a fresh input bar, a
+//    just-opened cell edit) the caret hangs past the scroller's left clip edge
+//    with only ~0.4px inside; on retina, WebKit pixel-snaps that sliver away
+//    and the caret is invisible until it moves right. marginLeft:0 keeps the
+//    whole 1px caret inside the clip rect.
 
 // All colors come from the theme tokens in index.css, so the editor follows
 // data-mode/data-theme without rebuilding the view.
@@ -58,9 +64,13 @@ const baseTheme = EditorView.theme({
   },
   '.cm-line': { padding: '0 2px 0 0' },
   '&.cm-focused': { outline: 'none' },
-  // borderLeftColor colors the drawn caret; min-height keeps it visible on
-  // empty lines where WebKit measures a zero-height cursor rect (see above).
-  '.cm-cursor': { borderLeftColor: 'var(--ink)', minHeight: '1.2em' },
+  // borderLeftColor colors the drawn caret; min-height and marginLeft keep it
+  // visible on empty lines / at position 0 on retina WebKit (see above).
+  '.cm-cursor': {
+    borderLeftColor: 'var(--ink)',
+    minHeight: '1.2em',
+    marginLeft: '0',
+  },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
     backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)',
   },
