@@ -28,6 +28,7 @@ pub mod matrix;
 pub mod nlfit;
 pub mod parser;
 pub mod remez;
+pub mod rng;
 pub mod signal;
 pub mod special;
 pub mod stats;

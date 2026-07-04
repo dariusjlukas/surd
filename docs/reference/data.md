@@ -219,6 +219,8 @@ a surd, so the result is an exact surd, not a rounded float.
 | `data.rescale(v)` | min–max rescaled to `[0, 1]` (numeric data) |
 | `data.dummy(v)` | one-hot encode a categorical column |
 | `data.groupby(keys, values)` | aggregate `values` by the levels of `keys` |
+| `data.dropna(x)` | remove rows with [missing values](#missing-values-na) |
+| `data.split(x, frac[, seed])` | seeded random [train/test split](#datasplit) |
 
 `data.dummy(v)` treats each distinct entry (symbol or number) as a level and
 returns `struct(levels, indicators)` — an indicator (0/1) column per level.
@@ -237,6 +239,72 @@ returns `struct(levels, indicators)` — an indicator (0/1) column per level.
 [ 1  0 ]
 ```
 
+## Missing values (`NA`)
+
+Real files have holes. A blank CSV cell — or one spelled `NA`, `N/A`, `NaN`,
+`null`, or `?` in any letter case, or a JSON `null` — imports as the symbol
+`NA`, and the import summary counts what came in
+(`value (120×1 matrix) — 3 missing values (NA)`).
+
+surd does **no** NA arithmetic, silent or otherwise. To the algebra `NA` is
+an ordinary free symbol; a mean computed "through" one would be well-formed
+nonsense, so every `stats` and `data` function refuses NA data outright:
+
+```text
+>> stats.mean([1; NA; 3])
+error: stats.mean: the data has 1 missing value (NA) — drop the affected
+rows first with data.dropna(...)
+```
+
+Missingness is handled by you, explicitly, or not at all. `data.dropna`
+is the explicit handler — listwise deletion:
+
+- `data.dropna(v)` — a vector minus its `NA` entries.
+- `data.dropna(m)` — a matrix minus the rows containing any `NA`.
+- `data.dropna(t)` — a table (a struct of equal-length column vectors, as
+  CSV import produces) minus every row where *any* column is `NA`, keeping
+  the columns aligned.
+
+```text
+>> stats.mean(data.dropna([1; NA; 3; NA; 5]))
+3
+>> t := struct(x = [1; 2; 3; 4], y = [10; NA; 30; 40])
+>> data.dropna(t).x
+[ 1 ]
+[ 3 ]
+[ 4 ]
+```
+
+Dropping every row is an error, not an empty value.
+
+## `data.split`
+
+```
+data.split(x, frac)
+data.split(x, frac, seed)
+```
+
+A reproducible random train/test split — the first step toward evaluating a
+model on data it wasn't fitted to (see [`stats.cv`](stats.md#statscv) for the
+k-fold version). `x` is a table (struct of equal-length columns), a matrix
+(split by rows), or a vector; `frac` is the **train** fraction, exact in
+(0, 1). The result is `struct(train, test)` in `x`'s own shape, so the
+formula interface works on either side directly.
+
+Membership is chosen by a seeded shuffle: the engine stays deterministic —
+the same call always produces the same split — and passing a different
+`seed` (a nonnegative integer, default 0) produces a different one. Each
+side keeps the original row order. The train side gets `⌊frac·n + 1/2⌋`
+rows; a fraction that would leave either side empty is an error.
+
+```text
+>> cars := struct(mpg = [18; 21; 30; 25; 28], weight = [35; 31; 22; 26; 24])
+>> s := data.split(cars, 4/5);
+>> m := stats.regress(mpg ~ weight, s.train);
+>> stats.rmse(s.test.mpg, stats.predict(m, s.test.weight).fit)
+233/179
+```
+
 ## Model formulas: the `~` operator
 
 `response ~ term1 + term2` builds a **model formula** — a piece of data whose
@@ -250,8 +318,9 @@ a `stats` model in place of an explicit `(X, y)`:
 ```
 
 The builder looks each term up as a column, adds an intercept, and — for a
-**categorical** column (symbol-valued, like `origin`) — one-hot encodes it with
-the first level dropped as the reference. The formula's names stay symbolic, so
+**categorical** column (symbol-valued, like `origin`, which is exactly what a
+text column in a CSV imports as) — one-hot encodes it with the first level
+dropped as the reference. The formula's names stay symbolic, so
 a workspace binding of `weight` won't disturb `mpg ~ weight`. The same form
 works for `stats.wls`, `stats.ridge`, and `stats.logit`. (Term order follows the
 canonical ordering of the sum, and interactions like `a:b` are not yet

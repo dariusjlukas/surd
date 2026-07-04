@@ -1874,3 +1874,117 @@ fn formula_interface() {
     ])
     .starts_with("error: stats.regress: the data has no column 'b'"));
 }
+
+#[test]
+fn missing_values_are_refused_until_dropped() {
+    // NA is an ordinary symbol to the algebra, but every statistical
+    // consumer refuses it, pointing at data.dropna.
+    assert!(ev("stats.mean([1; NA; 3])").starts_with(
+        "error: stats.mean: the data has 1 missing value (NA) — drop the affected rows"
+    ));
+    assert!(ev("stats.regress([1; 2; NA; 4], [1; 2; 3; 4])")
+        .starts_with("error: stats.regress: the data has 1 missing value"));
+    assert!(ev("data.dummy([red; NA; red])").starts_with("error: data.dummy: the data has 1"));
+    assert!(
+        ev("stats.covmat([1, 2; NA, 4; 5, 6])").starts_with("error: stats.covmat: the data has 1")
+    );
+    // A formula against a table with NA is stopped the same way.
+    assert!(ev_all(&[
+        "d := struct(y = [1; 2; NA], x = [4; 5; 6])",
+        "stats.regress(y ~ x, d)"
+    ])
+    .starts_with("error: stats.regress: the data has 1 missing value"));
+}
+
+#[test]
+fn dropna_removes_missing_rows() {
+    // A vector loses its NA entries; the mean of what's left is exact.
+    assert_eq!(ev("stats.mean(data.dropna([1; NA; 3; NA; 5]))"), "3");
+    // A matrix drops rows containing any NA.
+    assert_eq!(norm("data.dropna([1, 2; NA, 4; 5, 6])"), "[ 1 2 ] [ 5 6 ]");
+    // A table drops rows listwise, keeping the columns aligned.
+    assert_eq!(
+        ev_all(&[
+            "t := struct(x = [1; 2; 3; 4], y = [10; NA; 30; 40])",
+            "data.dropna(t).x[2]"
+        ]),
+        "3"
+    );
+    // Dropping everything is an error, not an empty value.
+    assert!(ev("data.dropna([NA; NA])")
+        .starts_with("error: data.dropna: every row has a missing value"));
+}
+
+#[test]
+fn split_is_seeded_and_reproducible() {
+    let t = "t := struct(x = [1; 2; 3; 4; 5; 6; 7; 8; 9; 10], y = [1; 2; 3; 4; 5; 6; 7; 8; 9; 10])";
+    // 4/5 of 10 rows: 8 train, 2 test, columns still aligned.
+    assert_eq!(ev_all(&[t, "len(data.split(t, 4/5).train.x)"]), "8");
+    assert_eq!(ev_all(&[t, "len(data.split(t, 4/5).test.y)"]), "2");
+    assert_eq!(
+        ev_all(&[t, "s := data.split(t, 4/5)", "s.train.x == s.train.y"]),
+        "true"
+    );
+    // Same seed, same split — the engine stays deterministic.
+    assert_eq!(
+        ev_all(&[t, "data.split(t, 4/5).test.x == data.split(t, 4/5).test.x"]),
+        "true"
+    );
+    // Vectors and matrices split too (a matrix by rows).
+    assert_eq!(ev("len(data.split([1; 2; 3; 4; 5], 3/5).train)"), "3");
+    assert_eq!(
+        ev("size(data.split([1, 2; 3, 4; 5, 6; 7, 8], 1/2).test).rows"),
+        "2"
+    );
+    // Degenerate fractions are refused.
+    assert!(ev("data.split([1; 2; 3], 1/100)")
+        .starts_with("error: data.split: that fraction of 3 rows leaves the train side empty"));
+    assert!(ev("data.split([1; 2; 3], 2)").starts_with("error: data.split: the train fraction"));
+}
+
+#[test]
+fn cross_validation_scores_out_of_sample() {
+    // A perfectly linear relationship predicts its held-out folds exactly:
+    // the CV error is *exactly* zero, not approximately.
+    assert_eq!(
+        ev("stats.cv([1; 2; 3; 4; 5; 6], [3; 5; 7; 9; 11; 13], 3).rmse"),
+        "0"
+    );
+    // Exact data → exact pooled MSE (a rational) and per-fold MSEs.
+    let cv = "c := stats.cv([1; 2; 3; 4; 5; 6; 7; 8], [2; 5; 6; 9; 10; 13; 14; 17], 4)";
+    assert_eq!(ev_all(&[cv, "len(c.foldmse)"]), "4");
+    assert_eq!(ev_all(&[cv, "c.k"]), "4");
+    assert_eq!(ev_all(&[cv, "c.mse == c.rmse^2"]), "true");
+    // The formula form works against a table.
+    assert_eq!(
+        ev_all(&[
+            "d := struct(y = [3; 5; 7; 9; 11; 13], x = [1; 2; 3; 4; 5; 6])",
+            "stats.cv(y ~ x, d, 3).mse"
+        ]),
+        "0"
+    );
+    // A lambda sweep scores every candidate on the same folds and names the
+    // winner; for noiseless linear data, no penalty beats any penalty.
+    assert_eq!(
+        ev_all(&[
+            "r := stats.cv([1; 2; 3; 4; 5; 6], [3; 5; 7; 9; 11; 13], 3, struct(model = ridge, lambda = [0; 1; 10]))",
+            "r.best"
+        ]),
+        "0"
+    );
+    // Option validation.
+    assert!(
+        ev("stats.cv([1; 2; 3; 4], [1; 2; 3; 4], 2, struct(model = ridge))")
+            .starts_with("error: stats.cv: model = ridge needs a lambda")
+    );
+    assert!(
+        ev("stats.cv([1; 2; 3; 4], [1; 2; 3; 4], 2, struct(lambda = 1))")
+            .starts_with("error: stats.cv: lambda only applies")
+    );
+    assert!(ev("stats.cv([1; 2; 3], [1; 2; 3], 4)")
+        .starts_with("error: stats.cv: 4 folds need at least 4 observations"));
+    assert!(
+        ev("stats.cv([1; 2; 3; 4], [1; 2; 3; 4], 2, struct(model = ridge, lambda = -1))")
+            .starts_with("error: stats.cv: the penalty lambda must be nonnegative")
+    );
+}

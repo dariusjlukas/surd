@@ -12,16 +12,17 @@ use crate::expr::*;
 use crate::f64eval::eval_f64;
 use crate::matrix;
 use crate::nlfit;
+use crate::rng;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
     "sum", "mean", "median", "quantile", "min", "max", "var", "std", "cov", "cor", "covmat",
-    "cormat", "linfit", "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "logit",
-    "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2", "normcdf",
-    "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv", "fcdf",
-    "fpdf", "finv",
+    "cormat", "linfit", "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "cv",
+    "logit", "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2",
+    "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv",
+    "fcdf", "fpdf", "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -106,6 +107,7 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "wls" => wls(&args),
         "ridge" => ridge(&args),
         "lasso" => lasso(&args),
+        "cv" => cv(&args),
         "logit" => logit(&args),
         "predict" => predict(&args),
         "robustse" => robustse(&args),
@@ -195,6 +197,7 @@ fn data_columns(name: &str, m: &Expr) -> Result<Vec<Vec<Expr>>, String> {
     if rows.len() < 2 {
         return Err(format!("{} expects at least 2 observations (rows)", name));
     }
+    no_missing(name, rows.iter().flatten())?;
     let k = rows[0].len();
     let mut cols = vec![Vec::with_capacity(rows.len()); k];
     for row in rows {
@@ -409,6 +412,7 @@ fn lsq(a: &Expr, b: &Expr) -> Result<Expr, String> {
     let Expr::Matrix(rows) = a else {
         return Err("stats.lsq expects a matrix of regressors".into());
     };
+    no_missing("stats.lsq", rows.iter().flatten())?;
     let bv = entries("stats.lsq", b)?;
     if rows.len() != bv.len() {
         return Err(format!(
@@ -1018,6 +1022,374 @@ fn soft_threshold(rho: f64, lambda: f64) -> f64 {
     }
 }
 
+// -- cross-validation -----------------------------------------------------------
+
+/// Which fitter `stats.cv` refits per fold.
+#[derive(Clone, Copy, PartialEq)]
+enum CvModel {
+    Regress,
+    Ridge,
+    Lasso,
+}
+
+impl CvModel {
+    fn name(self) -> &'static str {
+        match self {
+            CvModel::Regress => "regress",
+            CvModel::Ridge => "ridge",
+            CvModel::Lasso => "lasso",
+        }
+    }
+}
+
+/// The parsed options struct of `stats.cv`.
+struct CvOptions {
+    model: CvModel,
+    lambda: Vec<Expr>, // empty for regress; the candidate penalties otherwise
+    lambda_is_path: bool,
+    seed: u64,
+}
+
+/// `stats.cv(X, y, k)` / `stats.cv(response ~ terms, data, k)`, with an
+/// optional options struct: k-fold cross-validation of a linear model — the
+/// *out-of-sample* counterpart to the in-sample R²/AIC a fitted model
+/// reports, and the standard honest way to compare models or choose a
+/// ridge/lasso penalty.
+///
+/// The design matrix is built once from the full data, so a categorical
+/// column one-hot encodes identically in every fold; a seeded shuffle
+/// (reproducible, like `data.split`) deals the rows into k near-equal folds;
+/// each fold is then predicted by a model fitted on the other k−1, and the
+/// squared prediction errors pool into the CV mean-squared error. For
+/// `regress` and `ridge` the refits run in exact arithmetic, so `mse` is an
+/// exact rational and `rmse` an exact surd; `lasso` refits are floats, like
+/// `stats.lasso` itself.
+///
+/// Options: `struct(model = ridge, lambda = ..., seed = ...)` — `model` is
+/// `regress` (default), `ridge`, or `lasso`; `lambda` is the penalty and may
+/// be a *vector* of candidates, in which case every candidate is scored on
+/// the same folds and `best` reports the winner; `seed` (default 0) varies
+/// the fold assignment.
+fn cv(args: &[Expr]) -> Result<Expr, String> {
+    if !(3..=4).contains(&args.len()) {
+        return Err(format!(
+            "stats.cv expects (X, y, k) or (formula, data, k), plus an optional \
+             options struct, got {} argument(s)",
+            args.len()
+        ));
+    }
+    let (x, y) = model_data("stats.cv", &args[0], &args[1])?;
+    let n = y.len();
+    let k_folds = numeric_value(&args[2])
+        .filter(|r| r.is_integer())
+        .and_then(|r| r.to_integer().to_usize())
+        .filter(|&k| k >= 2)
+        .ok_or("stats.cv: the number of folds must be an integer >= 2")?;
+    if k_folds > n {
+        return Err(format!(
+            "stats.cv: {} folds need at least {} observations, got {}",
+            k_folds, k_folds, n
+        ));
+    }
+    let opts = parse_cv_options(args.get(3))?;
+
+    // The full design, intercept included, built once — per-fold designs are
+    // row subsets of it, so factor encodings and column order agree across
+    // folds by construction.
+    let mut rows = design_rows("stats.cv", &x, n)?;
+    if rows.len() != n {
+        return Err(format!(
+            "stats.cv: {} regressor rows but {} observations",
+            rows.len(),
+            n
+        ));
+    }
+    if !has_constant_col(&rows) {
+        for r in rows.iter_mut() {
+            r.insert(0, int(1));
+        }
+    }
+    let p = rows[0].len();
+    let intercept_idx = constant_col_index(&rows);
+    let largest_fold = n.div_ceil(k_folds);
+    if opts.model != CvModel::Lasso && n - largest_fold < p {
+        return Err(format!(
+            "stats.cv: with {} folds a training set has only {} rows — too few \
+             for {} parameters",
+            k_folds,
+            n - largest_fold,
+            p
+        ));
+    }
+
+    // Deal the shuffled row order round-robin into folds (sizes differ by at
+    // most one). Same seed, same folds — that also makes a λ sweep fair:
+    // every candidate is scored against the identical partition.
+    let perm = rng::permutation(n, opts.seed);
+    let mut fold_of = vec![0usize; n];
+    for (pos, &row) in perm.iter().enumerate() {
+        fold_of[row] = pos % k_folds;
+    }
+
+    let mut common = vec![
+        ("model".into(), Expr::Symbol(opts.model.name().into())),
+        ("k".into(), int(k_folds as i64)),
+        ("n".into(), int(n as i64)),
+        ("seed".into(), Expr::Int(BigInt::from(opts.seed))),
+    ];
+
+    if opts.lambda_is_path {
+        let mut mses = Vec::with_capacity(opts.lambda.len());
+        let mut rmses = Vec::with_capacity(opts.lambda.len());
+        for l in &opts.lambda {
+            let (mse, _) = cv_score(
+                &rows,
+                &y,
+                &fold_of,
+                k_folds,
+                opts.model,
+                Some(l),
+                intercept_idx,
+            )?;
+            rmses.push(pow(mse.clone(), half()));
+            mses.push(mse);
+        }
+        // The winner needs an ordering, so the errors must be numbers (they
+        // are, whenever the data is numeric).
+        let keys = mses
+            .iter()
+            .map(exact_order_key)
+            .collect::<Option<Vec<_>>>()
+            .ok_or(
+                "stats.cv: cannot rank symbolic cross-validation errors — \
+                 the data must be numeric to choose a best lambda",
+            )?;
+        let best = keys
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.cmp(b.1))
+            .map(|(i, _)| opts.lambda[i].clone())
+            .expect("the lambda path is non-empty");
+        common.extend([
+            ("lambda".into(), col(opts.lambda.clone())),
+            ("mse".into(), col(mses)),
+            ("rmse".into(), col(rmses)),
+            ("best".into(), best),
+        ]);
+    } else {
+        let lambda = opts.lambda.first();
+        let (mse, foldmse) = cv_score(
+            &rows,
+            &y,
+            &fold_of,
+            k_folds,
+            opts.model,
+            lambda,
+            intercept_idx,
+        )?;
+        if let Some(l) = lambda {
+            common.push(("lambda".into(), l.clone()));
+        }
+        common.extend([
+            ("rmse".into(), pow(mse.clone(), half())),
+            ("mse".into(), mse),
+            ("foldmse".into(), col(foldmse)),
+        ]);
+    }
+    structure(common)
+}
+
+/// One full pass over the folds for one model/penalty choice. Returns the
+/// pooled mean-squared prediction error (over all n held-out predictions)
+/// and the per-fold MSEs.
+fn cv_score(
+    rows: &[Vec<Expr>],
+    y: &[Expr],
+    fold_of: &[usize],
+    k_folds: usize,
+    model: CvModel,
+    lambda: Option<&Expr>,
+    intercept_idx: Option<usize>,
+) -> Result<(Expr, Vec<Expr>), String> {
+    let n = y.len();
+    let mut fold_mse = Vec::with_capacity(k_folds);
+    let mut sse_all: Vec<Expr> = Vec::with_capacity(k_folds);
+    for f in 0..k_folds {
+        let train: Vec<usize> = (0..n).filter(|&i| fold_of[i] != f).collect();
+        let beta = cv_fit(rows, y, &train, model, lambda, intercept_idx)
+            .map_err(|e| format!("stats.cv, fold {}: {}", f + 1, e))?;
+        let mut sse_fold = Vec::new();
+        for i in (0..n).filter(|&i| fold_of[i] == f) {
+            let pred = add(rows[i]
+                .iter()
+                .zip(&beta)
+                .map(|(xij, bj)| mul(vec![xij.clone(), bj.clone()]))
+                .collect());
+            let err = add(vec![y[i].clone(), mul(vec![int(-1), pred])]);
+            sse_fold.push(expand(&mul(vec![err.clone(), err])));
+        }
+        let m = sse_fold.len();
+        let sse = add(sse_fold);
+        fold_mse.push(mul(vec![inv_int(m), sse.clone()]));
+        sse_all.push(sse);
+    }
+    Ok((mul(vec![inv_int(n), add(sse_all)]), fold_mse))
+}
+
+/// Fit one training subset: exact normal equations for `regress`, the exact
+/// penalized normal equations for `ridge` (intercept unpenalized, as in
+/// `stats.ridge`), and f64 coordinate descent for `lasso`.
+fn cv_fit(
+    rows: &[Vec<Expr>],
+    y: &[Expr],
+    train: &[usize],
+    model: CvModel,
+    lambda: Option<&Expr>,
+    intercept_idx: Option<usize>,
+) -> Result<Vec<Expr>, String> {
+    let p = rows[0].len();
+    if model == CvModel::Lasso {
+        let lam = lambda.expect("cv validated that lasso has a lambda");
+        let lam = eval_f64(lam, &[])
+            .map_err(|_| "the penalty lambda must be a nonnegative number".to_string())?;
+        if lam.is_nan() || lam < 0.0 {
+            return Err("the penalty lambda must be nonnegative".into());
+        }
+        let xf: Vec<Vec<f64>> = train
+            .iter()
+            .map(|&i| {
+                rows[i]
+                    .iter()
+                    .map(|e| eval_f64(e, &[]))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<_, _>>()?;
+        let yf: Vec<f64> = train
+            .iter()
+            .map(|&i| eval_f64(&y[i], &[]))
+            .collect::<Result<_, _>>()?;
+        let (beta, _, _) = coord_descent(&xf, &yf, lam, intercept_idx, p);
+        return nlfit::floats(&beta);
+    }
+
+    // XᵀX and Xᵀy over the training rows, exact; ridge adds λ to the
+    // non-intercept diagonal before solving.
+    let mut xtx = vec![vec![Vec::<Expr>::new(); p]; p];
+    let mut xty = vec![Vec::<Expr>::new(); p];
+    for &i in train {
+        for a in 0..p {
+            for b in a..p {
+                xtx[a][b].push(expand(&mul(vec![rows[i][a].clone(), rows[i][b].clone()])));
+            }
+            xty[a].push(expand(&mul(vec![rows[i][a].clone(), y[i].clone()])));
+        }
+    }
+    let gram: Vec<Vec<Expr>> = (0..p)
+        .map(|a| {
+            (0..p)
+                .map(|b| {
+                    let cell = add(xtx[a.min(b)][a.max(b)].clone());
+                    if model == CvModel::Ridge && a == b && Some(a) != intercept_idx {
+                        let l = lambda.expect("cv validated that ridge has a lambda");
+                        add(vec![cell, l.clone()])
+                    } else {
+                        cell
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let rhs = Expr::Matrix(xty.into_iter().map(|terms| vec![add(terms)]).collect());
+    let beta = match matrix::solve(&Expr::Matrix(gram), &rhs)? {
+        Expr::Struct(_) => {
+            return Err(
+                "the regressors are linearly dependent within this training fold \
+                 (a categorical level may be absent — try fewer folds or another seed)"
+                    .into(),
+            )
+        }
+        b => b,
+    };
+    entries("stats.cv", &beta)
+}
+
+/// Parse the optional `stats.cv` options struct.
+fn parse_cv_options(e: Option<&Expr>) -> Result<CvOptions, String> {
+    let mut opts = CvOptions {
+        model: CvModel::Regress,
+        lambda: Vec::new(),
+        lambda_is_path: false,
+        seed: 0,
+    };
+    let Some(e) = e else {
+        return Ok(opts);
+    };
+    let Expr::Struct(fields) = e else {
+        return Err(
+            "stats.cv: options must be a struct, like struct(model = ridge, lambda = 1/10)".into(),
+        );
+    };
+    for (name, v) in fields {
+        match name.as_str() {
+            "model" => {
+                opts.model = match v {
+                    Expr::Symbol(s) if s == "regress" => CvModel::Regress,
+                    Expr::Symbol(s) if s == "ridge" => CvModel::Ridge,
+                    Expr::Symbol(s) if s == "lasso" => CvModel::Lasso,
+                    other => {
+                        return Err(format!(
+                            "stats.cv: model must be regress, ridge, or lasso, got '{}'",
+                            other
+                        ))
+                    }
+                }
+            }
+            "lambda" => {
+                opts.lambda = if matches!(v, Expr::Matrix(_)) {
+                    opts.lambda_is_path = true;
+                    entries("stats.cv lambda", v)?
+                } else {
+                    vec![v.clone()]
+                };
+                if let Some(bad) = opts.lambda.iter().find(|l| {
+                    numeric_value(l).is_some_and(|r| r < BigRational::from_integer(0.into()))
+                }) {
+                    return Err(format!(
+                        "stats.cv: the penalty lambda must be nonnegative, got '{}'",
+                        bad
+                    ));
+                }
+            }
+            "seed" => opts.seed = crate::data::seed_arg("stats.cv", Some(v))?,
+            other => {
+                return Err(format!(
+                    "stats.cv: unknown option '{}' (available: model, lambda, seed)",
+                    other
+                ))
+            }
+        }
+    }
+    match (opts.model, opts.lambda.is_empty()) {
+        (CvModel::Regress, false) => {
+            Err("stats.cv: lambda only applies to model = ridge or lasso".into())
+        }
+        (CvModel::Ridge | CvModel::Lasso, true) => Err(format!(
+            "stats.cv: model = {} needs a lambda (a penalty, or a vector of candidates)",
+            opts.model.name()
+        )),
+        _ => Ok(opts),
+    }
+}
+
+/// An exact ordering key for a computed error: rationals as themselves,
+/// floats through their exact binary value.
+fn exact_order_key(e: &Expr) -> Option<BigRational> {
+    match e {
+        Expr::Float(bf, _) => float_to_rational(bf),
+        other => numeric_value(other),
+    }
+}
+
 // -- the formula interface ----------------------------------------------------
 
 /// Resolve the `(design X, response y)` for a model, supporting both the matrix
@@ -1329,6 +1701,7 @@ fn design_rows(caller: &str, x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, Strin
             caller
         ));
     };
+    no_missing(caller, rows.iter().flatten())?;
     if rows.len() == 1 && rows[0].len() == n {
         return Ok(rows[0].iter().map(|e| vec![e.clone()]).collect());
     }
@@ -1845,18 +2218,38 @@ fn entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
     let Expr::Matrix(rows) = e else {
         return Err(format!("{} expects a vector (a 1×n or n×1 matrix)", name));
     };
-    if rows.len() == 1 {
-        Ok(rows[0].clone())
+    let v = if rows.len() == 1 {
+        rows[0].clone()
     } else if rows.iter().all(|r| r.len() == 1) {
-        Ok(rows.iter().map(|r| r[0].clone()).collect())
+        rows.iter().map(|r| r[0].clone()).collect()
     } else {
-        Err(format!(
+        return Err(format!(
             "{} expects a vector (a 1×n or n×1 matrix), got a {}×{} matrix",
             name,
             rows.len(),
             rows[0].len()
-        ))
+        ));
+    };
+    no_missing(name, v.iter())?;
+    Ok(v)
+}
+
+/// Refuse data that still carries the missing marker `NA`. To the algebra
+/// `NA` is an ordinary free symbol — an estimator computed "through" one
+/// would be well-formed nonsense — so every statistical entry point stops
+/// here and points at the fix instead.
+fn no_missing<'a>(name: &str, xs: impl Iterator<Item = &'a Expr>) -> Result<(), String> {
+    let n = xs.filter(|e| is_missing(e)).count();
+    if n > 0 {
+        return Err(format!(
+            "{}: the data has {} missing value{} (NA) — drop the affected rows first \
+             with data.dropna(...)",
+            name,
+            n,
+            if n == 1 { "" } else { "s" }
+        ));
     }
+    Ok(())
 }
 
 fn one_vector(name: &str, args: &[Expr]) -> Result<Vec<Expr>, String> {

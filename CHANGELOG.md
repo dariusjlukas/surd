@@ -9,6 +9,45 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- Categorical columns import from CSV. A word-like text cell (`us`,
+  `treated`) now imports as a symbol — a categorical level, the same value a
+  hand-built `[us; eu; us]` column holds — instead of failing the whole file,
+  so `data.dummy`, `data.groupby`, and model formulas
+  (`stats.regress(mpg ~ weight + origin, cars)`) work on text columns straight
+  from a file. The import summary flags each categorical column with its
+  level count ("origin (392×1 matrix, categorical (3 levels))"), so a typo'd
+  file is visible at a glance. A cell that *looks* numeric but doesn't parse
+  (`3.4O`, `1.2.3`, a date) is still a loud, located error — a typo'd number
+  must never silently become a category. The header rule is unchanged: a
+  first row containing word-like text is a header.
+- Missing-value handling for real-world data. A blank CSV cell — or one
+  spelled `NA`, `N/A`, `NaN`, `null`, or `?` in any case, or a generic-JSON
+  `null` — now imports as the marker symbol `NA` instead of failing the whole
+  import, and the import summary counts what came in ("… — 3 missing values
+  (NA)"). surd does no NA arithmetic, silent or otherwise: every `stats` and
+  `data` function refuses NA data with a pointed error, and the new
+  `data.dropna` is the explicit fix — it removes NA entries from a vector,
+  NA-carrying rows from a matrix, and (listwise) every row of a table where
+  any column is NA, keeping columns aligned.
+- `data.split(x, frac[, seed])` — a reproducible random train/test split of a
+  table, matrix, or vector into `struct(train, test)`. Membership comes from
+  a seeded Fisher–Yates shuffle (SplitMix64, exactly uniform via rejection
+  sampling), so the engine stays deterministic: the same call always produces
+  the same split, and a different seed a different one. Each side keeps the
+  original row order.
+- `stats.cv(X_or_formula, y_or_data, k[, opts])` — k-fold cross-validation
+  for `regress`, `ridge`, and `lasso`, the out-of-sample counterpart to the
+  in-sample `r2`/`aic`. The design matrix is built once from the full data
+  (so categorical encodings agree across folds), a seeded shuffle deals the
+  folds, and each fold is predicted by a model fitted on the rest. Refits are
+  exact for regress/ridge — noiseless linear data scores a CV error of
+  exactly 0 — and f64 for lasso, like the fitters themselves. `opts` is
+  `struct(model, lambda, seed)`; a `lambda` *vector* scores every candidate
+  on the same folds and reports the `best`, the standard way to choose a
+  penalty.
+
 ## [0.8.0] - 2026-07-01
 
 ### Fixed

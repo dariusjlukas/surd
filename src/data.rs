@@ -5,13 +5,25 @@
 //! categorical column (distinct values become indicator columns), and `groupby`
 //! aggregates one column by the levels of another. Categories are just
 //! symbol- (or number-) valued vector entries; no separate categorical type is
-//! needed.
+//! needed. `dropna` removes rows carrying the missing marker `NA` (which the
+//! transforms here, like the `stats` models, refuse to compute through), and
+//! `split` partitions rows into a seeded, reproducible train/test pair.
 
 use crate::expr::*;
+use crate::rng;
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
-pub const FUNCTIONS: &[&str] = &["standardize", "center", "rescale", "dummy", "groupby"];
+pub const FUNCTIONS: &[&str] = &[
+    "standardize",
+    "center",
+    "rescale",
+    "dummy",
+    "groupby",
+    "dropna",
+    "split",
+];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
     match name {
@@ -23,6 +35,16 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
             let (keys, values) = two_vectors("data.groupby", &args)?;
             groupby(&keys, &values)
         }
+        "dropna" => {
+            if args.len() != 1 {
+                return Err(format!(
+                    "data.dropna expects 1 argument(s), got {}",
+                    args.len()
+                ));
+            }
+            dropna(&args[0])
+        }
+        "split" => split(&args),
         _ => Err(format!(
             "unknown function 'data.{}' (available: data.{})",
             name,
@@ -134,6 +156,185 @@ fn groupby(keys: &[Expr], values: &[Expr]) -> Result<Expr, String> {
     ])
 }
 
+// -- missing data and splitting -------------------------------------------------
+
+/// Remove missing values: `NA` entries from a vector, rows containing an `NA`
+/// from a matrix, and — for a table (a struct of equal-length column vectors)
+/// — every row where *any* column is `NA`, keeping the columns aligned
+/// (listwise deletion).
+fn dropna(v: &Expr) -> Result<Expr, String> {
+    const ALL_GONE: &str = "data.dropna: every row has a missing value";
+    match v {
+        Expr::Struct(fields) => {
+            let cols = table_columns("data.dropna", fields)?;
+            let n = cols[0].1.len();
+            let keep: Vec<usize> = (0..n)
+                .filter(|&i| cols.iter().all(|(_, c)| !is_missing(&c[i])))
+                .collect();
+            if keep.is_empty() {
+                return Err(ALL_GONE.into());
+            }
+            structure(
+                cols.into_iter()
+                    .map(|(name, c)| (name, col(keep.iter().map(|&i| c[i].clone()).collect())))
+                    .collect(),
+            )
+        }
+        // A 1×n row vector: filter entries, keeping the row shape.
+        Expr::Matrix(rows) if rows.len() == 1 => {
+            let kept: Vec<Expr> = rows[0].iter().filter(|e| !is_missing(e)).cloned().collect();
+            if kept.is_empty() {
+                return Err(ALL_GONE.into());
+            }
+            Ok(Expr::Matrix(vec![kept]))
+        }
+        Expr::Matrix(rows) => {
+            let kept: Vec<Vec<Expr>> = rows
+                .iter()
+                .filter(|r| !r.iter().any(is_missing))
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                return Err(ALL_GONE.into());
+            }
+            Ok(Expr::Matrix(kept))
+        }
+        _ => Err(
+            "data.dropna expects a vector, a matrix, or a struct of column vectors (a table)"
+                .into(),
+        ),
+    }
+}
+
+/// `data.split(x, frac[, seed])` → `struct(train, test)`: a reproducible
+/// random split of the rows of a table/matrix (or the entries of a vector).
+/// `frac` is the train fraction, exact in (0, 1); the seed (default 0) drives
+/// the deterministic shuffle, so the same call always produces the same
+/// split. Membership is random but each side keeps the original row order.
+fn split(args: &[Expr]) -> Result<Expr, String> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(format!(
+            "data.split expects (data, fraction[, seed]), got {} argument(s)",
+            args.len()
+        ));
+    }
+    let frac = numeric_value(&args[1])
+        .filter(|r| {
+            *r > BigRational::from_integer(0.into()) && *r < BigRational::from_integer(1.into())
+        })
+        .ok_or("data.split: the train fraction must be an exact number strictly between 0 and 1")?;
+    let seed = seed_arg("data.split", args.get(2))?;
+
+    let n = row_count("data.split", &args[0])?;
+    if n < 2 {
+        return Err("data.split needs at least 2 rows".into());
+    }
+    // Train size ⌊frac·n + 1/2⌉ (round half up), rejected if a side comes out
+    // empty — a split that isn't a split is a mistake worth hearing about.
+    let half = BigRational::new(BigInt::from(1), BigInt::from(2));
+    let ntrain = (frac * BigRational::from_integer(BigInt::from(n)) + half)
+        .floor()
+        .to_integer()
+        .to_usize()
+        .expect("train size fits usize: it is at most n");
+    if ntrain == 0 || ntrain == n {
+        return Err(format!(
+            "data.split: that fraction of {} rows leaves the {} side empty",
+            n,
+            if ntrain == 0 { "train" } else { "test" }
+        ));
+    }
+
+    let perm = rng::permutation(n, seed);
+    let mut train = perm[..ntrain].to_vec();
+    let mut test = perm[ntrain..].to_vec();
+    train.sort_unstable();
+    test.sort_unstable();
+    structure(vec![
+        ("train".into(), take_rows("data.split", &args[0], &train)?),
+        ("test".into(), take_rows("data.split", &args[0], &test)?),
+    ])
+}
+
+/// How many rows `x` has for splitting purposes: table rows (column length),
+/// matrix rows, or the entries of a 1×n row vector.
+fn row_count(name: &str, x: &Expr) -> Result<usize, String> {
+    match x {
+        Expr::Struct(fields) => Ok(table_columns(name, fields)?[0].1.len()),
+        Expr::Matrix(rows) if rows.len() == 1 => Ok(rows[0].len()),
+        Expr::Matrix(rows) => Ok(rows.len()),
+        _ => Err(format!(
+            "{} expects a vector, a matrix, or a struct of column vectors (a table)",
+            name
+        )),
+    }
+}
+
+/// The subset of `x`'s rows at `idx` (ascending), in `x`'s own shape.
+fn take_rows(name: &str, x: &Expr, idx: &[usize]) -> Result<Expr, String> {
+    match x {
+        Expr::Struct(fields) => structure(
+            table_columns(name, fields)?
+                .into_iter()
+                .map(|(fname, c)| (fname, col(idx.iter().map(|&i| c[i].clone()).collect())))
+                .collect(),
+        ),
+        Expr::Matrix(rows) if rows.len() == 1 => Ok(Expr::Matrix(vec![idx
+            .iter()
+            .map(|&i| rows[0][i].clone())
+            .collect()])),
+        Expr::Matrix(rows) => Ok(Expr::Matrix(idx.iter().map(|&i| rows[i].clone()).collect())),
+        _ => unreachable!("row_count already vetted the shape"),
+    }
+}
+
+/// The named columns of a table struct, each flattened to its entries, all
+/// required to be vectors of one shared length.
+fn table_columns(
+    name: &str,
+    fields: &[(String, Expr)],
+) -> Result<Vec<(String, Vec<Expr>)>, String> {
+    let mut out: Vec<(String, Vec<Expr>)> = Vec::with_capacity(fields.len());
+    for (fname, v) in fields {
+        let c = entries_raw(v).ok_or_else(|| {
+            format!(
+                "{}: struct field '{}' is not a column vector — a table is a struct of columns",
+                name, fname
+            )
+        })?;
+        out.push((fname.clone(), c));
+    }
+    let n = out[0].1.len();
+    if let Some((bad, c)) = out.iter().find(|(_, c)| c.len() != n) {
+        return Err(format!(
+            "{}: columns must have equal lengths, but '{}' has {} rows and '{}' has {}",
+            name,
+            out[0].0,
+            n,
+            bad,
+            c.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// The optional seed argument: a nonnegative integer, default 0. (Also used
+/// by `stats.cv`, the other seeded shuffle.)
+pub(crate) fn seed_arg(name: &str, e: Option<&Expr>) -> Result<u64, String> {
+    match e {
+        None => Ok(0),
+        Some(e) => numeric_value(e)
+            .filter(|r| r.is_integer())
+            .and_then(|r| r.to_integer().to_u64())
+            .ok_or_else(|| {
+                format!(
+                    "{}: the seed must be a nonnegative integer below 2^64, got '{}'",
+                    name, e
+                )
+            }),
+    }
+}
+
 // -- helpers ------------------------------------------------------------------
 
 /// Distinct entries, in first-appearance order.
@@ -203,22 +404,50 @@ fn is_known_zero(e: &Expr) -> bool {
     numeric_value(e).is_some_and(|r| r == BigRational::new(BigInt::from(0), BigInt::from(1)))
 }
 
+/// A vector's entries with no vetting — for `dropna`/`split`, which must be
+/// able to look at data that still carries `NA`.
+fn entries_raw(e: &Expr) -> Option<Vec<Expr>> {
+    let Expr::Matrix(rows) = e else { return None };
+    if rows.len() == 1 {
+        Some(rows[0].clone())
+    } else if rows.iter().all(|r| r.len() == 1) {
+        Some(rows.iter().map(|r| r[0].clone()).collect())
+    } else {
+        None
+    }
+}
+
 fn entries(name: &str, e: &Expr) -> Result<Vec<Expr>, String> {
     let Expr::Matrix(rows) = e else {
         return Err(format!("{} expects a vector (a 1×n or n×1 matrix)", name));
     };
-    if rows.len() == 1 {
-        Ok(rows[0].clone())
-    } else if rows.iter().all(|r| r.len() == 1) {
-        Ok(rows.iter().map(|r| r[0].clone()).collect())
-    } else {
-        Err(format!(
+    let v = entries_raw(e).ok_or_else(|| {
+        format!(
             "{} expects a vector (a 1×n or n×1 matrix), got a {}×{} matrix",
             name,
             rows.len(),
             rows[0].len()
-        ))
+        )
+    })?;
+    no_missing(name, &v)?;
+    Ok(v)
+}
+
+/// Refuse data that still carries the missing marker. `NA` is an ordinary
+/// symbol to the algebra — computing a mean "through" one would produce
+/// well-formed nonsense — so everything statistical stops here instead.
+fn no_missing(name: &str, xs: &[Expr]) -> Result<(), String> {
+    let n = xs.iter().filter(|e| is_missing(e)).count();
+    if n > 0 {
+        return Err(format!(
+            "{}: the data has {} missing value{} (NA) — drop the affected rows first \
+             with data.dropna(...)",
+            name,
+            n,
+            if n == 1 { "" } else { "s" }
+        ));
     }
+    Ok(())
 }
 
 fn one_vector(name: &str, args: &[Expr]) -> Result<Vec<Expr>, String> {

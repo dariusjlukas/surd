@@ -79,10 +79,11 @@ pub fn import(text: &str) -> Result<Expr, String> {
 }
 
 /// A short human description of a value, for import summaries
-/// ("struct with 3 fields: t (600×1 matrix), …").
+/// ("struct with 3 fields: t (600×1 matrix), …"). Missing cells (`NA`) are
+/// counted up front, so an import of real-world data says what it dragged in.
 pub fn describe(e: &Expr) -> String {
-    match e {
-        Expr::Matrix(rows) => format!("{}×{} matrix", rows.len(), rows[0].len()),
+    let described = match e {
+        Expr::Matrix(_) => describe_short(e),
         Expr::Function { params, .. } => format!("function({})", params.join(", ")),
         Expr::Struct(fields) => {
             const SHOWN: usize = 6;
@@ -102,12 +103,58 @@ pub fn describe(e: &Expr) -> String {
             )
         }
         other => describe_short(other),
+    };
+    match count_missing(e) {
+        0 => described,
+        1 => format!("{} — 1 missing value (NA)", described),
+        m => format!("{} — {} missing values (NA)", described, m),
+    }
+}
+
+/// If the matrix holds categorical entries (symbols other than `NA`), the
+/// number of distinct non-missing levels; `None` for a purely numeric one.
+fn categorical_levels(rows: &[Vec<Expr>]) -> Option<usize> {
+    let mut levels: Vec<&Expr> = Vec::new();
+    let mut saw_symbol = false;
+    for cell in rows.iter().flatten() {
+        if crate::expr::is_missing(cell) {
+            continue;
+        }
+        saw_symbol |= matches!(cell, Expr::Symbol(_));
+        if !levels.contains(&cell) {
+            levels.push(cell);
+        }
+    }
+    saw_symbol.then_some(levels.len())
+}
+
+/// How many `NA` markers a value holds (recursing through matrices and
+/// structs — the shapes imports produce).
+fn count_missing(e: &Expr) -> usize {
+    match e {
+        Expr::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .filter(|c| crate::expr::is_missing(c))
+            .count(),
+        Expr::Struct(fields) => fields.iter().map(|(_, v)| count_missing(v)).sum(),
+        other if crate::expr::is_missing(other) => 1,
+        _ => 0,
     }
 }
 
 fn describe_short(e: &Expr) -> String {
     match e {
-        Expr::Matrix(rows) => format!("{}×{} matrix", rows.len(), rows[0].len()),
+        Expr::Matrix(rows) => {
+            let base = format!("{}×{} matrix", rows.len(), rows[0].len());
+            // A column holding symbols is a categorical column — say so, and
+            // say how many levels, so a typo'd file is visible at import.
+            match categorical_levels(rows) {
+                Some(1) => format!("{}, categorical (1 level)", base),
+                Some(k) => format!("{}, categorical ({} levels)", base, k),
+                None => base,
+            }
+        }
         Expr::Struct(fields) => format!("struct, {} fields", fields.len()),
         Expr::Function { params, .. } => format!("function({})", params.join(", ")),
         other => {
@@ -264,7 +311,13 @@ fn decode(v: &Value, mode: Mode) -> Result<Expr, String> {
     match v {
         Value::Number(n) => decimal_to_rat(&n.to_string()).map(rat_to_expr),
         Value::Bool(b) => Ok(Expr::Bool(*b)),
-        Value::Null => Err("null values are not supported".into()),
+        // A JSON `null` in a generic data file is a missing value — the same
+        // `NA` marker a blank CSV cell imports as. The tagged surd-data format
+        // never writes nulls, so there it stays an error.
+        Value::Null => match mode {
+            Mode::Generic => Ok(missing()),
+            Mode::Tagged => Err("null values are not supported".into()),
+        },
         Value::String(s) => match mode {
             Mode::Generic => Ok(Expr::Symbol(s.clone())),
             Mode::Tagged => Err(format!("unexpected bare string '{}'", s)),
@@ -456,9 +509,58 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
 // CSV
 // ---------------------------------------------------------------------------
 
+/// The missing-value marker `NA`, as data cells import it.
+fn missing() -> Expr {
+    Expr::Symbol("NA".into())
+}
+
+/// The cell spellings that mean "no value here": an empty cell and the usual
+/// markers (any letter case). These import as the symbol `NA`, which the
+/// statistical functions refuse until `data.dropna(...)` handles it.
+fn is_missing_cell(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "" | "na" | "n/a" | "nan" | "null" | "?"
+    )
+}
+
+/// Does this cell *look* like it was meant to be a number (it starts the way
+/// numbers do)? Such a cell that then fails to parse — `3.4O`, `1.2.3`,
+/// `2024-01-01` — is a loud error, never a category: silently turning a
+/// typo'd numeric column into a many-level categorical would be exactly the
+/// kind of well-formed nonsense surd exists to refuse.
+fn looks_numeric(s: &str) -> bool {
+    s.trim()
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'))
+}
+
+/// A data cell: the `NA` marker for a missing cell, a number parsed exactly
+/// from its literal text, or — for word-like text (`us`, `treated`) — a
+/// symbol, i.e. a categorical level, the same value a hand-built
+/// `[us; eu; us]` column holds. `None` is the numeric-looking-but-malformed
+/// case, which the caller reports as an error with the cell's location.
+fn csv_cell(s: &str) -> Option<Expr> {
+    if is_missing_cell(s) {
+        return Some(missing());
+    }
+    if let Ok(r) = decimal_to_rat(s) {
+        return Some(rat_to_expr(r));
+    }
+    if looks_numeric(s) {
+        None
+    } else {
+        Some(Expr::Symbol(s.to_string()))
+    }
+}
+
 /// CSV with a header row becomes a struct of column vectors; an all-numeric
-/// file becomes a plain matrix. Cells parse from their literal text into
-/// exact rationals (scientific notation included).
+/// headerless file becomes a plain matrix. Cells parse from their literal
+/// text into exact rationals (scientific notation included);
+/// blank/`NA`/`NaN`/`null` cells become the missing marker `NA`; word-like
+/// text cells become symbols — categorical levels, ready for `data.dummy`,
+/// `data.groupby`, or a model formula.
 fn import_csv(text: &str) -> Result<Expr, String> {
     let records = parse_csv(text);
     if records.is_empty() {
@@ -476,13 +578,25 @@ fn import_csv(text: &str) -> Result<Expr, String> {
         }
     }
 
-    let has_header = records[0].iter().any(|c| decimal_to_rat(c).is_err());
+    // A header is a first row with word-like text in it. A leading
+    // `1, NA, 3` row is data; a numeric-looking-but-malformed first cell is
+    // also read as data, so it errors below with its location instead of
+    // silently becoming a column name.
+    let has_header = records[0]
+        .iter()
+        .any(|c| matches!(csv_cell(c), Some(Expr::Symbol(s)) if s != "NA"));
     if !has_header {
         let rows = records
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 r.iter()
-                    .map(|c| decimal_to_rat(c).map(rat_to_expr))
+                    .enumerate()
+                    .map(|(j, c)| {
+                        csv_cell(c).ok_or_else(|| {
+                            format!("row {}, cell {}: '{}' is not a number", i + 1, j + 1, c)
+                        })
+                    })
                     .collect()
             })
             .collect::<Result<Vec<Vec<Expr>>, String>>()?;
@@ -504,7 +618,7 @@ fn import_csv(text: &str) -> Result<Expr, String> {
         let mut col = Vec::with_capacity(records.len() - 1);
         for (i, record) in records.iter().enumerate().skip(1) {
             let cell = &record[j];
-            let value = decimal_to_rat(cell).map_err(|_| {
+            let value = csv_cell(cell).ok_or_else(|| {
                 format!(
                     "row {}, column '{}': '{}' is not a number",
                     i + 1,
@@ -512,7 +626,7 @@ fn import_csv(text: &str) -> Result<Expr, String> {
                     cell
                 )
             })?;
-            col.push(vec![rat_to_expr(value)]);
+            col.push(vec![value]);
         }
         fields.push((name.clone(), matrix::matrix(col)?));
     }
@@ -824,8 +938,11 @@ mod tests {
         // Awkward keys are bent into identifiers.
         let v = import(r#"{"sensor 1": 5, "2nd": 6}"#).unwrap();
         assert_eq!(format!("{}", v), "struct(_2nd = 6, sensor_1 = 5)");
-        // Nulls and empty arrays refuse loudly.
-        assert!(import(r#"{"a": null}"#).is_err());
+        // A null is a missing value (the NA marker); empty arrays refuse loudly.
+        assert_eq!(
+            format!("{}", import(r#"{"a": null}"#).unwrap()),
+            "struct(a = NA)"
+        );
         assert!(import("[]").is_err());
         assert!(import(r#"{"a": [1, [2]]}"#).is_err());
     }
@@ -855,10 +972,12 @@ mod tests {
         // Quoted headers (with embedded delimiter) still become field names.
         let v = import("\"time, s\", \"temp\"\n1, 20\n").unwrap();
         assert_eq!(format!("{}", v), "struct(temp = [ 20 ], time__s = [ 1 ])");
-        // A non-numeric data cell errors with its location.
-        let err = import("t, v\n1, oops\n").unwrap_err();
+        // A malformed numeric data cell errors with its location. (A word
+        // like `oops` would import as a categorical level; `1.2.3` looks
+        // numeric and must not.)
+        let err = import("t, v\n1, 1.2.3\n").unwrap_err();
         assert!(
-            err.contains("row 2") && err.contains("'v'") && err.contains("oops"),
+            err.contains("row 2") && err.contains("'v'") && err.contains("1.2.3"),
             "{}",
             err
         );
@@ -913,6 +1032,71 @@ mod tests {
         ] {
             assert!(import(text).is_err(), "should error: {}", text);
         }
+    }
+
+    #[test]
+    fn missing_csv_cells_import_as_na() {
+        // Blank cells and the usual markers, in any case, become `NA`.
+        let v = import("t, value\n0, 1.5\n1,\n2, NA\n3, nan\n4, NULL\n5, ?\n").unwrap();
+        let Expr::Struct(fields) = &v else {
+            panic!("expected struct")
+        };
+        assert_eq!(fields[1].0, "value");
+        assert_eq!(
+            format!("{}", fields[1].1)
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            [
+                "[", "3/2", "]", "[", "NA", "]", "[", "NA", "]", "[", "NA", "]", "[", "NA", "]",
+                "[", "NA", "]"
+            ]
+        );
+        // The import summary counts what came in.
+        assert_eq!(
+            describe(&v),
+            "struct with 2 fields: t (6×1 matrix), value (6×1 matrix) — 5 missing values (NA)"
+        );
+        // A first row of data with an NA is data, not a header.
+        assert_eq!(import("1, NA\n2, 3\n").unwrap(), val("[1, NA; 2, 3]"));
+    }
+
+    #[test]
+    fn text_csv_cells_import_as_categories() {
+        // Word-like cells become symbols — categorical levels, the same
+        // values a hand-built [us; eu; us] column holds.
+        let v = import("id, origin\n1, us\n2, eu\n3, us\n").unwrap();
+        let Expr::Struct(fields) = &v else {
+            panic!("expected struct")
+        };
+        assert_eq!(fields[1].0, "origin");
+        assert_eq!(fields[1].1, val("[us; eu; us]"));
+        // The import summary names the categorical columns and their levels.
+        assert_eq!(
+            describe(&v),
+            "struct with 2 fields: id (3×1 matrix), origin (3×1 matrix, categorical (2 levels))"
+        );
+        // Missing markers mix in without becoming a level of their own.
+        let v = import("origin\nus\nNA\neu\nus\n").unwrap();
+        assert_eq!(
+            describe(&v),
+            "struct with 1 field: origin (4×1 matrix, categorical (2 levels)) — 1 missing value (NA)"
+        );
+        // A numeric-looking cell that doesn't parse is a loud, located error —
+        // a typo'd number must never silently become a category.
+        let err = import("t, v\n1, 3.4O\n").unwrap_err();
+        assert!(
+            err.contains("row 2") && err.contains("'v'") && err.contains("3.4O"),
+            "{}",
+            err
+        );
+        assert!(import("t, v\n1, 2024-01-01\n").is_err());
+        // An all-text headerless file: the first row is read as the header
+        // (that ambiguity is fundamental to CSV), so these become columns.
+        let v = import("x, y\nred, blue\n").unwrap();
+        let Expr::Struct(fields) = &v else {
+            panic!("expected struct")
+        };
+        assert_eq!(fields[0].1, val("[red]"));
     }
 
     #[test]

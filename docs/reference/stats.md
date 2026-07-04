@@ -401,6 +401,64 @@ including the (unpenalized) intercept — so an intercept-only fit has `df = 1`.
 
 A negative or non-numeric `lambda` is an error.
 
+## `stats.cv`
+
+```
+stats.cv(X, y, k)
+stats.cv(response ~ terms, data, k)
+stats.cv(..., k, struct(model = ..., lambda = ..., seed = ...))
+```
+
+k-fold cross-validation — the **out-of-sample** counterpart to the in-sample
+`r2`/`aic` a fitted model reports, and the honest way to compare models or
+choose a penalty. The rows are dealt into `k` near-equal folds by a seeded
+shuffle (reproducible, like [`data.split`](data.md#datasplit) — same call,
+same folds, forever); each fold is then predicted by a model fitted on the
+other `k − 1`, and the squared prediction errors pool into the CV
+mean-squared error. The design matrix is built **once** from the full data,
+so a categorical column one-hot encodes identically in every fold.
+
+The options struct selects what gets refit per fold:
+
+| option | meaning |
+|--------|---------|
+| `model` | `regress` (default), `ridge`, or `lasso` |
+| `lambda` | the penalty for ridge/lasso — a scalar, or a **vector of candidates** |
+| `seed` | fold-assignment seed (nonnegative integer, default 0) |
+
+For `regress` and `ridge` the per-fold refits run in **exact arithmetic**:
+`mse` is an exact rational and `rmse` an exact surd — a model that predicts
+its held-out folds perfectly scores *exactly* 0, not approximately. `lasso`
+refits are floats, like `stats.lasso` itself.
+
+With a scalar (or no) `lambda` the result is
+`struct(model, k, n, seed, mse, rmse, foldmse)` — `foldmse` holds the
+per-fold MSEs, `mse` the pooled MSE over all n held-out predictions. With a
+`lambda` **vector**, every candidate is scored against the *same* folds and
+the result is `struct(model, k, n, seed, lambda, mse, rmse, best)`, with
+`mse`/`rmse` aligned to `lambda` and `best` the candidate with the smallest
+CV error — the standard way to pick a ridge/lasso penalty:
+
+```text
+>> x := [1; 2; 3; 4; 5; 6; 7; 8]
+>> y := [2.1; 3.9; 6.2; 7.8; 10.1; 12.2; 13.8; 16.1]
+>> c := stats.cv(x, y, 4)
+>> N(c.rmse)
+0.179017251396614708699479205606
+>> r := stats.cv(x, y, 4, struct(model = ridge, lambda = [0; 1/10; 1; 10]))
+>> r.best
+0
+>> stats.cv([1; 2; 3; 4; 5; 6], [3; 5; 7; 9; 11; 13], 3).rmse   # exact fit, exact zero
+0
+```
+
+The formula form works against a data struct exactly as in
+[`stats.regress`](#statsregress): `stats.cv(mpg ~ weight + origin, cars, 5)`.
+A fold whose training rows become linearly dependent (a categorical level
+concentrated in one fold, say) is reported with its fold number — try fewer
+folds or another `seed`. Data carrying [missing values](data.md#missing-values-na)
+is refused; `data.dropna` first.
+
 ## `stats.logit`
 
 ```

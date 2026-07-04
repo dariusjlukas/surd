@@ -176,6 +176,16 @@ pub fn is_scalar(e: &Expr) -> bool {
     )
 }
 
+/// Is this the missing-value marker `NA`? Data imports use the symbol `NA`
+/// for cells a file left blank (or spelled `NA`/`NaN`/`null`). To the algebra
+/// it is an ordinary free symbol — surd does no NA arithmetic, silent or
+/// otherwise — so every statistical consumer checks for it up front and
+/// refuses, pointing at `data.dropna(...)`. Missingness is handled by the
+/// user, explicitly, or not at all.
+pub fn is_missing(e: &Expr) -> bool {
+    matches!(e, Expr::Symbol(s) if s == "NA")
+}
+
 // ---------------------------------------------------------------------------
 // Canonicalizing smart constructors
 // ---------------------------------------------------------------------------

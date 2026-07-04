@@ -1388,6 +1388,33 @@ mod tests {
     }
 
     #[test]
+    fn csv_with_categories_and_gaps_models_end_to_end() {
+        // The whole loop on a real-world-shaped file: a categorical column
+        // and a missing cell, imported, cleaned, and fitted with a formula.
+        let mut s = Session::new();
+        let csv = "mpg, weight, origin\n18, 35, us\n21, 31, eu\n30, 22, jp\n\
+                   25, 26, us\n, 40, us\n28, 24, jp\n17, 36, eu\n";
+        let v: serde_json::Value = serde_json::from_str(&s.import_data(csv, "cars")).unwrap();
+        assert_eq!(v["ok"], true, "{}", v["error"]);
+        let summary = v["text"].as_str().unwrap();
+        assert!(
+            summary.contains("categorical (3 levels)") && summary.contains("1 missing value"),
+            "{}",
+            summary
+        );
+
+        // The model refuses the gap, dropna clears it, the fit goes through.
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("stats.regress(mpg ~ weight + origin, cars)")).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("data.dropna"));
+        s.eval("clean := data.dropna(cars)");
+        let v: serde_json::Value =
+            serde_json::from_str(&s.eval("stats.regress(mpg ~ weight + origin, clean).n")).unwrap();
+        assert_eq!(v["text"], "6", "{}", v["error"]);
+    }
+
+    #[test]
     fn plot_results_carry_samples() {
         let mut s = Session::new();
         let v: serde_json::Value =

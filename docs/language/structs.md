@@ -47,7 +47,13 @@ In the web app, imported files (CSV, JSON, `surd-data`) land in a struct, so
 imported names can never collide with existing bindings — a CSV with `temp`
 and `time` columns imported as `sensor` is read as `sensor.temp`,
 `sensor.time`. Numbers are read from their literal text — `0.1` in a sensor
-log becomes the exact rational 1/10, never an f64.
+log becomes the exact rational 1/10, never an f64. Word-like text cells
+(`us`, `treated`) become symbols — categorical levels ready for
+[`data.dummy`, `data.groupby`](../reference/data.md#the-data-namespace-preparing-data-for-a-model),
+or a [model formula](../reference/data.md#model-formulas-the-operator) — and
+blank/`NA`/`null` cells become the
+[missing marker `NA`](../reference/data.md#missing-values-na). A cell that
+*looks* numeric but isn't (`3.4O`) is a loud import error, never a category.
 
 ## Structs as modules
 

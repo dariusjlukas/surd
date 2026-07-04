@@ -411,6 +411,11 @@ const NAMESPACES: Namespace[] = [
         doc: 'L1-penalized (lasso) regression; zeroes out coefficients (selection).',
       },
       {
+        name: 'cv',
+        params: ['X|formula', 'y|data', 'k', 'opts?'],
+        doc: 'k-fold cross-validation (seeded, reproducible); opts: struct(model, lambda, seed).',
+      },
+      {
         name: 'logit',
         params: ['X', 'y'],
         doc: 'Logistic regression by IRLS, for a binary 0/1 response y.',
@@ -523,6 +528,11 @@ const NAMESPACES: Namespace[] = [
         doc: 'Subtract the mean (mean-centered column).',
       },
       {
+        name: 'dropna',
+        params: ['v'],
+        doc: 'Drop rows with missing values (NA) from a vector, matrix, or table.',
+      },
+      {
         name: 'dummy',
         params: ['v'],
         doc: 'One-hot encode a categorical column → struct(levels, indicators).',
@@ -536,6 +546,11 @@ const NAMESPACES: Namespace[] = [
         name: 'rescale',
         params: ['v'],
         doc: 'Min–max rescale numeric data to [0, 1].',
+      },
+      {
+        name: 'split',
+        params: ['data', 'frac', 'seed?'],
+        doc: 'Seeded random train/test split of rows → struct(train, test).',
       },
       {
         name: 'standardize',
