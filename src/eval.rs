@@ -1582,11 +1582,13 @@ fn compare(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
         return decide(p.cmp(&q));
     }
     // Values arithmetic can't touch can't be ordered either — and must not
-    // reach the difference construction below.
+    // reach the difference construction below. Complex values have no order
+    // even when equal: without this, `sqrt(-2) <= sqrt(-2)` answered `true`
+    // via exact cancellation while `I < 2*I` refused.
     let unorderable = |e: &Expr| {
         is_opaque_value(e)
             || matrix::is_matrix(e)
-            || matches!(e, Expr::Equation(..) | Expr::Signal(_))
+            || matches!(e, Expr::Equation(..) | Expr::Signal(_) | Expr::Complex(..))
     };
     if unorderable(x) || unorderable(y) {
         return Err(format!("cannot order '{}' and '{}'", x, y));

@@ -511,10 +511,14 @@ pub fn pow(base: Expr, exp: Expr) -> Expr {
 
     // (a^b)^c -> a^(b*c). Only sound in general when c is an integer, or when
     // the inner base is a positive real (so no |x| / branch-cut surprise like
-    // sqrt(x^2) = |x|). We honor that guard — accuracy over convenience.
+    // sqrt(x^2) = |x|). The positive-base case additionally needs b real:
+    // for complex b, a^b lands anywhere on the plane and the outer principal
+    // power wraps the branch — (2^(10i))^(1/2) ≠ 2^(5i). Integer c is safe
+    // for any b (z^n needs no branch choice).
     if let Expr::Pow(inner_base, inner_exp) = &base {
         let exp_is_int = numeric_value(&exp).is_some_and(|e| e.is_integer());
-        let base_positive = numeric_value(inner_base).is_some_and(|v| v > BigRational::zero());
+        let base_positive = numeric_value(inner_base).is_some_and(|v| v > BigRational::zero())
+            && provably_real(inner_exp);
         if exp_is_int || base_positive {
             return pow(
                 (**inner_base).clone(),
@@ -587,15 +591,36 @@ pub fn pow(base: Expr, exp: Expr) -> Expr {
     Expr::Pow(Box::new(base), Box::new(exp))
 }
 
+/// Conservatively true when `e` is provably real-valued: no `Complex` node
+/// (and no non-scalar) anywhere in the tree. Symbols count as real — the
+/// language's standing assumption. The trap this guards: an expression that
+/// is not the `Complex` variant can still be complex-valued, e.g. `pi^(2*I)`
+/// (real base, complex exponent). Every rewrite that assumes realness must
+/// check here first; a `false` may cost a simplification, never soundness.
+pub(crate) fn provably_real(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) | Expr::Rat(_) | Expr::Float(_, _) | Expr::Const(_) | Expr::Symbol(_) => true,
+        Expr::Add(ts) | Expr::Mul(ts) => ts.iter().all(provably_real),
+        Expr::Pow(b, x) => provably_real(b) && provably_real(x),
+        Expr::Func(_, args) => args.iter().all(provably_real),
+        _ => false,
+    }
+}
+
 /// Conservative nonnegativity: true only when e ≥ 0 is *provable*. Licenses
-/// the √a·√b → √(a·b) merge in `mul_real`; anything unprovable returns false
-/// and the radicals stay separate (accuracy over convenience).
-fn known_nonneg(e: &Expr) -> bool {
+/// the √a·√b → √(a·b) merge in `mul_real`, and the sqrt clamp in the
+/// certified interval evaluator (a radicand that straddles zero numerically
+/// may only be clamped real if it is provably nonnegative — otherwise the
+/// value may be complex and any ordering claim would be a lie). Anything
+/// unprovable returns false (accuracy over convenience).
+pub(crate) fn known_nonneg(e: &Expr) -> bool {
     match e {
         Expr::Int(i) => !i.is_negative(),
         Expr::Rat(r) => !r.is_negative(),
         Expr::Const(_) => true, // π and e are positive
-        Expr::Pow(b, _) => known_nonneg(b),
+        // b ≥ 0 with a *real* exponent stays ≥ 0; a complex exponent makes
+        // the power complex-valued (pi^(2i)), where "nonnegative" is a lie.
+        Expr::Pow(b, x) => known_nonneg(b) && provably_real(x),
         Expr::Mul(fs) => fs.iter().all(known_nonneg),
         Expr::Add(ts) => {
             if ts.iter().all(known_nonneg) {
@@ -660,6 +685,38 @@ pub(crate) fn bf_strictly_pos(x: &BigFloat) -> bool {
 
 pub(crate) fn bf_strictly_neg(x: &BigFloat) -> bool {
     x.is_negative() && !x.is_zero()
+}
+
+/// Finite f64 → BigFloat, exactly. astro-float's `BigFloat::from_f64` HALVES
+/// every subnormal (2⁻¹⁰⁷³ comes back as 2⁻¹⁰⁷⁴ — the subnormal branch skips
+/// the implicit-bit exponent adjustment), so it must never be called on a
+/// value that can be subnormal. This decodes the bits and scales an integer
+/// mantissa through the exponent word instead — exact for every finite f64.
+pub(crate) fn bf_from_f64_exact(x: f64, p: usize) -> BigFloat {
+    debug_assert!(x.is_finite());
+    if x == 0.0 {
+        return BigFloat::from_i64(0, p.max(64));
+    }
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i64;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (mant, pow2) = if biased == 0 {
+        (frac, -1074i64) // subnormal: value = frac · 2⁻¹⁰⁷⁴
+    } else {
+        (frac | (1u64 << 52), biased - 1075) // normal: (2⁵² + frac) · 2^(biased−1075)
+    };
+    let signed = if bits >> 63 == 1 {
+        -(mant as i64)
+    } else {
+        mant as i64
+    };
+    // mant < 2⁵³, so from_i64 is exact at p ≥ 64; scaling by 2^pow2 through
+    // the exponent word is exact by construction.
+    let mut out = BigFloat::from_i64(signed, p.max(64));
+    if let Some(e) = out.exponent() {
+        out.set_exponent(e + pow2 as i32);
+    }
+    out
 }
 
 /// Exact number → BigFloat at precision `p` bits (the float-contagion bridge).
@@ -749,12 +806,13 @@ fn complex_powi(re: &Expr, im: &Expr, n: i64) -> Expr {
     acc
 }
 
-/// Complex conjugate. Real values (including symbols, assumed real) are
-/// returned unchanged.
+/// Complex conjugate. Provably real values (including symbols, assumed real)
+/// are returned unchanged; stealth-complex values like `2^I` stay symbolic.
 pub fn conjugate(e: &Expr) -> Expr {
     match e {
         Expr::Complex(re, im) => complex((**re).clone(), mul(vec![int(-1), (**im).clone()])),
-        _ => e.clone(),
+        _ if provably_real(e) => e.clone(),
+        _ => Expr::Func("conj".into(), vec![e.clone()]),
     }
 }
 
@@ -762,7 +820,8 @@ pub fn conjugate(e: &Expr) -> Expr {
 pub fn real_part(e: &Expr) -> Expr {
     match e {
         Expr::Complex(re, _) => (**re).clone(),
-        _ => e.clone(),
+        _ if provably_real(e) => e.clone(),
+        _ => Expr::Func("re".into(), vec![e.clone()]),
     }
 }
 
@@ -770,7 +829,8 @@ pub fn real_part(e: &Expr) -> Expr {
 pub fn imag_part(e: &Expr) -> Expr {
     match e {
         Expr::Complex(_, im) => (**im).clone(),
-        _ => int(0),
+        _ if provably_real(e) => int(0),
+        _ => Expr::Func("im".into(), vec![e.clone()]),
     }
 }
 
@@ -1226,6 +1286,9 @@ pub fn numeric_eval(e: &Expr, digits: usize) -> Result<Expr, String> {
         if re.is_nan() || im.is_nan() {
             return Err("numeric result is undefined".into());
         }
+        if re.is_inf() || im.is_inf() {
+            return Err("numeric result overflows the representable range".into());
+        }
         // Snap only results of transcendental evaluation, where a component
         // that is mathematically zero comes back as cancellation residue
         // (exp(iπ) → −1 + 1e−40·i). A purely arithmetic value has full
@@ -1249,6 +1312,11 @@ pub fn numeric_eval(e: &Expr, digits: usize) -> Result<Expr, String> {
     let value = with_consts(|cc| to_bigfloat(e, prec_bits, cc))??;
     if value.is_nan() {
         return Err("numeric result is undefined (e.g. a real power of a negative number)".into());
+    }
+    // Inf is not a value: an undefined/overflowing quantity must error like
+    // `1/0` does, not escape as a float that looks like data.
+    if value.is_inf() {
+        return Err("numeric result overflows the representable range".into());
     }
     Ok(Expr::Float(value, digits))
 }
@@ -2053,10 +2121,17 @@ impl Expr {
 
     fn render_inner(&self) -> (u8, String) {
         match self {
+            // A negative number prints with a unary minus, which binds looser
+            // than `^` — otherwise `(-8)^(1/3)` would print as `-8^(1/3)`,
+            // which re-parses as `-(8^(1/3))` = −2, a different value.
+            Expr::Int(i) if i.is_negative() => (PREC_MUL, i.to_string()),
             Expr::Int(i) => (PREC_ATOM, i.to_string()),
             // A rational prints as a division, so it needs the precedence of one
             // — otherwise `(11/5)^x` would print as `11/5^x` (= 11/(5^x)).
             Expr::Rat(r) => (PREC_MUL, format!("{}/{}", r.numer(), r.denom())),
+            Expr::Float(bf, digits) if bf_strictly_neg(bf) => {
+                (PREC_MUL, format_bigfloat(bf, *digits))
+            }
             Expr::Float(bf, digits) => (PREC_ATOM, format_bigfloat(bf, *digits)),
             Expr::Const(Constant::Pi) => (PREC_ATOM, "π".to_string()),
             Expr::Const(Constant::E) => (PREC_ATOM, "e".to_string()),

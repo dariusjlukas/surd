@@ -251,3 +251,116 @@ fn wls_rejects_symbolic_and_nonpositive_weights() {
     assert!(ev("stats.wls([1; 2; 3], [1; 2; 2], [1; 1; -2])")
         .starts_with("error: stats.wls: weights must be positive numbers"));
 }
+
+// ---------------------------------------------------------------------------
+// 2026-07-04 soundness audit (SOUNDNESS-AUDIT-2026-07-04.md) — one test per
+// confirmed lie, so none can come back.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sqrt_of_possibly_negative_radicand_refuses_to_order() {
+    // Was (A1): sqrt_iv clamped a straddling radicand to [0, ·] assuming
+    // realness, so `sqrt(pi − q) < 1` certified `true` for a pure-imaginary
+    // value (q agrees with π to ~20 digits; π − q < 0).
+    let q = "314159265358979323846264338327950289/100000000000000000000000000000000000";
+    let msg = ev(&format!("sqrt(pi - {q}) < 1"));
+    assert!(msg.starts_with("error:"), "got: {msg}");
+    // Provably nonnegative radicands still order fine.
+    assert_eq!(ev("sqrt(10-2*sqrt(5)) > 2"), "true");
+}
+
+#[test]
+fn exp_underflow_cannot_certify_a_false_sign() {
+    // Was (A2): astro-float flushes exp underflow to exact +0 even rounding
+    // Up, so `exp(-2200000000) <= 0` certified `true` for a positive real.
+    let msg = ev("exp(-2200000000) <= 0");
+    assert!(
+        msg.starts_with("error:") && msg.contains("may be equal"),
+        "got: {msg}"
+    );
+    // Above the flush threshold the sign still certifies.
+    assert_eq!(ev("exp(-1400000000) > 0"), "true");
+}
+
+#[test]
+fn interval_exponent_of_i64_min_refuses_cleanly() {
+    // Was (C1): `n.abs()` overflowed on an exponent of exactly −2^63
+    // (panic in debug, cap bypass in release).
+    let msg = ev("pi^(-9223372036854775808) < 1");
+    assert!(msg.starts_with("error:"), "got: {msg}");
+}
+
+#[test]
+fn stealth_complex_values_are_not_treated_as_real() {
+    // Was (A8–A10): `pi^(2*I)` is complex-valued but not the Complex
+    // variant; known_nonneg licensed a sign-flipping radical merge,
+    // (a^b)^c collapsed across the branch cut, and re/im/conj returned
+    // plainly wrong exact values (im(pi^I) = 0).
+    assert_eq!(ev("im(pi^I)"), "im(π^(I))");
+    assert_eq!(ev("conj(2^I)"), "conj(2^(I))");
+    assert_eq!(ev("(2^(10*I))^(1/2)"), "sqrt(2^(10*I))");
+    // The merge must NOT fire for complex exponents…
+    let merged = ev("sqrt(pi^(2*I)) * sqrt(e^(2*I))");
+    assert!(merged.contains("sqrt(e^(2*I))"), "got: {merged}");
+    // …and must still fire for provably nonnegative radicands.
+    assert_eq!(ev("sqrt(10-2*sqrt(5))*sqrt(10+2*sqrt(5))"), "4*sqrt(5)");
+}
+
+#[test]
+fn negative_bases_print_with_parens() {
+    // Was (B2): `(-8)^(1/3)` printed as `-8^(1/3)`, which re-parses as
+    // −(8^(1/3)) = −2 — a different value on transcript replay.
+    assert_eq!(ev("(-8)^(1/3)"), "(-8)^(1/3)");
+    assert_eq!(ev("(-2)^x"), "(-2)^x");
+}
+
+#[test]
+fn numeric_inf_is_an_error_not_a_value() {
+    // Was (C7): N() only checked NaN, so an overflowing real result escaped
+    // as the float `Inf` while `1/0` errored.
+    let msg = ev("N(subs(1/x, x, 0), 10)");
+    assert!(msg.starts_with("error:"), "got: {msg}");
+}
+
+#[test]
+fn csv_utf8_bom_does_not_eat_the_first_row() {
+    // Was (A11): the BOM was stripped from the sniffing copy only, so a
+    // BOM'd headerless CSV (Excel "CSV UTF-8") lost its first data row to
+    // header detection.
+    use surd::dataio;
+    let imported = dataio::import("\u{feff}1,2\n3,4\n").unwrap();
+    let plain = dataio::import("1,2\n3,4\n").unwrap();
+    assert_eq!(format!("{imported}"), format!("{plain}"));
+    let packed = dataio::import_csv_packed("\u{feff}1,2\n3,4\n").unwrap();
+    let packed_plain = dataio::import_csv_packed("1,2\n3,4\n").unwrap();
+    assert_eq!(format!("{packed}"), format!("{packed_plain}"));
+}
+
+#[test]
+fn remez_rejects_out_of_domain_edges() {
+    // Was (B1): the domain check tested |cos ω| > 1 — vacuously false for
+    // every real ω — so an edge past π silently designed for the folded band.
+    let msg = ev("dsp.remez(7, [1, 5], [1])");
+    assert!(msg.contains("outside [0, π]"), "got: {msg}");
+    let msg = ev("dsp.remez(7, [-1, 2], [1])");
+    assert!(msg.contains("outside [0, π]"), "got: {msg}");
+    // Exact 0 and π edges remain valid.
+    assert!(ev("dsp.remez(7, [0, pi/4], [1])").starts_with("struct"));
+}
+
+#[test]
+fn subnormal_readbacks_are_exact() {
+    // Was (A5/A6): astro-float's from_f64 halves subnormals, and the
+    // point-interval shortcut assumed lo/2 + hi/2 is exact — bound()
+    // reported 0 ("exact") while the displayed midpoint was off by 2⁻¹⁰⁷⁴.
+    use surd::expr::Expr;
+    use surd::signal;
+    let three_eps = Expr::Rat(surd::expr::BigRational::new(
+        3.into(),
+        num_bigint::BigInt::from(2u8).pow(1074),
+    ));
+    let s = signal::pack(&[three_eps], None).unwrap();
+    // The certified bound must cover |computed mid − true value| = 2⁻¹⁰⁷⁴.
+    let bound = format!("{}", signal::half_width(&s, Some(0)));
+    assert_ne!(bound, "0", "bound claims exactness for an inexact midpoint");
+}

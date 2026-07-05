@@ -16,7 +16,8 @@
 //! zero-excluding interval division (so poles refuse rather than lie).
 
 use crate::expr::{
-    bf_lt, bf_strictly_neg, bf_strictly_pos, numeric_value, with_consts, Constant, Expr,
+    bf_lt, bf_strictly_neg, bf_strictly_pos, known_nonneg, numeric_value, with_consts, Constant,
+    Expr,
 };
 use astro_float::{BigFloat, Consts, Radix, RoundingMode};
 use num_traits::ToPrimitive;
@@ -167,7 +168,7 @@ fn eval_iv(e: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
                     let c = lipschitz_iv(&x, p, |v, rm| v.cos(p, rm, cc))?;
                     mul_iv(&s, &recip_iv(&c, p)?, p)
                 }
-                "exp" => Iv::new(x.lo.exp(p, DOWN, cc), x.hi.exp(p, UP, cc)),
+                "exp" => exp_iv(&x, p, cc),
                 "ln" => {
                     if !bf_strictly_pos(&x.lo) {
                         return None;
@@ -258,18 +259,41 @@ fn powi_iv(a: &Iv, n: u64, p: usize) -> Option<Iv> {
     Some(result)
 }
 
-/// √x. A lower endpoint that dips (only) infinitesimally below zero from
-/// outward rounding clamps to zero — sound whenever the true value is real.
-fn sqrt_iv(a: &Iv, p: usize) -> Option<Iv> {
+/// √x. A lower endpoint that dips below zero from outward rounding clamps to
+/// zero — but ONLY when the radicand is provably nonnegative (symbolically):
+/// a straddling enclosure whose true value is negative makes the sqrt
+/// imaginary, and clamping would let the engine certify an ordering on a
+/// complex number (e.g. `sqrt(pi − q) < 1` for a q agreeing with π to 20
+/// digits). Without the proof we refuse at this precision; refinement will
+/// separate a genuinely positive radicand on its own.
+fn sqrt_iv(a: &Iv, p: usize, radicand_known_nonneg: bool) -> Option<Iv> {
     if a.hi.is_negative() {
         return None;
     }
     let lo = if a.lo.is_negative() {
+        if !radicand_known_nonneg {
+            return None;
+        }
         BigFloat::from_i64(0, p.max(64))
     } else {
         a.lo.sqrt(p, DOWN)
     };
     Iv::new(lo, a.hi.sqrt(p, UP))
+}
+
+/// e^x. astro-float flushes underflow to *exact +0 even when rounding Up*
+/// (inputs below ≈ −1.4885·10⁹ = EXPONENT_MIN·ln 2), which would put the
+/// "upper bound" below the strictly positive true value and let the engine
+/// certify `exp(-2200000000) <= 0`. A flushed upper endpoint becomes the
+/// smallest representable positive instead; a flushed lower endpoint is
+/// already sound (0 < e^x).
+fn exp_iv(x: &Iv, p: usize, cc: &mut Consts) -> Option<Iv> {
+    let lo = x.lo.exp(p, DOWN, cc);
+    let mut hi = x.hi.exp(p, UP, cc);
+    if hi.is_zero() {
+        hi = BigFloat::min_positive(p.max(64));
+    }
+    Iv::new(lo, hi)
 }
 
 fn abs_iv(a: &Iv, p: usize) -> Option<Iv> {
@@ -306,14 +330,22 @@ fn pow_iv(base: &Expr, exp: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
     let b = eval_iv(base, p, cc)?;
     if let Some(r) = numeric_value(exp) {
         if r.is_integer() {
-            let n = r.to_integer().to_i64().filter(|n| n.abs() <= MAX_IV_EXP)?;
+            // unsigned_abs: `.abs()` would panic (or wrap past the cap in
+            // release) on an exponent of exactly i64::MIN.
+            let n = r
+                .to_integer()
+                .to_i64()
+                .filter(|n| n.unsigned_abs() <= MAX_IV_EXP as u64)?;
             let m = powi_iv(&b, n.unsigned_abs(), p)?;
             return if n < 0 { recip_iv(&m, p) } else { Some(m) };
         }
         if *r.denom() == 2.into() {
             // x^(k/2) = (√x)^k — monotone, and covers all surds tightly.
-            let k = r.numer().to_i64().filter(|k| k.abs() <= MAX_IV_EXP)?;
-            let s = sqrt_iv(&b, p)?;
+            let k = r
+                .numer()
+                .to_i64()
+                .filter(|k| k.unsigned_abs() <= MAX_IV_EXP as u64)?;
+            let s = sqrt_iv(&b, p, known_nonneg(base))?;
             let m = powi_iv(&s, k.unsigned_abs(), p)?;
             return if k < 0 { recip_iv(&m, p) } else { Some(m) };
         }
@@ -325,7 +357,7 @@ fn pow_iv(base: &Expr, exp: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
     let ln_b = Iv::new(b.lo.ln(p, DOWN, cc), b.hi.ln(p, UP, cc))?;
     let y = eval_iv(exp, p, cc)?;
     let prod = mul_iv(&y, &ln_b, p)?;
-    Iv::new(prod.lo.exp(p, DOWN, cc), prod.hi.exp(p, UP, cc))
+    exp_iv(&prod, p, cc)
 }
 
 #[cfg(test)]

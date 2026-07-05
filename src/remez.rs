@@ -235,6 +235,31 @@ fn resolve_bands(edges: &[Expr], desired: &[Expr], weights: &[Expr]) -> Result<V
     // below or above, so that the band only ever *shrinks* (conservative).
     let mut xs: Vec<(BigRational, BigRational)> = Vec::with_capacity(edges.len());
     for e in edges {
+        // Validate the edge ITSELF lies in [0, π]. Checking |cos ω| ≤ 1
+        // instead is vacuous — it holds for every real ω — and an
+        // out-of-domain edge (e.g. 5, or 7π/3) would silently design for
+        // the cosine-folded band instead of the stated spec. The enclosure
+        // check is conservative on the correct side: 0 and π themselves are
+        // exact and pass.
+        let edge_ok = |e: &Expr| -> Option<bool> {
+            let (lo, _) = interval::rational_enclosure(e, 128)?;
+            if lo < BigRational::zero() {
+                return Some(false);
+            }
+            let pi_minus = crate::expr::add(vec![
+                Expr::Const(crate::expr::Constant::Pi),
+                crate::expr::mul(vec![crate::expr::int(-1), e.clone()]),
+            ]);
+            let (lo, _) = interval::rational_enclosure(&pi_minus, 128)?;
+            Some(lo >= BigRational::zero())
+        };
+        match edge_ok(e) {
+            Some(false) => return Err(format!("band edge '{}' is outside [0, π]", e)),
+            Some(true) => {}
+            // Not a constant: fall through, the enclosure path below
+            // produces the precise error.
+            None => {}
+        }
         let c = func("cos", vec![e.clone()]);
         if let Some(x) = numeric_value(&c) {
             if x.abs() > BigRational::from_integer(1.into()) {

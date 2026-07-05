@@ -7,7 +7,7 @@ use common::*;
 use proptest::prelude::*;
 
 use num_bigint::BigInt;
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, Signed};
 use surd::expr::{float_to_rational, rat_to_expr, BigRational, Expr};
 use surd::signal::{self, SignalData};
 
@@ -446,4 +446,207 @@ fn render_vector(v: &[(i64, i64)]) -> String {
 /// Evaluate and collapse whitespace, so multi-line matrices compare cleanly.
 fn normalized(src: &str) -> String {
     ev(src).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// Signal soundness, round 2 (post-audit): the kernels the original properties
+// never reached — transcendentals, sub/div, complex kernels, and the forward
+// FFT against an exact DFT oracle. The confirmed containment breaks (point
+// twiddles, cancelled sin widths, subnormal readbacks) all lived here.
+// ---------------------------------------------------------------------------
+
+/// High-precision certified oracle from the *independent* interval evaluator
+/// (512 bits — its enclosure is ~2^-500 wide, hundreds of orders of magnitude
+/// tighter than any signal-kernel width). Containment is asserted via the
+/// sufficient condition: kernel_lo ≤ oracle_lo && oracle_hi ≤ kernel_hi.
+fn oracle512(ex: &Expr) -> (BigRational, BigRational) {
+    surd::interval::rational_enclosure(ex, 512).expect("oracle must evaluate")
+}
+
+/// π to 20 decimal digits, as an exact rational — a cancellation hotspot for
+/// sin (sin(π+δ) ≈ −δ, comparable to the enclosure width itself).
+fn pi_ish() -> BigRational {
+    BigRational::new(
+        "314159265358979323846".parse().unwrap(),
+        BigInt::from(10u64).pow(20).into(),
+    )
+}
+
+proptest! {
+    // Unary transcendental kernels, both substrates, against the 512-bit
+    // oracle — including samples parked right next to π where the Lipschitz
+    // width and the function value cancel.
+    #[test]
+    fn signal_transcendentals_enclose_the_true_value(
+        v in prop::collection::vec((-400i64..400, 1i64..100), 1..6),
+        near_pi in any::<bool>(),
+    ) {
+        let mut vr = rats(&v);
+        if near_pi {
+            let scale = BigRational::from_integer(BigInt::from(10u64).pow(15).into());
+            vr = vr.iter().map(|r| pi_ish() + r / &scale).collect();
+        }
+        // Strictly positive twins for the ln / sqrt domains.
+        let seventh = BigRational::new(BigInt::from(1), BigInt::from(7));
+        let vp: Vec<BigRational> = vr.iter().map(|r| r.abs() + &seventh).collect();
+        for digits in [None, Some(8)] {
+            let s_any = signal::pack(&exprs(&vr), digits).unwrap();
+            let s_pos = signal::pack(&exprs(&vp), digits).unwrap();
+            for (name, s, inputs) in [
+                ("sin", &s_any, &vr),
+                ("cos", &s_any, &vr),
+                ("exp", &s_any, &vr),
+                ("abs", &s_any, &vr),
+                ("ln", &s_pos, &vp),
+                ("sqrt", &s_pos, &vp),
+            ] {
+                let out = signal::unary(name, s).unwrap();
+                for (i, r) in inputs.iter().enumerate() {
+                    let arg = rat_to_expr(r.clone());
+                    let ex = if name == "sqrt" {
+                        surd::expr::pow(arg, rat_to_expr(BigRational::new(1.into(), 2.into())))
+                    } else {
+                        surd::expr::func(name, vec![arg])
+                    };
+                    let (olo, ohi) = oracle512(&ex);
+                    prop_assert!(
+                        endpoint(&out, i, false) <= olo && ohi <= endpoint(&out, i, true),
+                        "{}({}) escaped its {:?}-digit enclosure (sample {})",
+                        name, r, digits, i
+                    );
+                }
+            }
+        }
+    }
+
+    // Subtraction and division — the two elementwise kernels the original
+    // property never generated. Divisors are kept away from zero (division
+    // by a zero-straddling interval refuses by design; that path is pinned
+    // by an eval test).
+    #[test]
+    fn signal_sub_div_enclose_the_exact_result(
+        pairs in prop::collection::vec(
+            ((-99i64..100, 1i64..10), (1i64..100, 1i64..10), any::<bool>()),
+            1..9,
+        ),
+    ) {
+        let (av, bsigned): (Vec<_>, Vec<_>) =
+            pairs.into_iter().map(|(a, b, neg)| (a, (b, neg))).unzip();
+        let ar = rats(&av);
+        let br: Vec<BigRational> = bsigned
+            .iter()
+            .map(|((n, d), neg)| {
+                let r = BigRational::new(BigInt::from(*n), BigInt::from(*d));
+                if *neg { -r } else { r }
+            })
+            .collect();
+        for digits in [None, Some(5)] {
+            let sa = signal::pack(&exprs(&ar), digits).unwrap();
+            let sb = signal::pack(&exprs(&br), digits).unwrap();
+            let dif = signal::binop("-", &sa, &sb).unwrap();
+            let quo = signal::binop("/", &sa, &sb).unwrap();
+            for i in 0..ar.len() {
+                let d = &ar[i] - &br[i];
+                let q = &ar[i] / &br[i];
+                prop_assert!(endpoint(&dif, i, false) <= d && d <= endpoint(&dif, i, true));
+                prop_assert!(endpoint(&quo, i, false) <= q && q <= endpoint(&quo, i, true));
+            }
+        }
+    }
+
+    // Complex kernels (cmul / cdiv / cmag) against exact complex rational
+    // arithmetic. The old complex checks went through dsp.peak — computed
+    // from the same enclosures under test, hence blind to containment.
+    #[test]
+    fn complex_kernels_enclose_the_exact_result(
+        quads in prop::collection::vec(
+            (
+                (-49i64..50, 1i64..8),
+                (-49i64..50, 1i64..8),
+                (1i64..50, 1i64..8),
+                (-49i64..50, 1i64..8),
+            ),
+            1..6,
+        ),
+    ) {
+        // z1 = a + bi arbitrary; z2 = c + di with c ≥ 1/7 so |z2|² is
+        // bounded away from zero and cdiv cannot refuse.
+        let (mut ar, mut br, mut cr, mut dr) = (vec![], vec![], vec![], vec![]);
+        for (a, b, c, d) in &quads {
+            ar.push(BigRational::new(BigInt::from(a.0), BigInt::from(a.1)));
+            br.push(BigRational::new(BigInt::from(b.0), BigInt::from(b.1)));
+            cr.push(BigRational::new(BigInt::from(c.0), BigInt::from(c.1)));
+            dr.push(BigRational::new(BigInt::from(d.0), BigInt::from(d.1)));
+        }
+        for digits in [None, Some(6)] {
+            let z1 = signal::complex(
+                signal::pack(&exprs(&ar), digits).unwrap(),
+                signal::pack(&exprs(&br), digits).unwrap(),
+            )
+            .unwrap();
+            let z2 = signal::complex(
+                signal::pack(&exprs(&cr), digits).unwrap(),
+                signal::pack(&exprs(&dr), digits).unwrap(),
+            )
+            .unwrap();
+            let contains = |s: &SignalData, i: usize, want: &BigRational| {
+                endpoint(s, i, false) <= *want && *want <= endpoint(s, i, true)
+            };
+            let prod = signal::binop("*", &z1, &z2).unwrap();
+            let quo = signal::binop("/", &z1, &z2).unwrap();
+            let mag = signal::unary("abs", &z1).unwrap();
+            let (pre, pim) = (signal::re_part(&prod), signal::im_part(&prod));
+            let (qre, qim) = (signal::re_part(&quo), signal::im_part(&quo));
+            for i in 0..ar.len() {
+                let (a, b, c, d) = (&ar[i], &br[i], &cr[i], &dr[i]);
+                // (a+bi)(c+di) = (ac−bd) + (ad+bc)i
+                prop_assert!(contains(&pre, i, &(a * c - b * d)));
+                prop_assert!(contains(&pim, i, &(a * d + b * c)));
+                // (a+bi)/(c+di) = ((ac+bd) + (bc−ad)i) / (c²+d²)
+                let den = c * c + d * d;
+                prop_assert!(contains(&qre, i, &((a * c + b * d) / &den)));
+                prop_assert!(contains(&qim, i, &((b * c - a * d) / &den)));
+                // |z1| = √(a²+b²): compare squares, exactly in ℚ.
+                let s2 = a * a + b * b;
+                let (ml, mh) = (endpoint(&mag, i, false), endpoint(&mag, i, true));
+                prop_assert!(&mh * &mh >= s2 && !mh.is_negative());
+                prop_assert!(ml.is_negative() || &ml * &ml <= s2);
+            }
+        }
+    }
+
+    // Forward FFT against the exact DFT: at n = 4 every twiddle is 0 or ±1,
+    // so X[k] = Σ xⱼ·(−i)^(jk) is exact rational arithmetic. The roundtrip
+    // property cannot see a wrong-but-invertible transform (and cancels
+    // twiddle bias) — this can. Bin 1 of [0,1,0,−1] was a confirmed break.
+    #[test]
+    fn forward_fft_encloses_the_exact_dft(
+        v in prop::collection::vec((-99i64..100, 1i64..10), 4..=4),
+    ) {
+        let vr = rats(&v);
+        // (−i)^m: re/im lookup for m mod 4 → (1,0), (0,−1), (−1,0), (0,1)
+        let tw_re = [1i64, 0, -1, 0];
+        let tw_im = [0i64, -1, 0, 1];
+        for digits in [None, Some(8)] {
+            let s = signal::pack(&exprs(&vr), digits).unwrap();
+            let (fre, fim) = signal::fft(&s, None, false).unwrap();
+            for k in 0..4 {
+                let mut xre = BigRational::from_integer(BigInt::from(0));
+                let mut xim = BigRational::from_integer(BigInt::from(0));
+                for (j, x) in vr.iter().enumerate() {
+                    let m = (j * k) % 4;
+                    xre += x * BigRational::from_integer(BigInt::from(tw_re[m]));
+                    xim += x * BigRational::from_integer(BigInt::from(tw_im[m]));
+                }
+                prop_assert!(
+                    endpoint(&fre, k, false) <= xre && xre <= endpoint(&fre, k, true),
+                    "re X[{}] = {} escaped", k, xre
+                );
+                prop_assert!(
+                    endpoint(&fim, k, false) <= xim && xim <= endpoint(&fim, k, true),
+                    "im X[{}] = {} escaped", k, xim
+                );
+            }
+        }
+    }
 }

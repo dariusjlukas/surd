@@ -23,8 +23,8 @@
 //! is an error by design.
 
 use crate::expr::{
-    bf_lt, bf_strictly_neg, bf_strictly_pos, float_to_rational, numeric_value, with_consts,
-    BigRational, Expr,
+    bf_from_f64_exact, bf_lt, bf_strictly_neg, bf_strictly_pos, float_to_rational, numeric_value,
+    with_consts, BigRational, Expr,
 };
 use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
@@ -336,10 +336,20 @@ fn f64_unary(name: &str, a: (f64, f64)) -> Result<(f64, f64), String> {
             iv_around(a.0.ln(), a.1.ln(), LIBM_ULPS)
         }
         "sin" | "cos" => {
-            let width = a.1 - a.0;
+            // The Lipschitz slack (width, at the argument's scale) and the
+            // libm error (ulps of sin(a.0), at the result's scale) are
+            // different magnitudes; widening their round-to-nearest SUM at
+            // its own — possibly cancelled-to-tiny — scale covers neither
+            // (confirmed containment break for intervals near π). Widen each
+            // contribution at its own scale, plus 1 ulp for the final add.
+            // next_up on the width covers its round-to-nearest underestimate.
+            let width = (a.1 - a.0).next_up();
             let v = if name == "sin" { a.0.sin() } else { a.0.cos() };
-            let enc = iv_around(v - width, v + width, LIBM_ULPS)?;
-            Ok((enc.0.max(-1.0), enc.1.min(1.0)))
+            let lo = (widen_down(v, LIBM_ULPS) - width).next_down();
+            let hi = (widen_up(v, LIBM_ULPS) + width).next_up();
+            // The clamp keeps a huge-width interval finite; [-1, 1] is
+            // always a sound enclosure for sin/cos.
+            Ok((lo.max(-1.0), hi.min(1.0)))
         }
         "tan" => {
             let s = f64_unary("sin", a)?;
@@ -468,7 +478,17 @@ fn big_unary(
             };
             big_check(lo, a.1.sqrt(p, UP))
         }
-        "exp" => big_check(a.0.exp(p, DOWN, cc), a.1.exp(p, UP, cc)),
+        "exp" => {
+            // astro-float flushes exp underflow to exact +0 even rounding
+            // Up; a zero upper bound sits BELOW the strictly positive true
+            // value. Substitute the smallest representable positive (a
+            // flushed lower bound of 0 is already sound).
+            let mut hi = a.1.exp(p, UP, cc);
+            if hi.is_zero() {
+                hi = BigFloat::min_positive(p);
+            }
+            big_check(a.0.exp(p, DOWN, cc), hi)
+        }
         "ln" => {
             if !bf_strictly_pos(a.0) {
                 return Err("ln of a sample interval reaching zero or below".into());
@@ -619,7 +639,8 @@ pub fn midpoint(s: &SignalData, i: usize) -> Expr {
     match s {
         SignalData::F64 { lo, hi } => {
             let m = lo[i] / 2.0 + hi[i] / 2.0;
-            Expr::Float(BigFloat::from_f64(m, 64), 17)
+            // bf_from_f64_exact, not from_f64: astro-float halves subnormals.
+            Expr::Float(bf_from_f64_exact(m, 64), 17)
         }
         SignalData::Big { lo, hi, digits } => {
             let p = prec_bits(*digits);
@@ -646,11 +667,15 @@ pub fn mid_matrix(s: &SignalData) -> Expr {
 fn deviation_f64(s: &SignalData, i: usize) -> f64 {
     match s {
         SignalData::F64 { lo, hi } => {
-            // A point interval has an exact midpoint: deviation exactly 0.
-            if lo[i] == hi[i] {
+            let m = lo[i] / 2.0 + hi[i] / 2.0;
+            // Deviation is exactly 0 only when the computed midpoint lands
+            // exactly on a point interval — `lo == hi` alone is NOT enough:
+            // `lo/2 + hi/2` is inexact for odd subnormals (3·2⁻¹⁰⁷⁴ has
+            // midpoint 4·2⁻¹⁰⁷⁴), leaving a real |mid − true| gap that a
+            // "0 (exact)" bound would deny.
+            if m == lo[i] && m == hi[i] {
                 return 0.0;
             }
-            let m = lo[i] / 2.0 + hi[i] / 2.0;
             widen_up((m - lo[i]).max(hi[i] - m).max(0.0), 1)
         }
         SignalData::Big { lo, hi, digits } => {
@@ -667,8 +692,17 @@ fn deviation_f64(s: &SignalData, i: usize) -> f64 {
             // Display approximation only — the rigorous bound is `d`.
             big_to_f64_upper(&d)
         }
-        // The wider of the two components' deviations bounds |z − mid|.
-        SignalData::Complex { re, im } => deviation_f64(re, i).max(deviation_f64(im, i)),
+        // With component deviations dr, di the modulus deviation reaches
+        // √(dr² + di²) ≤ √2·max(dr, di) — the max alone understates it by up
+        // to √2 (re, im each within d of mid puts z up to d·√2 away).
+        SignalData::Complex { re, im } => {
+            let d = deviation_f64(re, i).max(deviation_f64(im, i));
+            if d == 0.0 {
+                0.0 // both components exact ⇒ z is exactly mid
+            } else {
+                widen_up(d * std::f64::consts::SQRT_2.next_up(), 1)
+            }
+        }
     }
 }
 
@@ -694,7 +728,9 @@ pub fn half_width(s: &SignalData, i: Option<usize>) -> Expr {
         Some(i) => deviation_f64(s, i),
         None => max_half_width_f64(s),
     };
-    Expr::Float(BigFloat::from_f64(hw, 64), 3)
+    // bf_from_f64_exact, not from_f64: astro-float halves subnormals, which
+    // would report a certified bound at HALF its true value.
+    Expr::Float(bf_from_f64_exact(hw, 64), 3)
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,12 +1128,24 @@ fn fft_f64(
     while len <= n {
         let half = len / 2;
         for k in 0..half {
-            // Twiddle e^(∓2πi·k/len), widened for libm slack.
-            let theta = 2.0 * std::f64::consts::PI * (k as f64) / (len as f64);
-            let (c, s) = (theta.cos(), theta.sin());
-            let s = if inverse { s } else { -s };
-            let w_re = (widen_down(c, LIBM_ULPS), widen_up(c, LIBM_ULPS));
-            let w_im = (widen_down(s, LIBM_ULPS), widen_up(s, LIBM_ULPS));
+            // Twiddle e^(∓2πi·k/len). Widening a *point* twiddle by ulps of
+            // the function value is unsound where cos/sin ≈ 0 — the angle
+            // error (π's ½ ulp) is absolute, not relative (confirmed
+            // containment break at n = 4, bin 1). Instead: k/len is dyadic,
+            // hence exact in f64; enclose the angle 2π·(k/len) as an
+            // interval and take cos/sin of the interval via the Lipschitz
+            // kernel, exactly as fft_big and window() do.
+            let (w_re, w_im) = if k == 0 {
+                ((1.0, 1.0), (0.0, 0.0)) // e^0 exactly
+            } else {
+                let frac = (k as f64) / (len as f64); // exact: len is 2^m
+                let t_lo = ((2.0 * std::f64::consts::PI.next_down()) * frac).next_down();
+                let t_hi = ((2.0 * std::f64::consts::PI.next_up()) * frac).next_up();
+                let c = f64_unary("cos", (t_lo, t_hi))?;
+                let s = f64_unary("sin", (t_lo, t_hi))?;
+                let s = if inverse { s } else { (-s.1, -s.0) };
+                (c, s)
+            };
             let mut i = k;
             while i < n {
                 let j = i + half;
@@ -1257,7 +1305,7 @@ pub fn peak(s: &SignalData) -> Result<Expr, String> {
                 .zip(hi)
                 .map(|(l, h)| l.abs().max(h.abs()))
                 .fold(0.0, f64::max);
-            Ok(Expr::Float(BigFloat::from_f64(v, 64), 17))
+            Ok(Expr::Float(bf_from_f64_exact(v, 64), 17))
         }
         SignalData::Big { lo, hi, digits } => {
             let p = prec_bits(*digits);
@@ -1293,7 +1341,7 @@ pub fn rms(s: &SignalData) -> Result<Expr, String> {
             }
             let n = hi.len() as f64;
             let upper = widen_up((acc.1 / n).sqrt(), 2);
-            Ok(Expr::Float(BigFloat::from_f64(upper, 64), 17))
+            Ok(Expr::Float(bf_from_f64_exact(upper, 64), 17))
         }
         SignalData::Big { hi, digits, .. } => {
             let p = prec_bits(*digits);
@@ -1303,6 +1351,9 @@ pub fn rms(s: &SignalData) -> Result<Expr, String> {
             }
             let n = BigFloat::from_i64(hi.len() as i64, p);
             let upper = acc.div(&n, p, UP).sqrt(p, UP);
+            // The accumulation above never passes through big_check; a
+            // silent Inf/NaN must not escape as a "certified" bound.
+            let (_, upper) = big_check(BigFloat::from_i64(0, p), upper)?;
             Ok(Expr::Float(upper, *digits))
         }
         // `s` is real here (complex handled above), so `s*s` is real too.

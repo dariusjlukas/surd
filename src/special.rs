@@ -30,7 +30,8 @@ fn fi(i: i64, p: usize) -> BigFloat {
 
 #[inline]
 fn ff(f: f64, p: usize) -> BigFloat {
-    BigFloat::from_f64(f, p)
+    // Exact decode: astro-float's own from_f64 halves subnormal inputs.
+    crate::expr::bf_from_f64_exact(f, p)
 }
 
 #[inline]

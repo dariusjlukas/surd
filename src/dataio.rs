@@ -63,7 +63,11 @@ pub fn export_variables(vars: &[(&str, &Expr)]) -> Result<String, String> {
 /// columns) come back as a struct of those members; anonymous data (a bare
 /// JSON array / scalar, a headerless CSV) comes back as the value itself.
 pub fn import(text: &str) -> Result<Expr, String> {
-    let t = text.trim_start_matches('\u{feff}').trim_start();
+    // Strip a UTF-8 BOM (Excel's "CSV UTF-8" writes one) from the text that
+    // is actually PARSED, not just from a sniffing copy: a BOM'd headerless
+    // CSV used to have its first data row silently consumed as a header.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let t = text.trim_start();
     if t.starts_with('{') || t.starts_with('[') {
         let v: Value = serde_json::from_str(t).map_err(|e| format!("invalid JSON: {}", e))?;
         if let Value::Object(map) = &v {
@@ -198,7 +202,14 @@ fn encode(e: &Expr) -> Result<Value, String> {
         Expr::Float(bf, digits) => {
             let r = float_to_rational(bf)
                 .ok_or_else(|| "cannot export a non-finite float".to_string())?;
-            let dec = rat_to_decimal(&r).expect("a binary float is always a terminating decimal");
+            // A binary float always terminates in decimal, but rat_to_decimal
+            // caps the digit count — N(10^(-200000)) would exceed it, and an
+            // expect() here took down the whole (wasm) session.
+            let dec = rat_to_decimal(&r).ok_or_else(|| {
+                "cannot export: this float's exact decimal form is too long \
+                 (over 100000 digits)"
+                    .to_string()
+            })?;
             json!({ "t": "float", "v": dec, "digits": digits })
         }
         Expr::Const(Constant::Pi) => json!({ "t": "const", "v": "pi" }),
@@ -774,7 +785,10 @@ pub(crate) fn decimal_to_rat(s: &str) -> Result<BigRational, String> {
     {
         return Err(bad());
     }
-    let scale = exp - frac_part.len() as i64;
+    // checked: `1.5e-9223372036854775808` would overflow the subtraction.
+    let scale = exp
+        .checked_sub(frac_part.len() as i64)
+        .ok_or_else(|| format!("number '{}' is too large to represent", s))?;
     if int_part.len() + frac_part.len() > MAX_DECIMAL_DIGITS
         || scale.unsigned_abs() > MAX_DECIMAL_DIGITS as u64
     {
@@ -1370,19 +1384,35 @@ pub fn export_raw(value: &Expr, format: &str) -> Result<Vec<u8>, String> {
         _ => {}
     }
     let mut out = Vec::new();
-    let mut push = |v: f64| {
+    let mut push = |v: f64| -> Result<(), String> {
         if narrow {
-            out.extend_from_slice(&(v as f32).to_le_bytes());
+            let n = v as f32;
+            // Casting past f32 range yields ±Inf — bytes that import (here
+            // or anywhere else) then rejects. Refuse loudly instead of
+            // writing a corrupt file.
+            if n.is_infinite() && v.is_finite() {
+                return Err(format!(
+                    "value {v:e} does not fit in f32 — export as f64 instead"
+                ));
+            }
+            out.extend_from_slice(&n.to_le_bytes());
         } else {
             out.extend_from_slice(&v.to_le_bytes());
         }
+        Ok(())
     };
     match im {
-        None => re.iter().for_each(|v| push(*v)),
-        Some(imv) => re.iter().zip(&imv).for_each(|(r, m)| {
-            push(*r);
-            push(*m);
-        }),
+        None => {
+            for v in &re {
+                push(*v)?;
+            }
+        }
+        Some(imv) => {
+            for (r, m) in re.iter().zip(&imv) {
+                push(*r)?;
+                push(*m)?;
+            }
+        }
     }
     Ok(out)
 }
@@ -1437,6 +1467,9 @@ fn gather_streams(e: &Expr) -> Result<(Vec<f64>, Option<Vec<f64>>), String> {
 /// exact points; other decimals as certified ±1-ulp enclosures around the
 /// correctly-rounded parse (Rust's float parsing is correctly rounded).
 pub fn import_csv_packed(text: &str) -> Result<Expr, String> {
+    // Same BOM rule as `import`: strip before parsing, or the first cell of
+    // a headerless file reads as text and demotes the first row to a header.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
     let first = *lines.peek().ok_or("the CSV file is empty")?;
     let cells = |l: &str| {
