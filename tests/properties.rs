@@ -693,3 +693,31 @@ proptest! {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Certified IIR: Schur–Cohn agrees with the closed-form biquad triangle
+// ---------------------------------------------------------------------------
+
+proptest! {
+    // Monic z² + a1·z + a2 is strictly stable iff |a2| < 1 and |a1| < 1 + a2
+    // (the stability triangle) — an independent closed form to test the
+    // step-down recursion against, exactly, over rationals.
+    #[test]
+    fn schur_cohn_agrees_with_the_stability_triangle(
+        a1 in (-40i64..41, 1i64..8),
+        a2 in (-40i64..41, 1i64..8),
+    ) {
+        let a1 = BigRational::new(BigInt::from(a1.0), BigInt::from(a1.1));
+        let a2 = BigRational::new(BigInt::from(a2.0), BigInt::from(a2.1));
+        let one = BigRational::from_integer(BigInt::from(1));
+        let triangle = a2.clone().abs() < one && a1.clone().abs() < &one + &a2;
+        // Skip exact boundary cases: dsp.stable answers false there (not
+        // strictly stable), while a strict triangle can't distinguish
+        // |a2| == 1 from |a1| == 1 + a2; both mean "false" anyway.
+        let got = ev(&format!(
+            "dsp.stable([1, {}/{}, {}/{}])",
+            a1.numer(), a1.denom(), a2.numer(), a2.denom()
+        ));
+        prop_assert_eq!(got, if triangle { "true" } else { "false" });
+    }
+}

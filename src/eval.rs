@@ -1609,6 +1609,22 @@ fn value_eq(x: &Expr, y: &Expr) -> bool {
             if x == y {
                 return true;
             }
+            // Matrices and complex values compare componentwise, so exact
+            // algebraic equality reaches inside them (a frequency-response
+            // vector equal to [1] entry-by-entry IS equal).
+            match (x, y) {
+                (Expr::Matrix(a), Expr::Matrix(b)) => {
+                    return a.len() == b.len()
+                        && a.iter().zip(b).all(|(ra, rb)| {
+                            ra.len() == rb.len()
+                                && ra.iter().zip(rb).all(|(ea, eb)| value_eq(ea, eb))
+                        });
+                }
+                (Expr::Complex(ar, ai), Expr::Complex(br, bi)) => {
+                    return value_eq(ar, br) && value_eq(ai, bi);
+                }
+                _ => {}
+            }
             if let (Some(a), Some(b)) = (
                 crate::algebraic::from_expr(x),
                 crate::algebraic::from_expr(y),

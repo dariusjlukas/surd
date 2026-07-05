@@ -115,6 +115,9 @@ Circular (periodic) convolution of two equal-length vectors:
 
 ## `dsp.freqz`
 
+Also accepts IIR forms: `dsp.freqz(b, a, w)` for a rational response
+B/A, and `dsp.freqz(f, w)` with a filter struct (the SOS cascade).
+
 ```
 dsp.freqz(h, w)
 ```
@@ -264,3 +267,86 @@ interval around 0, not the exact `0` of `dsp.hann(4)`:
 points — this is the honest path.) Tapering a frame before an FFT is then one
 line — `slice(clip.ch1, 1, 4096) .* dsp.window(hann, 4096)` — with the
 window's enclosures carried into `dsp.fft` of the result.
+
+## `dsp.butter`
+
+```
+dsp.butter(n, wc)
+dsp.butter(n, wc, highpass)
+```
+
+Order-`n` Butterworth lowpass (or highpass) with cutoff `wc`
+(radians/sample, 0 < wc < π), designed by the bilinear transform with exact
+prewarp K = tan(wc/2). Everything stays exact: the prototype pole constants
+are sines of rational multiples of π, and the bilinear map is rational.
+Returns `struct(sos, order, kind)` where `sos` is a ⌈n/2⌉×6 matrix of
+second-order sections `[b0 b1 b2 1 a1 a2]` (an odd order's first-order
+section is zero-padded).
+
+```text
+>> f = dsp.butter(2, pi/2)
+>> f.sos
+[ (2 + sqrt(2))^(-1)  2*(2 + sqrt(2))^(-1)  (2 + sqrt(2))^(-1)  1  0  (2 + sqrt(2))^(-1)*(2 - sqrt(2)) ]
+>> dsp.freqz(f, [0]) == [1]        # exact unity DC gain, proven
+true
+>> N(abs(dsp.freqz(f, [pi/2])[1])^2, 20)
+0.5                                # the half-power point, exactly at wc
+```
+
+Deploy with `N(f.sos)` (floats) or `dsp.quantize(N(f.sos), bits)`
+(fixed-point) — and then *prove the deployed filter stable* with
+`dsp.stable`.
+
+## `dsp.stable`
+
+```
+dsp.stable(f)          # filter struct
+dsp.stable(sos)        # m×6 SOS matrix
+dsp.stable(a)          # denominator coefficients [a0, a1, ..., an]
+```
+
+Certified strict stability: `true` exactly when every pole lies strictly
+inside the unit circle, decided by the exact Schur–Cohn (reflection
+coefficient) recursion — no complex root-finding, no floating point, just a
+chain of certified sign decisions. A pole exactly *on* the circle answers
+`false` (marginally stable is not stable). Because the test is exact on any
+rational coefficients, it applies to the coefficients you actually deploy:
+
+```text
+>> dsp.stable(dsp.quantize(N(dsp.butter(6, 2/5*pi).sos), 15))
+true                               # the 15-bit fixed-point filter, proven
+>> dsp.stable([1, -3, 1])          # roots (3±sqrt(5))/2
+false
+>> dsp.stable([1, 0, 1/sqrt(2)])   # symbolic constants work too
+true
+```
+
+## `dsp.filter`
+
+```
+dsp.filter(b, a, x)
+dsp.filter(f, x)       # filter struct: SOS sections in cascade
+```
+
+Exact recursive filtering of a vector (zero initial state):
+y[i] = (Σ bₖ·x[i−k] − Σ aₖ·y[i−k]) / a0. Rational in, rational out.
+
+Bulk `signal(...)` data is refused on purpose: certified interval
+arithmetic diverges through IIR feedback (widths grow geometrically even
+for stable filters), and a blown-up enclosure presented as "certified"
+would be worse than the honest error. Filter an exact stretch of interest
+(`slice`), or use FIR taps with `dsp.conv`.
+
+## `dsp.impz`
+
+```
+dsp.impz(f, n)
+dsp.impz(b, a, n)
+```
+
+The first `n` samples of the impulse response, exactly.
+
+```text
+>> dsp.impz([1], [1, -1/2], 5)
+[ 1  1/2  1/4  1/8  1/16 ]
+```

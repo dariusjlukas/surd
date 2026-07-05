@@ -291,9 +291,29 @@ const NAMESPACES: Namespace[] = [
         doc: 'Windowed-sinc lowpass prototype, cutoff wc rad/sample.',
       },
       {
+        name: 'butter',
+        params: ['n', 'wc', 'kind?'],
+        doc: 'Exact Butterworth design (bilinear, prewarped) → struct(sos, order, kind); kind is lowpass (default) or highpass.',
+      },
+      {
+        name: 'filter',
+        params: ['b', 'a', 'x'],
+        doc: 'Exact recursive (IIR) filtering of a vector; also filter(f, x) with a filter struct (SOS cascade).',
+      },
+      {
         name: 'freqz',
         params: ['h', 'w'],
-        doc: 'FIR frequency response at the frequencies in w.',
+        doc: 'Frequency response at the frequencies in w: FIR taps, freqz(b, a, w), or freqz(f, w) with a filter struct.',
+      },
+      {
+        name: 'impz',
+        params: ['f', 'n'],
+        doc: 'First n samples of the impulse response, exactly; also impz(b, a, n).',
+      },
+      {
+        name: 'stable',
+        params: ['f'],
+        doc: 'Certified strict stability (all poles inside the unit circle) — exact Schur–Cohn; takes a filter, SOS matrix, or denominator coefficients.',
       },
       { name: 'hamming', params: ['n'], doc: 'Hamming window (27/50, 23/50).' },
       {

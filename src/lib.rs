@@ -22,6 +22,7 @@ pub mod dsp;
 pub mod eval;
 pub mod expr;
 pub mod f64eval;
+pub mod iir;
 pub mod interval;
 pub mod latex;
 pub mod lexer;

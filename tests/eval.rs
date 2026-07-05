@@ -2122,3 +2122,76 @@ fn trig_of_rational_pi_is_algebraic() {
     // Not every constant is algebraic: transcendental ties still refuse.
     assert!(ev("exp(1) <= e").contains("may be equal"));
 }
+
+// ---------------------------------------------------------------------------
+// Certified IIR: dsp.butter, dsp.stable, dsp.filter, dsp.impz
+// ---------------------------------------------------------------------------
+
+#[test]
+fn butterworth_designs_are_exact_and_provably_stable() {
+    // The classic n = 2, ωc = π/2 design: K = tan(π/4) = 1 folds everything
+    // to ℚ(√2) — a2 = (2−√2)/(2+√2), a1 = 0.
+    let sos = ev("dsp.butter(2, pi/2).sos");
+    assert!(sos.contains("sqrt(2)"), "got: {sos}");
+    // Exact unity DC gain (lowpass) and Nyquist gain (highpass), proven.
+    assert_eq!(ev("dsp.freqz(dsp.butter(2, pi/2), [0]) == [1]"), "true");
+    assert_eq!(ev("dsp.freqz(dsp.butter(3, pi/2), [0]) == [1]"), "true");
+    assert_eq!(
+        ev("dsp.freqz(dsp.butter(3, pi/2, highpass), [pi]) == [1]"),
+        "true"
+    );
+    assert_eq!(ev("dsp.freqz(dsp.butter(4, pi/2), [pi]) == [0]"), "true");
+    // Half-power at the cutoff: |H(ωc)|² = 1/2, to 20 digits.
+    assert_eq!(
+        ev("N(abs(dsp.freqz(dsp.butter(2, 2/5*pi), [2/5*pi])[1])^2, 20)"),
+        "0.5"
+    );
+    // Every design is certified stable — including off-grid cutoffs.
+    for src in [
+        "dsp.stable(dsp.butter(1, 2/5*pi))",
+        "dsp.stable(dsp.butter(4, 2/5*pi))",
+        "dsp.stable(dsp.butter(5, pi/3, highpass))",
+    ] {
+        assert_eq!(ev(src), "true", "{src}");
+    }
+    // Domain and argument validation.
+    assert!(ev("dsp.butter(2, 4)").contains("outside (0, π)"));
+    assert!(ev("dsp.butter(2, x)").starts_with("error:"));
+}
+
+#[test]
+fn stability_is_decided_exactly_including_quantized_coefficients() {
+    // Unstable: z² − 3z + 1 has roots (3±√5)/2 — product exactly 1.
+    assert_eq!(ev("dsp.stable([1, -3, 1])"), "false");
+    // A double pole exactly ON the circle is not strictly stable.
+    assert_eq!(ev("dsp.stable([1, -2, 1])"), "false");
+    // Higher-degree, stable: (z² − z/2)(z² + 1/4) expanded.
+    assert_eq!(ev("dsp.stable([1, -1/2, 1/4, -1/8, 0])"), "true");
+    // THE headline: the fixed-point-quantized coefficients you would deploy
+    // are themselves provably stable — not the ideal design, the real one.
+    assert_eq!(
+        ev("dsp.stable(dsp.quantize(N(dsp.butter(6, 2/5*pi).sos), 15))"),
+        "true"
+    );
+    // Symbolic-constant coefficients work too (certified sign decisions).
+    assert_eq!(ev("dsp.stable([1, 0, 1/sqrt(2)])"), "true");
+    assert_eq!(ev("dsp.stable([1, 0, sqrt(2)])"), "false");
+}
+
+#[test]
+fn exact_recursive_filtering_and_impulse_response() {
+    // y[n] = x[n] + y[n−1]/2: geometric impulse response, exact.
+    assert_eq!(
+        ev("dsp.impz([1], [1, -1/2], 5)"),
+        "[ 1  1/2  1/4  1/8  1/16 ]"
+    );
+    // filter(f, x) runs the SOS cascade; a two-section identity filter
+    // (b = a) passes the input through unchanged.
+    assert_eq!(
+        ev("dsp.filter([1, 1/3, 0, 1, 1/3, 0; 1, -1/4, 0, 1, -1/4, 0], [5, 7, -2])"),
+        "[ 5  7  -2 ]"
+    );
+    // Bulk signals are refused with the reason.
+    let msg = ev("dsp.filter([1], [1, -1/2], signal([1; 0; 0]))");
+    assert!(msg.contains("diverges"), "got: {msg}");
+}

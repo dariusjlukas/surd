@@ -31,6 +31,10 @@ pub const FUNCTIONS: &[&str] = &[
     "blackman",
     "window",
     "quantize",
+    "butter",
+    "stable",
+    "filter",
+    "impz",
     "fft",
     "ifft",
     "pad",
@@ -113,6 +117,10 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "hamming" => window("dsp.hamming", args, (27, 50), (23, 50), (0, 1)),
         "blackman" => window("dsp.blackman", args, (21, 50), (1, 2), (2, 25)),
         "quantize" => quantize(args),
+        "butter" => crate::iir::butter(args),
+        "stable" => crate::iir::stable(args),
+        "filter" => crate::iir::filter(args),
+        "impz" => crate::iir::impz(args),
         _ => Err(format!(
             "unknown function 'dsp.{}' (available: dsp.{})",
             name,
@@ -218,6 +226,26 @@ fn convolution(name: &str, args: Vec<Expr>, circular: bool) -> Result<Expr, Stri
 /// `linspace(0, pi, 9)` does — and exact-symbolic elsewhere, with `N(...)`
 /// finishing the job.
 fn freqz(args: Vec<Expr>) -> Result<Expr, String> {
+    // IIR forms: freqz(f, w) with a filter struct, freqz(b, a, w) rational.
+    if args.len() == 2 && matches!(&args[0], Expr::Struct(_)) {
+        let sections = crate::iir::sos_sections("dsp.freqz", &args[0])?;
+        let (w, shape) = as_vector("dsp.freqz", &args[1])?;
+        check_ops("dsp.freqz", w.len().saturating_mul(6 * sections.len()))?;
+        return Ok(from_vector(
+            crate::iir::freqz_rational(&sections, &w)?,
+            shape,
+        ));
+    }
+    if args.len() == 3 {
+        let (b, _) = as_vector("dsp.freqz", &args[0])?;
+        let (a, _) = as_vector("dsp.freqz", &args[1])?;
+        let (w, shape) = as_vector("dsp.freqz", &args[2])?;
+        check_ops("dsp.freqz", w.len().saturating_mul(b.len() + a.len()))?;
+        return Ok(from_vector(
+            crate::iir::freqz_rational(&[(b, a)], &w)?,
+            shape,
+        ));
+    }
     arity("dsp.freqz", &args, 2)?;
     let (h, _) = as_vector("dsp.freqz", &args[0])?;
     let (w, shape) = as_vector("dsp.freqz", &args[1])?;
@@ -428,12 +456,12 @@ fn remez_design(args: Vec<Expr>) -> Result<Expr, String> {
 // -- argument plumbing -------------------------------------------------------
 
 /// A vector argument is a 1×n or n×1 matrix; results keep its orientation.
-enum Shape {
+pub(crate) enum Shape {
     Row,
     Col,
 }
 
-fn as_vector(name: &str, e: &Expr) -> Result<(Vec<Expr>, Shape), String> {
+pub(crate) fn as_vector(name: &str, e: &Expr) -> Result<(Vec<Expr>, Shape), String> {
     let Expr::Matrix(rows) = e else {
         return Err(format!("{} expects a vector (a 1×n or n×1 matrix)", name));
     };
@@ -451,14 +479,14 @@ fn as_vector(name: &str, e: &Expr) -> Result<(Vec<Expr>, Shape), String> {
     }
 }
 
-fn from_vector(entries: Vec<Expr>, shape: Shape) -> Expr {
+pub(crate) fn from_vector(entries: Vec<Expr>, shape: Shape) -> Expr {
     match shape {
         Shape::Row => Expr::Matrix(vec![entries]),
         Shape::Col => Expr::Matrix(entries.into_iter().map(|e| vec![e]).collect()),
     }
 }
 
-fn as_size(name: &str, e: &Expr) -> Result<usize, String> {
+pub(crate) fn as_size(name: &str, e: &Expr) -> Result<usize, String> {
     numeric_value(e)
         .filter(|r| r.is_integer())
         .and_then(|r| r.to_integer().to_usize())
