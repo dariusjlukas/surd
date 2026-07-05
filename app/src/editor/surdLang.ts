@@ -200,6 +200,11 @@ const BUILTINS: Builtin[] = [
   { name: 'rank', params: ['M'], doc: 'Rank of a matrix.' },
   { name: 're', params: ['z'], doc: 'Real part (alias of real).' },
   { name: 'real', params: ['z'], doc: 'Real part.' },
+  {
+    name: 'root',
+    params: ['p', 'k'],
+    doc: 'The k-th real root (ascending, 1-based) of a polynomial — exact, even without a radical form: root(x^5 - x - 1, 1).',
+  },
   { name: 'rref', params: ['M'], doc: 'Reduced row echelon form.' },
   { name: 'sin', params: ['x'], doc: 'Sine.' },
   {

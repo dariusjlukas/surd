@@ -569,10 +569,21 @@ error: expected a true/false condition, got 'x'
 >> x < 4
 error: cannot order 'x' and '4'; both must be constant real values (a free
 symbol has no fixed value — try subs(...) or N(...))
->> (sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)     # exactly equal: refuses, never lies
-error: cannot order '(sqrt(2) + sqrt(3))^2' and '5 + 2*sqrt(6)': they agree
-to at least 2466 significant digits — the values may be equal
+>> (sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)     # exactly equal — proven, not guessed
+false
+>> (sqrt(2)+sqrt(3))^2 == 5 + 2*sqrt(6)
+true
+>> exp(1) <= e                             # transcendental tie: refuses, never lies
+error: cannot order 'exp(1)' and 'e': they agree to at least 2466
+significant digits — the values may be equal
 ```
+
+When interval refinement can't separate two constants, the real-algebraic
+engine (defining polynomial + isolating interval) decides equality *exactly*
+for anything built from rationals, radicals, `root(p, k)` values — including
+quintic roots with no radical form — and trig of rational multiples of π:
+`8*cos(pi/7)^3 - 4*cos(pi/7)^2 - 4*cos(pi/7) + 1 == 0` is `true`. Only
+genuinely transcendental ties still refuse.
 
 Floats *do* compare, and exactly: a binary float is the rational m·2^k, so a
 float-vs-exact comparison is decided losslessly on that value — never by
@@ -707,10 +718,6 @@ immediately earned its keep, finding that `(11/5)^x` printed as `11/5^x`
 
 These were scoped out on purpose; they're where an exact CAS balloons.
 
-- **Real algebraic numbers** (poly + isolating interval) for exact roots beyond
-  perfect powers, and for *proving equality* of constants — interval refinement
-  (shipped) certifies any strict ordering, but can never prove two
-  different-looking constants equal. See `calcium`/`arb` for prior art.
 - **The assumptions system** (is `x > 0`? integer?) — wants an SMT backend (Z3).
 - **Conditionals on symbolic predicates / piecewise results.** Control flow is
   in, and (by design) requires a *decidable* boolean — symbolic/undecidable

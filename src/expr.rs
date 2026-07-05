@@ -1397,6 +1397,20 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
             let exp = to_bigfloat(ex, p, cc)?;
             Ok(base.pow(&exp, p, ROUND, cc))
         }
+        // A real algebraic root value: refine its isolating interval until
+        // the midpoint carries the requested precision. NOTE: we are inside
+        // with_consts here — parse through the provided `cc`, never through
+        // rat_to_bigfloat (which re-borrows the consts cell and panics).
+        Expr::Func(name, args) if name == "root" && args.len() == 2 => {
+            let mut v = crate::algebraic::from_expr(e)
+                .ok_or_else(|| "cannot evaluate this root numerically".to_string())?;
+            crate::algebraic::refine_bits(&mut v, p);
+            let (lo, hi) = v.bounds();
+            let mid = (lo + hi) / BigRational::from_integer(BigInt::from(2));
+            let n = BigFloat::parse(&mid.numer().to_string(), RADIX, p, ROUND, cc);
+            let d = BigFloat::parse(&mid.denom().to_string(), RADIX, p, ROUND, cc);
+            Ok(n.div(&d, p, ROUND))
+        }
         // Special functions and statistical distributions (erf, gamma,
         // normcdf, tcdf, …) evaluate through their own arbitrary-precision
         // module. Their arguments are ordinary numbers, evaluated here first.

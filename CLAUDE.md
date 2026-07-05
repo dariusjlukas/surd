@@ -50,6 +50,24 @@ verify every exponent inside is provably real, or refuse.
 **src/special.rs is approximate, not certified.** Never present its output
 (p-values, gamma/beta) as exact/certified; keep it symbolic until `N()`.
 
+**src/algebraic.rs (real algebraic numbers) invariants:**
+- Sturm-chain reductions must preserve signs: use `content_reduced` (divide
+  by positive content only), NEVER `primitive()` (it flips negative leading
+  coefficients and silently breaks the variation count — a shipped bug
+  caught by the chain's own unit test).
+- No minimal polynomials, by design: equality is the gcd common-root test
+  over intersected isolating intervals. Sums/products multiply defining
+  degrees; the MAX_DEG/MAX_BITS_COEFF caps make constructors return `None`,
+  which callers must turn into the honest "may be equal" refusal.
+- Powers go through the single resultant `Res_x(p(x), y − xⁿ)` (degree
+  preserved), never repeated multiplication (degree explodes as degⁿ).
+- π and e are transcendental: `from_expr` must keep returning `None` for
+  them — an "algebraic" representation of either would be a lie.
+
+**Never call a `with_consts`-using helper (e.g. `rat_to_bigfloat`) from
+inside a `with_consts` closure** — the RefCell re-borrow panics at runtime
+(`to_bigfloat` and `eval_iv` bodies run inside one; use the passed `cc`).
+
 ## Testing conventions
 
 - The gold standard is a **containment property test against an exact

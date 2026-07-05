@@ -650,3 +650,46 @@ proptest! {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Real algebraic numbers: exact-root recovery and radical identities
+// ---------------------------------------------------------------------------
+
+proptest! {
+    // ∏(x − rᵢ) has exactly the rᵢ as roots: root(p, i) must equal the i-th
+    // smallest, EXACTLY (decided by the algebraic engine through `==`).
+    #[test]
+    fn root_recovers_factored_polynomial_roots(
+        roots in prop::collection::btree_set(-20i64..21, 1..4),
+    ) {
+        let rs: Vec<i64> = roots.into_iter().collect(); // sorted, distinct
+        let poly = rs
+            .iter()
+            .map(|r| format!("(x - ({r}))"))
+            .collect::<Vec<_>>()
+            .join("*");
+        for (i, r) in rs.iter().enumerate() {
+            prop_assert_eq!(
+                ev(&format!("root(expand({poly}), {}) == {r}", i + 1)),
+                "true",
+                "root {} of {} should be {}", i + 1, poly, r
+            );
+        }
+    }
+
+    // (√a+√b)² = a + b + 2√(ab) for positive integers — structurally
+    // different once ab has square factors, so this exercises the exact
+    // algebraic equality path, not canonicalization.
+    #[test]
+    fn radical_square_identity_is_decided_exactly(a in 2i64..30, b in 2i64..30) {
+        prop_assert_eq!(
+            ev(&format!("(sqrt({a})+sqrt({b}))^2 == {a} + {b} + 2*sqrt({})", a * b)),
+            "true"
+        );
+        // And the strict inequality against a perturbed rhs is false-free:
+        prop_assert_eq!(
+            ev(&format!("(sqrt({a})+sqrt({b}))^2 < {a} + {b} + 2*sqrt({})", a * b)),
+            "false"
+        );
+    }
+}

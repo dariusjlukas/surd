@@ -978,12 +978,12 @@ fn symbol_comparisons_decide_only_what_holds_for_all_reals() {
 #[test]
 fn equal_constants_refuse_rather_than_guess() {
     // (√2+√3)² = 5+2√6 exactly, but not structurally: enclosures can never
-    // separate, so the comparison refuses instead of inventing an answer.
-    let msg = ev("(sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)");
-    assert!(
-        msg.starts_with("error:") && msg.contains("may be equal"),
-        "got: {msg}"
-    );
+    // separate — the ALGEBRAIC engine settles it (equal ⇒ `<` is false,
+    // `==`/`<=` true), where this once refused with "may be equal".
+    assert_eq!(ev("(sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)"), "false");
+    assert_eq!(ev("(sqrt(2)+sqrt(3))^2 <= 5 + 2*sqrt(6)"), "true");
+    assert_eq!(ev("(sqrt(2)+sqrt(3))^2 == 5 + 2*sqrt(6)"), "true");
+    // Transcendental ties are beyond algebra and still refuse honestly.
     let msg = ev("exp(1) < e");
     assert!(msg.contains("may be equal"), "got: {msg}");
     // Non-real and opaque values still refuse outright.
@@ -2070,4 +2070,55 @@ fn cross_validation_scores_out_of_sample() {
         ev("stats.cv([1; 2; 3; 4], [1; 2; 3; 4], 2, struct(model = ridge, lambda = -1))")
             .starts_with("error: stats.cv: the penalty lambda must be nonnegative")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Real algebraic numbers: root(p, k), exact equality, and ordering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn root_constructs_and_evaluates_real_algebraic_numbers() {
+    // Symbolic value, exact numeric refinement on demand.
+    assert_eq!(ev("root(x^3 - 2, 1)"), "root(-2 + x^3, 1)");
+    assert_eq!(
+        ev("N(root(x^3 - 2, 1), 30)"),
+        "1.25992104989487316476721060728"
+    );
+    // A quintic with no radical form at all — the whole point.
+    assert_eq!(ev("N(root(x^5 - x - 1, 1), 20)"), "1.1673039782614186843");
+    // Rational roots collapse to plain numbers when pinned.
+    assert_eq!(ev("root(2*x - 4, 1)"), "2");
+    // Validation is loud.
+    assert!(ev("root(x^2 + 1, 1)").contains("no real roots"));
+    assert!(ev("root(x^2 - 2, 3)").contains("out of range"));
+    assert!(ev("root(7, 1)").starts_with("error:"));
+    assert!(ev("root(x*y, 1)").starts_with("error:"));
+}
+
+#[test]
+fn algebraic_equality_decides_what_intervals_cannot() {
+    // Roots participate in exact arithmetic comparisons.
+    assert_eq!(ev("root(x^3 - 2, 1)^3 == 2"), "true");
+    assert_eq!(ev("root(x^2 - 2, 2) == sqrt(2)"), "true");
+    assert_eq!(ev("root(x^2 - 2, 1) + root(x^2 - 2, 2) == 0"), "true");
+    // Nested-radical identity: √(3+2√2) = 1+√2.
+    assert_eq!(ev("sqrt(3 + 2*sqrt(2)) == 1 + sqrt(2)"), "true");
+    // Ordering across representations, exact even for near-ties.
+    assert_eq!(ev("root(x^5 - x - 1, 1) > 1"), "true");
+    assert_eq!(ev("root(x^2 - 2, 2) < root(x^2 - 3, 2)"), "true");
+}
+
+#[test]
+fn trig_of_rational_pi_is_algebraic() {
+    // cos(π/7) has no surd form (cubic minimal polynomial) — but it is
+    // exactly the largest root of 8x³ − 4x² − 4x + 1, and satisfies it.
+    assert_eq!(
+        ev("8*cos(pi/7)^3 - 4*cos(pi/7)^2 - 4*cos(pi/7) + 1 == 0"),
+        "true"
+    );
+    assert_eq!(ev("cos(pi/7) == root(8*x^3 - 4*x^2 - 4*x + 1, 3)"), "true");
+    // tan²(π/5) = 5 − 2√5.
+    assert_eq!(ev("tan(pi/5)^2 == 5 - 2*sqrt(5)"), "true");
+    // Not every constant is algebraic: transcendental ties still refuse.
+    assert!(ev("exp(1) <= e").contains("may be equal"));
 }

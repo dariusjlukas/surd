@@ -14,6 +14,7 @@
 //! [`eval`] walks the AST in an environment and produces canonical [`expr::Expr`]
 //! values. All canonicalization lives in the smart constructors in [`expr`].
 
+pub mod algebraic;
 pub mod ast;
 pub mod data;
 pub mod dataio;

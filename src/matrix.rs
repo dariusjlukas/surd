@@ -881,7 +881,7 @@ pub fn eigenvalues(a: &Expr) -> Result<Expr, String> {
 
 /// Coefficients [c0, c1, …, cn] of a univariate rational polynomial, or `None`
 /// if `e` isn't a polynomial in `var` with rational coefficients.
-fn poly_coeffs(e: &Expr, var: &str) -> Option<Vec<BigRational>> {
+pub(crate) fn poly_coeffs(e: &Expr, var: &str) -> Option<Vec<BigRational>> {
     let terms: Vec<&Expr> = match e {
         Expr::Add(ts) => ts.iter().collect(),
         other => vec![other],

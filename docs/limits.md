@@ -19,7 +19,7 @@ or adversarial input turns into a clean error, never a crash:
 | `dsp.remez` | ≤ 127 taps; band edges snap inward ≤ 2⁻²⁴ rad |
 | Signal convolution | 2²⁸ pairwise products |
 | Bulk import size | 2²⁴ samples per file |
-| Comparison interval refinement | 8,192 bits (≈ 2,466 digits), then "may be equal" |
+| Comparison interval refinement | 8,192 bits (≈ 2,466 digits), then exact algebra for [algebraic values](reference/algebraic.md), then "may be equal" |
 | `plot` sampling | adaptive 601 → 4,801 points per curve; windows the cap can't resolve are labeled "undersampled", never silently aliased |
 | `plot3d` sampling grid | adaptive 81×81 → 641×641, same undersampled labeling |
 
@@ -33,9 +33,9 @@ These are design decisions, not gaps:
   value. Constant comparisons (`pi < 4`, `sqrt(2)+sqrt(3) > pi`) are decided
   by certified interval refinement — answered only when the enclosures
   provably separate, so never a guess. Equal-valued constants written
-  differently (`(sqrt(2)+sqrt(3))^2` vs `5+2*sqrt(6)`) refuse at the
-  refinement cap: *proving* equality needs real algebraic numbers
-  (deliberately deferred, below).
+  differently (`(sqrt(2)+sqrt(3))^2` vs `5+2*sqrt(6)`) are settled exactly
+  by the [algebraic engine](reference/algebraic.md); only transcendental
+  ties (`exp(1)` vs `e`) refuse at the refinement cap.
 - **`=` as a truth test** — `=` builds an equation; use `==` for decidable
   equality.
 - **Scientific notation** — `3e5` is rejected with a hint (`3*10^5`), rather
@@ -51,10 +51,6 @@ These are design decisions, not gaps:
 
 Scoped out of the prototype on purpose — this is where an exact CAS balloons:
 
-- **Real algebraic numbers** (polynomial + isolating interval) for exact
-  roots beyond perfect powers, and for *proving equality* of constants —
-  interval refinement (shipped) can certify any strict ordering, but can
-  never prove two different-looking constants equal.
 - **An assumptions system** (is `x > 0`? an integer?) — wants an SMT backend.
 - **Piecewise results / symbolic predicates** in conditionals.
 - **`return` / `break` / `continue`**, closures capturing locals, `print`.

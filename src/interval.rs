@@ -9,7 +9,8 @@
 //! reports "may be equal" rather than answering. The result is therefore
 //! never wrong, merely sometimes refused — proving two different-looking
 //! constants *equal* needs real algebraic numbers, which this deliberately
-//! is not.
+//! is not: that lives in `crate::algebraic`, and `eval::compare` falls back
+//! to it exactly when this module refuses.
 //!
 //! Trig enclosures use the 1-Lipschitz bound: sin([a,b]) ⊆ sin(a) ± (b−a),
 //! avoiding non-monotonic case analysis; tan goes through sin/cos with a
@@ -158,6 +159,25 @@ fn eval_iv(e: &Expr, p: usize, cc: &mut Consts) -> Option<Iv> {
             Some(acc)
         }
         Expr::Pow(b, ex) => pow_iv(b, ex, p, cc),
+        // An exact algebraic root: its isolating interval, refined to p
+        // bits, IS a certified enclosure — endpoints convert with directed
+        // rounding.
+        Expr::Func(name, args) if name == "root" && args.len() == 2 => {
+            let mut v = crate::algebraic::from_expr(e)?;
+            crate::algebraic::refine_bits(&mut v, p);
+            let (lo, hi) = v.bounds();
+            let lo = {
+                let n = exact_int(&lo.numer().to_string(), cc)?;
+                let d = exact_int(&lo.denom().to_string(), cc)?;
+                n.div(&d, p, DOWN)
+            };
+            let hi = {
+                let n = exact_int(&hi.numer().to_string(), cc)?;
+                let d = exact_int(&hi.denom().to_string(), cc)?;
+                n.div(&d, p, UP)
+            };
+            Iv::new(lo, hi)
+        }
         Expr::Func(name, args) if args.len() == 1 => {
             let x = eval_iv(&args[0], p, cc)?;
             match name.as_str() {

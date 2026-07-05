@@ -66,4 +66,5 @@ nav:
       - Plotting: reference/plotting.md
       - Structs: reference/structs.md
       - Constants: reference/constants.md
+      - Algebraic numbers: reference/algebraic.md
   - Limits and design notes: limits.md

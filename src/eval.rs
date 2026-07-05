@@ -1174,6 +1174,53 @@ impl Interpreter {
                 arity(name, &args, 2)?;
                 matrix::solve(&args[0], &args[1])
             }
+            // The k-th real root (ascending, 1-based) of a univariate
+            // polynomial with rational coefficients — an exact real
+            // algebraic number. The value stays symbolic (`root(p, k)`);
+            // comparisons decide through the algebraic engine and N()
+            // refines the isolating interval. Rational roots the isolator
+            // pins exactly collapse to plain numbers.
+            "root" => {
+                arity(name, &args, 2)?;
+                let (coeffs, _) =
+                    crate::algebraic::root_call_coeffs(&args[0]).ok_or_else(|| {
+                        "root expects a polynomial in one free symbol with rational \
+                         coefficients, e.g. root(x^3 - 2, 1)"
+                            .to_string()
+                    })?;
+                if coeffs.len() < 2 {
+                    return Err("root expects a polynomial of degree at least 1".into());
+                }
+                let k = numeric_value(&args[1])
+                    .filter(|k| k.is_integer() && *k >= BigRational::from_integer(1.into()))
+                    .and_then(|k| k.to_integer().to_usize())
+                    .ok_or_else(|| {
+                        "root's second argument is the root index: a positive integer".to_string()
+                    })?;
+                let count =
+                    crate::algebraic::RealAlg::real_root_count(&coeffs).ok_or_else(|| {
+                        "this polynomial is beyond the algebraic engine's degree/size caps"
+                            .to_string()
+                    })?;
+                if k > count {
+                    return Err(match count {
+                        0 => "the polynomial has no real roots".to_string(),
+                        1 => format!(
+                            "the polynomial has only 1 real root, index {k} is out of range"
+                        ),
+                        n => format!(
+                            "the polynomial has only {n} real roots, index {k} is out of range"
+                        ),
+                    });
+                }
+                match crate::algebraic::RealAlg::nth_root_of(&coeffs, k) {
+                    Some(crate::algebraic::RealAlg::Rational(r)) => Ok(rat_to_expr(r)),
+                    _ => Ok(Expr::Func(
+                        "root".into(),
+                        vec![args[0].clone(), args[1].clone()],
+                    )),
+                }
+            }
             "charpoly" => match args.len() {
                 1 => {
                     expect_matrix(name, &args[0])?;
@@ -1552,11 +1599,24 @@ fn comparable_value(e: &Expr) -> Option<BigRational> {
 }
 
 /// Equality test: by value when both sides are numbers (decidable, and floats
-/// participate), structural otherwise.
+/// participate); by exact algebra when both sides are constant real algebraic
+/// expressions (`(sqrt(2)+sqrt(3))^2 == 5+2*sqrt(6)` is `true`, not a
+/// structural mismatch); structural otherwise.
 fn value_eq(x: &Expr, y: &Expr) -> bool {
     match (comparable_value(x), comparable_value(y)) {
         (Some(p), Some(q)) => p == q,
-        _ => x == y,
+        _ => {
+            if x == y {
+                return true;
+            }
+            if let (Some(a), Some(b)) = (
+                crate::algebraic::from_expr(x),
+                crate::algebraic::from_expr(y),
+            ) {
+                return a.cmp_alg(&b) == std::cmp::Ordering::Equal;
+            }
+            false
+        }
     }
 }
 
@@ -1618,19 +1678,37 @@ fn compare(op: Op, x: &Expr, y: &Expr) -> Result<Expr, String> {
         interval::Sign::NonNegative => match op {
             Op::GreaterEq => Ok(Expr::Bool(true)),
             Op::Less => Ok(Expr::Bool(false)),
-            _ => inseparable(),
+            _ => match crate::algebraic::certified_sign(&d) {
+                Some(ord) => decide(ord),
+                None => inseparable(),
+            },
         },
         interval::Sign::NonPositive => match op {
             Op::LessEq => Ok(Expr::Bool(true)),
             Op::Greater => Ok(Expr::Bool(false)),
-            _ => inseparable(),
+            _ => match crate::algebraic::certified_sign(&d) {
+                Some(ord) => decide(ord),
+                None => inseparable(),
+            },
         },
-        interval::Sign::Inseparable => inseparable(),
-        interval::Sign::Unsupported => Err(format!(
-            "cannot order '{}' and '{}'; both must be constant real values \
-             (a free symbol has no fixed value — try subs(...) or N(...))",
-            x, y
-        )),
+        // Refinement could not separate the values — the one case bits can
+        // never settle is *equality*, which algebra can: if the difference
+        // is a real algebraic number (radicals, roots, trig of rational
+        // multiples of π — no π/e themselves), its sign is decidable
+        // exactly. π/e ties still refuse honestly.
+        interval::Sign::Inseparable => match crate::algebraic::certified_sign(&d) {
+            Some(ord) => decide(ord),
+            None => inseparable(),
+        },
+        interval::Sign::Unsupported => match crate::algebraic::certified_sign(&d) {
+            // e.g. root(...) expressions the interval evaluator refuses.
+            Some(ord) => decide(ord),
+            None => Err(format!(
+                "cannot order '{}' and '{}'; both must be constant real values \
+                 (a free symbol has no fixed value — try subs(...) or N(...))",
+                x, y
+            )),
+        },
     }
 }
 
