@@ -1780,3 +1780,122 @@ mod big_signal_tests {
         assert_eq!(b, e, "hi bounds must round-trip bit-exactly");
     }
 }
+
+#[cfg(test)]
+mod hostile_import_tests {
+    //! The audit's D7 gap: guards against invalid enclosures minted from
+    //! external data existed but were never fed hostile bytes. Every case
+    //! here must fail LOUDLY — a silent acceptance would let a file forge a
+    //! "certified" interval.
+    use super::*;
+
+    fn doc(value: &str) -> String {
+        format!(
+            r#"{{"format":"surd-data","version":1,"variables":[{{"name":"s","value":{}}}]}}"#,
+            value
+        )
+    }
+
+    #[test]
+    fn f64_signal_with_inverted_bounds_is_rejected() {
+        let e = import(&doc(r#"{"t":"signal","lo":[2.0],"hi":[1.0]}"#));
+        assert!(e.is_err(), "lo > hi must not import: {:?}", e.map(|_| ()));
+    }
+
+    #[test]
+    fn f64_signal_with_out_of_range_numbers_is_rejected() {
+        // serde_json maps 1e999 to ±inf on some versions and errors on
+        // others; either way it must not become a "certified" enclosure.
+        let e = import(&doc(r#"{"t":"signal","lo":[-1e999],"hi":[1e999]}"#));
+        assert!(e.is_err(), "non-finite bounds must not import");
+    }
+
+    #[test]
+    fn big_signal_with_inverted_bounds_is_rejected() {
+        let e = import(&doc(
+            r#"{"t":"signal","digits":5,"lo":["2.5"],"hi":["1.5"]}"#,
+        ));
+        assert!(e.is_err(), "Big lo > hi must not import");
+    }
+
+    #[test]
+    fn big_signal_with_garbage_bounds_is_rejected() {
+        for bad in ["nan", "inf", "1e999999999999", "0x10", ""] {
+            let e = import(&doc(&format!(
+                r#"{{"t":"signal","digits":5,"lo":["{bad}"],"hi":["3"]}}"#
+            )));
+            assert!(e.is_err(), "bound {bad:?} must not import");
+        }
+    }
+
+    #[test]
+    fn mismatched_bound_lengths_are_rejected() {
+        let e = import(&doc(r#"{"t":"signal","lo":[1.0,2.0],"hi":[3.0]}"#));
+        assert!(e.is_err(), "length mismatch must not import");
+    }
+
+    #[test]
+    fn raw_import_rejects_non_finite_samples() {
+        for fmt in ["f64", "f32"] {
+            for bits in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let bytes: Vec<u8> = if fmt == "f64" {
+                    bits.to_le_bytes().to_vec()
+                } else {
+                    (bits as f32).to_le_bytes().to_vec()
+                };
+                let e = import_raw(&bytes, fmt);
+                assert!(e.is_err(), "{fmt} {bits} must not import");
+            }
+        }
+    }
+
+    #[test]
+    fn float_wav_rejects_nan_samples() {
+        // Minimal RIFF/WAVE: fmt chunk (IEEE float, mono, 32-bit) + one
+        // NaN sample in the data chunk.
+        let mut w: Vec<u8> = Vec::new();
+        w.extend(b"RIFF");
+        w.extend(&(36u32 + 4).to_le_bytes());
+        w.extend(b"WAVE");
+        w.extend(b"fmt ");
+        w.extend(&16u32.to_le_bytes());
+        w.extend(&3u16.to_le_bytes()); // IEEE float
+        w.extend(&1u16.to_le_bytes()); // mono
+        w.extend(&8000u32.to_le_bytes());
+        w.extend(&32000u32.to_le_bytes());
+        w.extend(&4u16.to_le_bytes());
+        w.extend(&32u16.to_le_bytes());
+        w.extend(b"data");
+        w.extend(&4u32.to_le_bytes());
+        w.extend(&f32::NAN.to_le_bytes());
+        let e = import_wav(&w);
+        assert!(e.is_err(), "NaN float-WAV sample must not import");
+    }
+
+    #[test]
+    fn truncated_wav_is_rejected_not_panicking() {
+        // Every prefix of a valid header must error gracefully.
+        let full: Vec<u8> = {
+            let mut w: Vec<u8> = Vec::new();
+            w.extend(b"RIFF");
+            w.extend(&40u32.to_le_bytes());
+            w.extend(b"WAVE");
+            w.extend(b"fmt ");
+            w.extend(&16u32.to_le_bytes());
+            w.extend(&1u16.to_le_bytes());
+            w.extend(&1u16.to_le_bytes());
+            w.extend(&8000u32.to_le_bytes());
+            w.extend(&16000u32.to_le_bytes());
+            w.extend(&2u16.to_le_bytes());
+            w.extend(&16u16.to_le_bytes());
+            w.extend(b"data");
+            w.extend(&2u32.to_le_bytes());
+            w.extend(&0i16.to_le_bytes());
+            w
+        };
+        for cut in 0..full.len() {
+            let _ = import_wav(&full[..cut]); // must not panic; Err is fine
+        }
+        assert!(import_wav(&full).is_ok(), "the uncut file is valid");
+    }
+}

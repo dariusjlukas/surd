@@ -2474,3 +2474,65 @@ mod tests {
         assert_eq!(format_bigfloat(&astro_float::INF_NEG, 5), "-Inf");
     }
 }
+
+#[cfg(test)]
+mod known_nonneg_tests {
+    //! The audit's D8 gap: `known_nonneg` licenses the √a·√b → √(ab) merge
+    //! (and the certified sqrt clamp) but had two hardcoded refusal tests.
+    //! For the quadratic-surd family r + c·√m it claims an exact decision —
+    //! check it exhaustively against the true sign, computed independently.
+    use super::*;
+
+    #[test]
+    fn quadratic_surd_nonnegativity_is_decided_exactly() {
+        let rats: Vec<BigRational> = (-10..=10)
+            .flat_map(|p| {
+                [1i64, 2, 3]
+                    .iter()
+                    .map(move |q| BigRational::new(BigInt::from(p), BigInt::from(*q)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for m in [2i64, 3, 5, 6, 7, 10] {
+            let mq = BigRational::from_integer(BigInt::from(m));
+            for r in &rats {
+                for c in &rats {
+                    if c.is_zero() {
+                        continue;
+                    }
+                    let e = add(vec![
+                        rat_to_expr(r.clone()),
+                        mul(vec![
+                            rat_to_expr(c.clone()),
+                            pow(int(m), rat_to_expr(BigRational::new(1.into(), 2.into()))),
+                        ]),
+                    ]);
+                    // True sign of r + c·√m, exactly: compare r² with c²·m
+                    // on the side where the signs disagree.
+                    let truly_nonneg = if !c.is_negative() {
+                        !r.is_negative() || r * r <= c * c * &mq
+                    } else {
+                        !r.is_negative() && r * r >= c * c * &mq
+                    };
+                    let claimed = known_nonneg(&e);
+                    // Soundness is absolute: a `true` claim must be true.
+                    assert!(
+                        !(claimed && !truly_nonneg),
+                        "UNSOUND: known_nonneg({} + {}·√{}) claimed nonneg, value is negative",
+                        r,
+                        c,
+                        m
+                    );
+                    // Completeness on this family is the documented claim.
+                    assert!(
+                        !(!claimed && truly_nonneg),
+                        "incomplete: known_nonneg({} + {}·√{}) refused a provable case",
+                        r,
+                        c,
+                        m
+                    );
+                }
+            }
+        }
+    }
+}

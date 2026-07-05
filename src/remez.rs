@@ -1030,6 +1030,152 @@ mod tests {
         ])
     }
 
+    /// Evaluate the amplitude A at a design-variable point FROM THE TAPS —
+    /// an independent path (Chebyshev identities per type), never touching
+    /// the exchange's own P/error machinery:
+    ///   I:   A(x) = h[M] + 2·Σ h[M−k]·Tₖ(x)
+    ///   II:  A(u) = Σ 2h[r−n]·T_{2n−1}(u)
+    ///   III: A(t) = Σ 2h[M−n]·sin(nω),  sin/cos ω rational in t
+    ///   IV:  A(v) = Σ 2h[r−n]·(−1)^{n−1}·T_{2n−1}(v)
+    fn amplitude_from_taps(ty: Ty, h: &[BigRational], var: &BigRational) -> BigRational {
+        let cheb = |k: usize, x: &BigRational| -> BigRational {
+            let mut t_prev = BigRational::from_integer(1.into());
+            let mut t_curr = x.clone();
+            if k == 0 {
+                return t_prev;
+            }
+            for _ in 1..k {
+                let next = BigRational::from_integer(2.into()) * x * &t_curr - &t_prev;
+                t_prev = std::mem::replace(&mut t_curr, next);
+            }
+            t_curr
+        };
+        let two = BigRational::from_integer(2.into());
+        match ty {
+            Ty::I => {
+                let m = h.len() / 2;
+                let mut acc = h[m].clone();
+                for k in 1..=m {
+                    acc += &two * &h[m - k] * cheb(k, var);
+                }
+                acc
+            }
+            Ty::II => {
+                let r = h.len() / 2;
+                let mut acc = BigRational::zero();
+                for n in 1..=r {
+                    acc += &two * &h[r - n] * cheb(2 * n - 1, var);
+                }
+                acc
+            }
+            Ty::IV => {
+                let r = h.len() / 2;
+                let mut acc = BigRational::zero();
+                for n in 1..=r {
+                    let sign = if n % 2 == 1 {
+                        BigRational::from_integer(1.into())
+                    } else {
+                        BigRational::from_integer((-1).into())
+                    };
+                    acc += &two * &h[r - n] * sign * cheb(2 * n - 1, var);
+                }
+                acc
+            }
+            Ty::III => {
+                let m = h.len() / 2;
+                let t2 = var * var;
+                let den = BigRational::from_integer(1.into()) + &t2;
+                let cosw = (BigRational::from_integer(1.into()) - &t2) / &den;
+                let sinw = &two * var / &den;
+                // sin(nω) by the complex-power recurrence on (cos ω, sin ω).
+                let (mut c_n, mut s_n) = (cosw.clone(), sinw.clone());
+                let mut acc = BigRational::zero();
+                for n in 1..=m {
+                    if n > 1 {
+                        let c_next = &c_n * &cosw - &s_n * &sinw;
+                        let s_next = &c_n * &sinw + &s_n * &cosw;
+                        c_n = c_next;
+                        s_n = s_next;
+                    }
+                    acc += &two * &h[m - n] * &s_n;
+                }
+                acc
+            }
+        }
+    }
+
+    /// The audit's D6 gap: spec compliance was only ever asserted at DC and
+    /// Nyquist. This re-derives the error at EVERY design-grid point from
+    /// the taps and asserts the two halves of the equioscillation
+    /// certificate exactly: W·|D − A| ≤ δ everywhere on the grid, with at
+    /// least r+1 alternating touches of ±δ (the alternation count for an
+    /// r-dimensional Haar system — the filter literature's "L+2" counts
+    /// the polynomial degree L = r−1).
+    #[test]
+    fn whole_grid_compliance_and_alternation() {
+        let cases: &[(usize, bool, Vec<Expr>, Vec<Expr>)] = &[
+            (
+                15,
+                false,
+                vec![pi_frac(0, 1), pi_frac(2, 5), pi_frac(1, 2), pi_frac(1, 1)],
+                vec![int(1), int(0)],
+            ),
+            (
+                10,
+                false,
+                vec![pi_frac(0, 1), pi_frac(2, 5), pi_frac(3, 5), pi_frac(1, 1)],
+                vec![int(1), int(0)],
+            ),
+            (11, true, vec![pi_frac(1, 5), pi_frac(4, 5)], vec![int(1)]),
+            (8, true, vec![pi_frac(1, 3), pi_frac(1, 1)], vec![int(1)]),
+        ];
+        for (n, anti, edges, desired) in cases {
+            let ty = Ty::classify(*n, *anti);
+            let weights: Vec<Expr> = vec![int(1); desired.len()];
+            let d = design_typed(*n, *anti, edges, desired, &weights).unwrap();
+            // Rebuild the grid exactly as the design did.
+            let r = ty.r_of(*n);
+            let bands = if ty == Ty::I {
+                resolve_bands(edges, desired, &weights).unwrap()
+            } else {
+                resolve_bands_var(ty, edges, desired, &weights).unwrap()
+            };
+            let (grid, dd, ww) = build_grid(&bands, r).unwrap();
+            let mut touches: Vec<bool> = Vec::new(); // sign of e at |e| == δ
+            for j in 0..grid.len() {
+                let a = amplitude_from_taps(ty, &d.taps, &grid[j]);
+                let e = &ww[j] * (&dd[j] - &a);
+                let mag = e.clone().abs();
+                assert!(
+                    mag <= d.ripple,
+                    "Type {} n={}: grid point {} exceeds the ripple",
+                    ty.number(),
+                    n,
+                    j
+                );
+                if mag == d.ripple {
+                    touches.push(e >= BigRational::zero());
+                }
+            }
+            if d.ripple > BigRational::zero() {
+                let mut alternations = 1;
+                for w in touches.windows(2) {
+                    if w[0] != w[1] {
+                        alternations += 1;
+                    }
+                }
+                assert!(
+                    alternations >= r + 1,
+                    "Type {} n={}: only {} alternating extremals (need {})",
+                    ty.number(),
+                    n,
+                    alternations,
+                    r + 1
+                );
+            }
+        }
+    }
+
     /// The structural invariants of each type, checked on exact taps:
     /// symmetry/antisymmetry, forced zeros (as exact tap-sum identities),
     /// and the middle tap of Type III.

@@ -19,6 +19,8 @@ use surd::signal::{self, SignalData};
 #[derive(Clone, Debug)]
 enum G {
     Num(i64),
+    Pi,
+    E,
     Add(Box<G>, Box<G>),
     Sub(Box<G>, Box<G>),
     Mul(Box<G>, Box<G>),
@@ -26,10 +28,26 @@ enum G {
     Pow(Box<G>, u32),
     Sin(Box<G>),
     Cos(Box<G>),
+    /// tan(sin(a)): |sin| ≤ 1 < π/2 keeps the argument pole-free by
+    /// construction, while still driving tan's sin/cos-quotient kernel.
+    TanSin(Box<G>),
+    /// a / (b² + 1): always defined, drives recip/division kernels.
+    DivSafe(Box<G>, Box<G>),
+    /// sqrt(abs(a)): drives abs and the half-integer power path.
+    SqrtAbs(Box<G>),
+    /// exp(sin(a)): bounded argument — overflow behavior is not what this
+    /// differential test measures.
+    ExpSin(Box<G>),
+    /// ln(1 + abs(a)): domain-safe logarithm.
+    Ln1p(Box<G>),
 }
 
 fn arb_g() -> impl Strategy<Value = G> {
-    let leaf = (-5i64..6).prop_map(G::Num);
+    let leaf = prop_oneof![
+        4 => (-5i64..6).prop_map(G::Num),
+        1 => Just(G::Pi),
+        1 => Just(G::E),
+    ];
     leaf.prop_recursive(4, 24, 2, |inner| {
         prop_oneof![
             (inner.clone(), inner.clone()).prop_map(|(a, b)| G::Add(Box::new(a), Box::new(b))),
@@ -38,7 +56,12 @@ fn arb_g() -> impl Strategy<Value = G> {
             inner.clone().prop_map(|a| G::Neg(Box::new(a))),
             (inner.clone(), 0u32..4).prop_map(|(a, n)| G::Pow(Box::new(a), n)),
             inner.clone().prop_map(|a| G::Sin(Box::new(a))),
-            inner.prop_map(|a| G::Cos(Box::new(a))),
+            inner.clone().prop_map(|a| G::Cos(Box::new(a))),
+            inner.clone().prop_map(|a| G::TanSin(Box::new(a))),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| G::DivSafe(Box::new(a), Box::new(b))),
+            inner.clone().prop_map(|a| G::SqrtAbs(Box::new(a))),
+            inner.clone().prop_map(|a| G::ExpSin(Box::new(a))),
+            inner.prop_map(|a| G::Ln1p(Box::new(a))),
         ]
     })
 }
@@ -53,6 +76,30 @@ fn render_g(g: &G) -> String {
         G::Pow(a, n) => format!("({})^{}", render_g(a), n),
         G::Sin(a) => format!("sin({})", render_g(a)),
         G::Cos(a) => format!("cos({})", render_g(a)),
+        G::Pi => "pi".to_string(),
+        G::E => "e".to_string(),
+        G::TanSin(a) => format!("tan(sin({}))", render_g(a)),
+        G::DivSafe(a, b) => format!("({} / (({})^2 + 1))", render_g(a), render_g(b)),
+        G::SqrtAbs(a) => format!("sqrt(abs({}))", render_g(a)),
+        G::ExpSin(a) => format!("exp(sin({}))", render_g(a)),
+        G::Ln1p(a) => format!("ln(1 + abs({}))", render_g(a)),
+    }
+}
+
+fn contains_sqrt(g: &G) -> bool {
+    match g {
+        G::SqrtAbs(_) => true,
+        G::Num(_) | G::Pi | G::E => false,
+        G::Add(a, b) | G::Sub(a, b) | G::Mul(a, b) | G::DivSafe(a, b) => {
+            contains_sqrt(a) || contains_sqrt(b)
+        }
+        G::Neg(a)
+        | G::Pow(a, _)
+        | G::Sin(a)
+        | G::Cos(a)
+        | G::TanSin(a)
+        | G::ExpSin(a)
+        | G::Ln1p(a) => contains_sqrt(a),
     }
 }
 
@@ -66,6 +113,16 @@ fn eval_f64(g: &G) -> f64 {
         G::Pow(a, n) => eval_f64(a).powi(*n as i32),
         G::Sin(a) => eval_f64(a).sin(),
         G::Cos(a) => eval_f64(a).cos(),
+        G::Pi => std::f64::consts::PI,
+        G::E => std::f64::consts::E,
+        G::TanSin(a) => eval_f64(a).sin().tan(),
+        G::DivSafe(a, b) => {
+            let d = eval_f64(b);
+            eval_f64(a) / (d * d + 1.0)
+        }
+        G::SqrtAbs(a) => eval_f64(a).abs().sqrt(),
+        G::ExpSin(a) => eval_f64(a).sin().exp(),
+        G::Ln1p(a) => (1.0 + eval_f64(a).abs()).ln(),
     }
 }
 
@@ -124,7 +181,15 @@ proptest! {
         prop_assume!(!is_err(&out));
         let got: f64 = match out.parse() { Ok(v) => v, Err(_) => return Ok(()) };
         prop_assume!(got.is_finite());
-        let tol = 1e-9 * (1.0 + oracle.abs());
+        // sqrt amplifies the ORACLE's own rounding noise: ε residue under a
+        // root becomes √ε (sqrt(abs(tan(sin(pi)))) is exactly 0 in the
+        // engine but ~1e-8 in f64). Trees containing a root get the wider
+        // tolerance; everything else keeps the tight one.
+        let tol = if contains_sqrt(&g) {
+            1e-6 * (1.0 + oracle.abs())
+        } else {
+            1e-9 * (1.0 + oracle.abs())
+        };
         prop_assert!(
             (got - oracle).abs() <= tol,
             "{} => engine {} vs oracle {}", render_g(&g), got, oracle
@@ -719,5 +784,225 @@ proptest! {
             a1.numer(), a1.denom(), a2.numer(), a2.denom()
         ));
         prop_assert_eq!(got, if triangle { "true" } else { "false" });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// astro-float directed rounding, pinned for EVERY operation the certified
+// evaluators use (the old pin covered div and π only). Each op at 64 bits
+// must bracket a 512-bit nearest reference: Down ≤ ref ≤ Up.
+// ---------------------------------------------------------------------------
+
+mod astro_pin {
+    use super::*;
+    use astro_float::{BigFloat, Consts, Radix, RoundingMode};
+
+    const UP: RoundingMode = RoundingMode::Up;
+    const DOWN: RoundingMode = RoundingMode::Down;
+    const NEAREST: RoundingMode = RoundingMode::ToEven;
+
+    /// a ≤ b, by the sign of the difference — astro-float's `PartialOrd`
+    /// is unreliable near zero, so no test may use raw `<=` either.
+    fn bf_le(a: &BigFloat, b: &BigFloat) -> bool {
+        let d = b.sub(a, 1024, NEAREST);
+        !(d.is_negative() && !d.is_zero())
+    }
+
+    fn from_ratio(n: i64, d: i64, p: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+        let nn = BigFloat::parse(&n.to_string(), Radix::Dec, p, NEAREST, cc);
+        let dd = BigFloat::parse(&d.to_string(), Radix::Dec, p, NEAREST, cc);
+        nn.div(&dd, p, rm)
+    }
+
+    proptest! {
+        #[test]
+        fn directed_rounding_brackets_a_high_precision_reference(
+            an in -9999i64..10000, ad in 1i64..1000,
+            bn in -9999i64..10000, bd in 1i64..1000,
+            op in 0usize..9,
+        ) {
+            let mut cc = Consts::new().unwrap();
+            // Exact 512-bit operands (i64 ratios are exact at 512 bits far
+            // beyond these magnitudes), then each op Down/Up at 64 bits vs
+            // nearest at 512.
+            let a64 = from_ratio(an, ad, 64, NEAREST, &mut cc);
+            let b64 = from_ratio(bn, bd, 64, NEAREST, &mut cc);
+            let a512 = from_ratio(an, ad, 512, NEAREST, &mut cc);
+            let b512 = from_ratio(bn, bd, 512, NEAREST, &mut cc);
+            // A BigFloat VALUE is exact regardless of the precision an op
+            // is asked to produce, so the 64-bit operands feed both sides:
+            // the op under test at 64 bits Down/Up, the reference at 512
+            // bits nearest — same exact inputs, no truncation mismatch.
+            let _ = (a512, b512);
+            let (a, b) = (a64.clone(), b64.clone());
+            let (a_hi, b_hi) = (a.clone(), b.clone());
+            let (lo, hi, reference) = match op {
+                0 => (a.add(&b, 64, DOWN), a.add(&b, 64, UP), a_hi.add(&b_hi, 512, NEAREST)),
+                1 => (a.sub(&b, 64, DOWN), a.sub(&b, 64, UP), a_hi.sub(&b_hi, 512, NEAREST)),
+                2 => (a.mul(&b, 64, DOWN), a.mul(&b, 64, UP), a_hi.mul(&b_hi, 512, NEAREST)),
+                3 => {
+                    prop_assume!(bn != 0);
+                    (a.div(&b, 64, DOWN), a.div(&b, 64, UP), a_hi.div(&b_hi, 512, NEAREST))
+                }
+                4 => {
+                    let (aa, ah) = (a.abs(), a_hi.abs());
+                    (aa.sqrt(64, DOWN), aa.sqrt(64, UP), ah.sqrt(512, NEAREST))
+                }
+                5 => {
+                    // exp on a damped argument (avoid the known underflow
+                    // flush, pinned separately below).
+                    prop_assume!(an.abs() < 50 * ad);
+                    (a.exp(64, DOWN, &mut cc), a.exp(64, UP, &mut cc), a_hi.exp(512, NEAREST, &mut cc))
+                }
+                6 => {
+                    prop_assume!(an > 0);
+                    (a.ln(64, DOWN, &mut cc), a.ln(64, UP, &mut cc), a_hi.ln(512, NEAREST, &mut cc))
+                }
+                7 => (a.sin(64, DOWN, &mut cc), a.sin(64, UP, &mut cc), a_hi.sin(512, NEAREST, &mut cc)),
+                _ => (a.cos(64, DOWN, &mut cc), a.cos(64, UP, &mut cc), a_hi.cos(512, NEAREST, &mut cc)),
+            };
+            prop_assert!(!lo.is_nan() && !hi.is_nan() && !reference.is_nan());
+            prop_assert!(bf_le(&lo, &reference), "Down endpoint above the reference (op {op})");
+            prop_assert!(bf_le(&reference, &hi), "reference above the Up endpoint (op {op})");
+        }
+    }
+
+    /// Canaries for the two upstream astro-float bugs the engine guards
+    /// against. If astro ever FIXES them, these fail — the cue to simplify
+    /// the guards (interval::exp_iv, expr::bf_from_f64_exact).
+    #[test]
+    fn upstream_bug_canaries_still_present() {
+        let mut cc = Consts::new().unwrap();
+        // 1. exp underflow flushes to exact +0 even rounding Up.
+        let x = BigFloat::parse("-2200000000", Radix::Dec, 64, NEAREST, &mut cc);
+        assert!(
+            x.exp(64, RoundingMode::Up, &mut cc).is_zero(),
+            "astro-float exp underflow flush is FIXED upstream — simplify interval::exp_iv"
+        );
+        // 2. from_f64 halves subnormals: f64::from_bits(2) is 2⁻¹⁰⁷³, but
+        // it comes back stored as 0.5·2⁻¹⁰⁷³ = 2⁻¹⁰⁷⁴ (exponent −1073 with
+        // a normalized mantissa; a correct conversion would carry −1072).
+        let tiny = BigFloat::from_f64(f64::from_bits(2), 64);
+        assert_eq!(
+            tiny.exponent(),
+            Some(-1073),
+            "astro-float from_f64 subnormal halving is FIXED upstream — simplify bf_from_f64_exact"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D10: containment at the f64 floor — subnormal and near-overflow samples,
+// where two audit-confirmed bugs lived and no generator ever went.
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #[test]
+    fn signal_ops_contain_exactly_at_extreme_magnitudes(
+        pairs in prop::collection::vec(
+            ((1i64..1000, 0u32..3), (1i64..1000, 0u32..3), any::<bool>(), any::<bool>()),
+            1..5,
+        ),
+        scale_pow in prop::sample::select(vec![-1074i64, -1060, -1030, -520, 0, 500, 1000]),
+    ) {
+        // Values m·2^scale ± tiny offsets: subnormal region (−1074..−1023),
+        // deep-normal, and near-overflow. Exact rational oracle throughout.
+        let two = BigRational::from_integer(BigInt::from(2));
+        let scale = if scale_pow >= 0 {
+            BigRational::from_integer(BigInt::from(1) << (scale_pow as usize))
+        } else {
+            BigRational::new(BigInt::from(1), BigInt::from(1) << ((-scale_pow) as usize))
+        };
+        let (mut ar, mut br) = (vec![], vec![]);
+        for ((am, ash), (bm, bsh), aneg, bneg) in &pairs {
+            let mut a = BigRational::from_integer(BigInt::from(*am)) * &scale
+                * num_traits::pow::pow(two.clone(), *ash as usize);
+            let mut b = BigRational::from_integer(BigInt::from(*bm)) * &scale
+                * num_traits::pow::pow(two.clone(), *bsh as usize);
+            if *aneg { a = -a; }
+            if *bneg { b = -b; }
+            ar.push(a);
+            br.push(b);
+        }
+        // f64 substrate only: the Big substrate has no subnormal regime.
+        let sa = match signal::pack(&exprs(&ar), None) { Ok(s) => s, Err(_) => return Ok(()) };
+        let sb = match signal::pack(&exprs(&br), None) { Ok(s) => s, Err(_) => return Ok(()) };
+        for op in ["+", "-", "*"] {
+            // Products at 2^1000 scales overflow: a loud error is sound,
+            // a wrong enclosure is not.
+            let out = match signal::binop(op, &sa, &sb) { Ok(o) => o, Err(_) => continue };
+            for i in 0..ar.len() {
+                let want = match op {
+                    "+" => &ar[i] + &br[i],
+                    "-" => &ar[i] - &br[i],
+                    _ => &ar[i] * &br[i],
+                };
+                prop_assert!(
+                    endpoint(&out, i, false) <= want && want <= endpoint(&out, i, true),
+                    "{} at scale 2^{}: sample {} escaped", op, scale_pow, i
+                );
+            }
+        }
+        // The certified bound must cover |mid − true| even down here (the
+        // audit's subnormal bound()-lie regression, as a property).
+        for (i, a) in ar.iter().enumerate() {
+            let mid = surd::expr::numeric_value(&signal::midpoint(&sa, i))
+                .or_else(|| match signal::midpoint(&sa, i) {
+                    surd::expr::Expr::Float(bf, _) => float_to_rational(&bf),
+                    _ => None,
+                })
+                .expect("midpoint is numeric");
+            let bound = match signal::half_width(&sa, Some(i)) {
+                surd::expr::Expr::Float(bf, _) => float_to_rational(&bf).expect("finite"),
+                other => surd::expr::numeric_value(&other).expect("numeric"),
+            };
+            let dev = (a - &mid).abs();
+            prop_assert!(dev <= bound, "bound() understates at scale 2^{}", scale_pow);
+        }
+    }
+
+    // D11: certified windows must enclose the exact cosine-sum values —
+    // previously pinned at a single sample of hann(4).
+    #[test]
+    fn window_signals_enclose_their_exact_formula(
+        n in 2usize..24,
+        which in 0usize..3,
+    ) {
+        let name = ["hann", "hamming", "blackman"][which];
+        let (a0, a1, a2): ((i64, i64), (i64, i64), (i64, i64)) = match which {
+            0 => ((1, 2), (1, 2), (0, 1)),
+            1 => ((27, 50), (23, 50), (0, 1)),
+            _ => ((21, 50), (1, 2), (2, 25)),
+        };
+        let s = signal::window(name, n).unwrap();
+        for k in 0..n {
+            // w[k] = a0 − a1·cos(2πk/(n−1)) + a2·cos(4πk/(n−1)), exactly,
+            // through the independent 512-bit interval oracle.
+            let rat = |(p, q): (i64, i64)| {
+                rat_to_expr(BigRational::new(BigInt::from(p), BigInt::from(q)))
+            };
+            let angle = |mult: i64| {
+                surd::expr::mul(vec![
+                    rat_to_expr(BigRational::new(
+                        BigInt::from(mult * k as i64),
+                        BigInt::from(n as i64 - 1),
+                    )),
+                    surd::expr::Expr::Const(surd::expr::Constant::Pi),
+                ])
+            };
+            let exact = surd::expr::add(vec![
+                rat(a0),
+                surd::expr::mul(vec![
+                    rat((-a1.0, a1.1)),
+                    surd::expr::func("cos", vec![angle(2)]),
+                ]),
+                surd::expr::mul(vec![rat(a2), surd::expr::func("cos", vec![angle(4)])]),
+            ]);
+            let (olo, ohi) = oracle512(&exact);
+            prop_assert!(
+                endpoint(&s, k, false) <= olo && ohi <= endpoint(&s, k, true),
+                "{}({}) sample {} enclosure misses the exact value", name, n, k
+            );
+        }
     }
 }
