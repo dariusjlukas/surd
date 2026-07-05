@@ -107,6 +107,12 @@ inside a `with_consts` closure** — the RefCell re-borrow panics at runtime
 ## Build & dev
 
 - `cargo test` — full suite, ~6 s. Fuzz targets live in fuzz/ (separate crate).
+- `cargo bench` — criterion suite in benches/engine.rs, driven entirely through
+  `Interpreter::eval_line` so numbers reflect real REPL/wasm cost.
+  `-- --save-baseline main` records, `-- --baseline main` compares; benches
+  build with the shipping profile (opt-level "s"). Performance work must not
+  change results: same canonical forms, same enclosures, same refusals —
+  optimize by doing less work, never by weakening a check.
 - REPL: `./target/release/surd`, reads stdin. **Assignment is `:=`** —
   `x = 3` builds an *equation* (a value, displayed as `x = 3`, easily
   mistaken for an assignment echo) and binds nothing.

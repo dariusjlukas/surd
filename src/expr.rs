@@ -1193,7 +1193,7 @@ fn expand_terms(e: &Expr) -> Vec<Expr> {
             let mut acc = vec![int(1)];
             for f in fs {
                 let terms = expand_terms(f);
-                acc = cartesian_mul(&acc, &terms);
+                acc = collect_terms(cartesian_mul(&acc, &terms));
             }
             acc
         }
@@ -1205,7 +1205,7 @@ fn expand_terms(e: &Expr) -> Vec<Expr> {
                             let base_terms = expand_terms(b);
                             let mut acc = vec![int(1)];
                             for _ in 0..n {
-                                acc = cartesian_mul(&acc, &base_terms);
+                                acc = collect_terms(cartesian_mul(&acc, &base_terms));
                             }
                             return acc;
                         }
@@ -1216,6 +1216,30 @@ fn expand_terms(e: &Expr) -> Vec<Expr> {
             vec![pow(expand(b), (**ex).clone())]
         }
         _ => vec![e.clone()],
+    }
+}
+
+/// Merge like terms in a sum-free term list, returning a sum-free list.
+///
+/// Distribution without this is exponential: `(x+y+1)^12` is 3^12 = 531441
+/// raw pairwise products but only 91 distinct monomials. Collecting between
+/// rounds keeps the working list at the size of the *answer* rather than the
+/// size of the blow-up. `add` does the merging, so coefficients combine by
+/// the same exact rational arithmetic as the final sum — the result is
+/// identical, just reached without the intermediate mountain.
+///
+/// Complex terms are passed through untouched: `add` would fold them into a
+/// single `Complex` node whose parts are sums, and distributing *that* shape
+/// through `mul` treats the parts as opaque — the result would come back less
+/// expanded than the term-by-term path produces today.
+fn collect_terms(terms: Vec<Expr>) -> Vec<Expr> {
+    if terms.iter().any(|t| matches!(t, Expr::Complex(..))) {
+        return terms;
+    }
+    match add(terms) {
+        Expr::Add(ts) => ts,
+        // A lone term (or everything cancelled to 0): still a sum-free list.
+        other => vec![other],
     }
 }
 
@@ -1893,7 +1917,18 @@ fn split_coeff(e: &Expr) -> (BigRational, Expr) {
     if let Expr::Mul(fs) = e {
         if let Some(first) = fs.first() {
             if let Some(c) = numeric_value(first) {
-                return (c, mul(fs[1..].to_vec()));
+                // A canonical Mul with its leading numeric coefficient
+                // removed is still canonical — flat, like-bases merged,
+                // sorted (a suffix of a sorted list). Rebuild it directly:
+                // re-running `mul` here redid all of that work for every
+                // term of every sum, and this is the engine's hottest path.
+                let rest = &fs[1..];
+                let basis = match rest.len() {
+                    0 => int(1), // unreachable for canonical Mul; stay total
+                    1 => rest[0].clone(),
+                    _ => Expr::Mul(rest.to_vec()),
+                };
+                return (c, basis);
             }
         }
     }

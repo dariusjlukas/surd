@@ -28,7 +28,7 @@ use crate::expr::{
 };
 use astro_float::{BigFloat, Consts, RoundingMode};
 use num_bigint::BigInt;
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 use std::fmt;
 use std::rc::Rc;
 
@@ -519,29 +519,62 @@ fn big_unary(
 // Packing and reading back (the exact↔certified boundary)
 // ---------------------------------------------------------------------------
 
+/// Exact comparison of a finite f64 against an exact rational, without
+/// building a `BigRational` from the float: `x = ±m·2^e` (from
+/// `integer_decode`, exact for every finite f64 including subnormals) is
+/// compared against `r = n/d` by integer cross-multiplication,
+/// `±m·2^e ⋚ n/d  ⇔  ±m·d·2^e ⋚ n` (num-rational keeps `d > 0`). Shifts and
+/// one multiply — no gcd reduction, no division ladder; the
+/// `BigRational::from_f64(x).cmp(r)` equivalent of this check dominated the
+/// signal-packing profile. `None` for non-finite `x` (mirroring `from_f64`),
+/// which callers must treat as "containment not shown".
+fn cmp_f64_rat(x: f64, r: &BigRational) -> Option<std::cmp::Ordering> {
+    if !x.is_finite() {
+        return None;
+    }
+    let (m, e, s) = num_traits::Float::integer_decode(x);
+    let mut lhs = BigInt::from(m);
+    if s < 0 {
+        lhs = -lhs;
+    }
+    lhs *= r.denom();
+    let mut rhs = r.numer().clone();
+    if e >= 0 {
+        lhs <<= e as usize;
+    } else {
+        // Keep both sides integral by scaling the right side up instead:
+        // m·d·2^e ⋚ n  ⇔  m·d ⋚ n·2^{-e}. e ≥ −1074, so ≤ ~1.1 kbit — cheap.
+        rhs <<= (-e) as usize;
+    }
+    Some(lhs.cmp(&rhs))
+}
+
 /// A sound f64 enclosure of an exact rational, by nudging a nearest-ish
 /// approximation outward until exact containment is verified.
 fn rat_to_f64_iv(r: &BigRational) -> Result<(f64, f64), String> {
+    use std::cmp::Ordering;
     let approx = r.to_f64().filter(|v| v.is_finite()).ok_or_else(|| {
         "an entry exceeds the f64 range — use signal(v, digits) for arbitrary precision".to_string()
     })?;
+    // `x ≤ r` / `x ≥ r`, exactly; false when the comparison is unavailable
+    // (non-finite x), so an unverified bound is never accepted.
+    let le = |x: f64| cmp_f64_rat(x, r).is_some_and(|o| o != Ordering::Greater);
+    let ge = |x: f64| cmp_f64_rat(x, r).is_some_and(|o| o != Ordering::Less);
     let mut lo = approx;
     let mut hi = approx;
     for _ in 0..64 {
-        if BigRational::from_f64(lo).is_some_and(|v| v <= *r) {
+        if le(lo) {
             break;
         }
         lo = lo.next_down();
     }
     for _ in 0..64 {
-        if BigRational::from_f64(hi).is_some_and(|v| v >= *r) {
+        if ge(hi) {
             break;
         }
         hi = hi.next_up();
     }
-    let contained = BigRational::from_f64(lo).is_some_and(|v| v <= *r)
-        && BigRational::from_f64(hi).is_some_and(|v| v >= *r);
-    if contained && lo.is_finite() && hi.is_finite() {
+    if le(lo) && ge(hi) && lo.is_finite() && hi.is_finite() {
         Ok((lo, hi))
     } else {
         Err("could not enclose an entry in f64 (use signal(v, digits))".into())
@@ -1661,4 +1694,83 @@ pub fn window(name: &str, n: usize) -> Result<SignalData, String> {
         hi.push(w.1);
     }
     Ok(SignalData::F64 { lo, hi })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use num_traits::FromPrimitive;
+    use std::cmp::Ordering;
+
+    /// `cmp_f64_rat` replaced `BigRational::from_f64(x).map(|v| v.cmp(r))` on
+    /// the packing hot path; a disagreement with that oracle would silently
+    /// break enclosure containment, so the equivalence is pinned here across
+    /// the regions where f64 decompositions go wrong: subnormals, ±0,
+    /// near-overflow, exact dyadic ties, and both signs throughout.
+    #[test]
+    fn cmp_f64_rat_matches_the_bigrational_oracle() {
+        let mut cases: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            1.5,
+            f64::MIN_POSITIVE,       // smallest normal
+            f64::MIN_POSITIVE / 2.0, // subnormal
+            5e-324,                  // smallest subnormal
+            -5e-324,
+            f64::MAX,
+            f64::MIN,
+            1.0f64.next_up(),
+            1.0f64.next_down(),
+            0.1,
+            -0.1,
+            1e300,
+            -1e300,
+            1e-300,
+            (1u64 << 53) as f64, // integer at the mantissa edge
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        // A deterministic sweep of pseudo-random bit patterns (LCG) pushes the
+        // check across arbitrary exponent/mantissa combinations.
+        let mut state: u64 = 0x243F6A8885A308D3;
+        for _ in 0..4000 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            cases.push(f64::from_bits(state));
+        }
+        // Rationals to compare against: small, huge, tiny, negative, and the
+        // exact values of some of the floats themselves (tie cases).
+        let mut rats: Vec<BigRational> = [
+            (0i64, 1i64),
+            (1, 1),
+            (-1, 1),
+            (1, 3),
+            (-22, 7),
+            (1, i64::MAX),
+            (i64::MAX, 2),
+            (-i64::MAX, 3),
+        ]
+        .into_iter()
+        .map(|(n, d)| BigRational::new(BigInt::from(n), BigInt::from(d)))
+        .collect();
+        for x in [0.5f64, -0.75, 5e-324, f64::MAX, 0.1, 3.0] {
+            rats.push(BigRational::from_f64(x).unwrap()); // exact tie candidates
+        }
+        for &x in &cases {
+            for r in &rats {
+                let oracle: Option<Ordering> = BigRational::from_f64(x).map(|v| v.cmp(r));
+                assert_eq!(
+                    cmp_f64_rat(x, r),
+                    oracle,
+                    "cmp_f64_rat disagrees with BigRational::from_f64 for x = {x:e} ({:#x}), r = {r}",
+                    x.to_bits()
+                );
+            }
+        }
+    }
 }

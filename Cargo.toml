@@ -59,3 +59,12 @@ rustyline = "14"
 # algebraic invariants + that nothing ever panics, with shrinking to minimal
 # failing cases.
 proptest = "1"
+
+# Benchmark harness (benches/engine.rs). Plotting/rayon features off: we only
+# need timings plus `--save-baseline`/`--baseline` comparisons, and the lean
+# build keeps `cargo bench` compile times down.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "engine"
+harness = false
