@@ -404,3 +404,46 @@ certified reference for what the `spectrogram` picture displays.
 Returns `struct(frames, nfft, hop)`. For bulk data, use
 `spectrogram(...)`; for one exact frame of a signal, compose
 `dsp.dft(N(mid(slice(s, i, nfft))) .* dsp.hann(nfft))`.
+
+## `dsp.tf`
+
+```
+dsp.tf(f)
+```
+
+Expand a filter's second-order sections into one transfer function
+B(z)/A(z), exactly. Returns `struct(b, a)` in delay form, ready for
+`dsp.freqz(b, a, w)`, `dsp.stable(a)`, `dsp.filter(b, a, x)`, and
+`dsp.poles`/`dsp.zeros` — every identity survives the expansion:
+
+```text
+>> f := dsp.tf(dsp.butter(2, pi/2))
+>> dsp.freqz(f.b, f.a, [0]) == [1]
+true
+```
+
+## `dsp.poles` / `dsp.zeros`
+
+```
+dsp.poles(f)        dsp.zeros(f)         # filter struct or SOS matrix
+dsp.poles(a)        dsp.zeros(b)         # coefficient vector
+```
+
+The exact poles (roots of A) or zeros (roots of B). Section-structured
+input roots each biquad by the quadratic formula — complex pairs come back
+as exact `a ± b·i` radical expressions, so pole magnitudes are decidable
+claims:
+
+```text
+>> abs(dsp.poles(dsp.butter(2, pi/2))[1])^2 == (2-sqrt(2))/(2+sqrt(2))
+true
+>> dsp.zeros(dsp.butter(2, pi/2)) == [-1; -1]
+true
+```
+
+A bare coefficient vector of degree ≤ 2 works the same; degree ≥ 3 returns
+exact `root(p, k)` values when every root is real (and the polynomial is
+squarefree), and refuses toward SOS form otherwise — exact complex roots
+of high-degree polynomials would need a complex algebraic engine, and the
+SOS form already carries the factorization. A section polynomial shorter
+than its partner contributes genuine roots at the origin (pure delay).

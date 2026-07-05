@@ -31,11 +31,15 @@ use crate::algebraic;
 use crate::expr::*;
 use crate::interval;
 use num_bigint::BigInt;
+use num_traits::Zero;
 use std::cmp::Ordering;
 
 /// Degree cap for the general Schur–Cohn recursion (each stage is exact
 /// division and two certified sign decisions; symbolic coefficients grow).
 const MAX_STABLE_DEG: usize = 32;
+/// Cap when the coefficients are symbolic constants (surd towers from an
+/// expanded dsp.tf): the factored trees still square per stage.
+const MAX_STABLE_DEG_SYMBOLIC: usize = 6;
 
 /// Cap on filter order for design (each section is cheap, but symbolic
 /// coefficient size grows with the trig table misses).
@@ -252,6 +256,17 @@ fn schur_cohn(a: &[Expr]) -> Result<bool, String> {
             MAX_STABLE_DEG
         ));
     }
+    // Symbolic-constant coefficients square the expression tree per
+    // step-down stage; past a modest degree that stops being interactive.
+    // (Rational coefficients — every deployed/quantized filter — have no
+    // such growth; and the SOS form checks per-section regardless of order.)
+    let symbolic = a.iter().any(|c| crate::expr::numeric_value(c).is_none());
+    if symbolic && a.len() - 1 > MAX_STABLE_DEG_SYMBOLIC {
+        return Err(format!(
+            "dsp.stable: symbolic coefficients are supported to degree {} — check the filter in SOS form (dsp.stable(f)), or its quantized coefficients",
+            MAX_STABLE_DEG_SYMBOLIC
+        ));
+    }
     // Normalize a0 to 1 (a0 must be provably nonzero).
     if certified_cmp_zero(&a[0])? == Ordering::Equal {
         return Err("dsp.stable: the leading denominator coefficient is zero".into());
@@ -286,7 +301,11 @@ fn schur_cohn(a: &[Expr]) -> Result<bool, String> {
                     coeffs[i].clone(),
                     mul(vec![int(-1), k.clone(), coeffs[m - i].clone()]),
                 ]);
-                expand(&mul(vec![stepped, inv.clone()]))
+                // No expand: on symbolic-constant coefficients (an expanded
+                // dsp.tf denominator), expanding products of large surd sums
+                // grows exponentially across stages and effectively hangs.
+                // The certified sign decisions walk factored trees fine.
+                mul(vec![stepped, inv.clone()])
             })
             .collect();
         coeffs = next;
@@ -520,4 +539,228 @@ mod tests {
             assert_eq!(format!("{}", yi), *e);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// z-domain utilities: dsp.tf / dsp.poles / dsp.zeros.
+// ---------------------------------------------------------------------------
+
+/// `dsp.tf(f)`: expand a filter's SOS cascade into one transfer function
+/// B(z)/A(z) — exact polynomial products of the section coefficients.
+/// Returns struct(b, a) in delay form ([c0, c1, …] for Σ cₖ·z^(−k)), ready
+/// for `dsp.freqz(b, a, w)`, `dsp.stable(a)`, `dsp.filter(b, a, x)`,
+/// `dsp.poles`/`dsp.zeros`.
+pub fn tf(args: Vec<Expr>) -> Result<Expr, String> {
+    if args.len() != 1 {
+        return Err("dsp.tf expects one argument: a filter struct or SOS matrix".into());
+    }
+    let sections = sos_sections("dsp.tf", &args[0])?;
+    let mut b = vec![int(1)];
+    let mut a = vec![int(1)];
+    for (sb, sa) in &sections {
+        b = poly_mul_expr(&b, &strip_trailing_zeros(sb));
+        a = poly_mul_expr(&a, &strip_trailing_zeros(sa));
+    }
+    structure(vec![
+        ("b".to_string(), Expr::Matrix(vec![b])),
+        ("a".to_string(), Expr::Matrix(vec![a])),
+    ])
+}
+
+/// `dsp.poles(x)` / `dsp.zeros(x)`: the exact poles (roots of A) or zeros
+/// (roots of B) of a filter. Section-structured input (a filter struct or
+/// SOS matrix) roots each biquad by the quadratic formula — complex pairs
+/// come back as exact `a ± b·i` radical expressions. A bare coefficient
+/// vector of degree ≤ 2 does the same; higher degrees go through the real
+/// algebraic engine when every root is real (squarefree), and refuse
+/// otherwise — exact complex roots of high-degree polynomials would need a
+/// complex algebraic engine, and the SOS form already carries the exact
+/// factorization, so keep filters in sections.
+pub fn poles_or_zeros(name: &str, args: Vec<Expr>, poles: bool) -> Result<Expr, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "{} expects one argument: a filter, SOS matrix, or coefficient vector",
+            name
+        ));
+    }
+    let mut out: Vec<Expr> = Vec::new();
+    match &args[0] {
+        Expr::Struct(_) => {
+            for (b, a) in sos_sections(name, &args[0])? {
+                section_roots(name, &b, &a, poles, &mut out)?;
+            }
+        }
+        Expr::Matrix(rows) if rows.iter().all(|r| r.len() == 6) && rows.len() > 1 => {
+            for (b, a) in sos_sections(name, &args[0])? {
+                section_roots(name, &b, &a, poles, &mut out)?;
+            }
+        }
+        Expr::Matrix(rows) if rows.len() == 1 && rows[0].len() == 6 => {
+            for (b, a) in sos_sections(name, &args[0])? {
+                section_roots(name, &b, &a, poles, &mut out)?;
+            }
+        }
+        Expr::Matrix(_) => {
+            let (c, _) = crate::dsp::as_vector(name, &args[0])?;
+            let c = strip_trailing_zeros(&c);
+            vector_roots(name, &c, &mut out)?;
+        }
+        _ => {
+            return Err(format!(
+                "{} expects a filter struct, an m×6 SOS matrix, or a coefficient vector",
+                name
+            ))
+        }
+    }
+    Ok(Expr::Matrix(out.into_iter().map(|e| vec![e]).collect()))
+}
+
+/// The roots contributed by one section: both polynomials lift to the same
+/// z-degree D = max(deg B, deg A), so a shorter polynomial's missing powers
+/// become genuine roots at the origin (a pure delay), never padding
+/// artifacts.
+fn section_roots(
+    name: &str,
+    b: &[Expr],
+    a: &[Expr],
+    poles: bool,
+    out: &mut Vec<Expr>,
+) -> Result<(), String> {
+    let (b, a) = (strip_trailing_zeros(b), strip_trailing_zeros(a));
+    let d = b.len().max(a.len()) - 1;
+    let c = if poles { &a } else { &b };
+    // z^D·C(z⁻¹) = c0·z^D + c1·z^(D−1) + … : degree-D z-polynomial whose
+    // low-order missing terms are exact zeros at the origin.
+    for _ in 0..(d + 1 - c.len()) {
+        out.push(int(0));
+    }
+    vector_roots(name, c, out)
+}
+
+/// Exact roots of the z-polynomial c0·z^m + c1·z^(m−1) + … + cm (delay-form
+/// coefficients c, already trailing-stripped).
+fn vector_roots(name: &str, c: &[Expr], out: &mut Vec<Expr>) -> Result<(), String> {
+    match c.len() {
+        0 | 1 => Ok(()), // constant: no roots
+        2 => {
+            // c0·z + c1 = 0.
+            out.push(mul(vec![int(-1), c[1].clone(), pow(c[0].clone(), int(-1))]));
+            Ok(())
+        }
+        3 => {
+            // Quadratic formula on c0·z² + c1·z + c2, exactly; the
+            // discriminant's sign is a certified decision, so complex pairs
+            // are recognized — not guessed.
+            let disc = add(vec![
+                pow(c[1].clone(), int(2)),
+                mul(vec![int(-4), c[0].clone(), c[2].clone()]),
+            ]);
+            let inv_2c0 = pow(mul(vec![int(2), c[0].clone()]), int(-1));
+            let neg_c1 = mul(vec![int(-1), c[1].clone()]);
+            match certified_cmp_zero(&disc)? {
+                Ordering::Equal => {
+                    let r = mul(vec![neg_c1, inv_2c0]);
+                    out.push(r.clone());
+                    out.push(r);
+                }
+                Ordering::Greater => {
+                    let s = pow(disc, rat_expr(1, 2));
+                    out.push(mul(vec![
+                        add(vec![neg_c1.clone(), mul(vec![int(-1), s.clone()])]),
+                        inv_2c0.clone(),
+                    ]));
+                    out.push(mul(vec![add(vec![neg_c1, s]), inv_2c0]));
+                }
+                Ordering::Less => {
+                    let s = pow(mul(vec![int(-1), disc]), rat_expr(1, 2));
+                    let re = mul(vec![neg_c1, inv_2c0.clone()]);
+                    let im = mul(vec![s, inv_2c0]);
+                    out.push(crate::expr::complex(
+                        re.clone(),
+                        mul(vec![int(-1), im.clone()]),
+                    ));
+                    out.push(crate::expr::complex(re, im));
+                }
+            }
+            Ok(())
+        }
+        n => {
+            // Degree ≥ 3: exact only when the polynomial is squarefree with
+            // every root real — then the k-th roots are root(p, k) values.
+            let coeffs: Vec<crate::expr::BigRational> = c
+                .iter()
+                .map(|e| {
+                    crate::expr::numeric_value(e).ok_or_else(|| {
+                        format!(
+                            "{}: degree ≥ 3 needs rational coefficients — keep the filter \
+                             in second-order sections for exact symbolic roots",
+                            name
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            // Ascending for the algebraic engine (delay form is descending
+            // in z).
+            let asc: Vec<crate::expr::BigRational> = coeffs.iter().rev().cloned().collect();
+            let deg = n - 1;
+            let count = crate::algebraic::RealAlg::real_root_count(&asc).ok_or_else(|| {
+                format!(
+                    "{}: this polynomial is beyond the algebraic engine's caps",
+                    name
+                )
+            })?;
+            if count != deg {
+                return Err(format!(
+                    "{}: a degree-{} polynomial with complex (or repeated) roots — keep \
+                     the filter in second-order sections (dsp.butter output), where every \
+                     root is exact by the quadratic formula",
+                    name, deg
+                ));
+            }
+            // Build the poly expression in z and return root(p, k) values.
+            let z = Expr::Symbol("z".to_string());
+            let terms: Vec<Expr> = c
+                .iter()
+                .enumerate()
+                .map(|(i, ci)| mul(vec![ci.clone(), pow(z.clone(), int((deg - i) as i64))]))
+                .collect();
+            let p = add(terms);
+            for k in 1..=deg {
+                out.push(Expr::Func(
+                    "root".to_string(),
+                    vec![p.clone(), int(k as i64)],
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn strip_trailing_zeros(c: &[Expr]) -> Vec<Expr> {
+    let mut v = c.to_vec();
+    while v.len() > 1
+        && matches!(v.last(), Some(e) if crate::expr::numeric_value(e).is_some_and(|r| r.is_zero()))
+    {
+        v.pop();
+    }
+    v
+}
+
+/// Exact product of two delay-form coefficient polynomials.
+fn poly_mul_expr(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+    let mut out = vec![Vec::new(); a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            out[i + j].push(mul(vec![x.clone(), y.clone()]));
+        }
+    }
+    out.into_iter()
+        .map(|terms| {
+            if terms.is_empty() {
+                int(0)
+            } else {
+                crate::expr::expand(&add(terms))
+            }
+        })
+        .collect()
 }

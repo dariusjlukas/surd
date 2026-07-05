@@ -2283,3 +2283,42 @@ fn spectrogram_validates_and_tags() {
     assert!(ev("spectrogram(signal([1; 2; 3]), 7)").contains("power of two"));
     assert!(ev("spectrogram(signal([1; 2; 3]), 16)").contains("3 samples"));
 }
+
+// ---------------------------------------------------------------------------
+// z-domain utilities: dsp.tf, dsp.poles, dsp.zeros
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tf_expands_sos_exactly_and_composes() {
+    let pre = "f := dsp.tf(dsp.butter(2, pi/2))";
+    // The expanded transfer function keeps every exact identity.
+    assert_eq!(ev_all(&[pre, "dsp.freqz(f.b, f.a, [0]) == [1]"]), "true");
+    assert_eq!(ev_all(&[pre, "dsp.stable(f.a)"]), "true");
+    // Butterworth n=2 at π/2 has a1 = 0 exactly.
+    assert_eq!(ev_all(&[pre, "f.a[2] == 0"]), "true");
+}
+
+#[test]
+fn poles_and_zeros_are_exact() {
+    // Rational biquad: z² − 5z/6 + 1/6 = (z − 1/2)(z − 1/3).
+    assert_eq!(norm("dsp.poles([1, -5/6, 1/6])"), "[ 1/3 ] [ 1/2 ]");
+    // Butterworth zeros: a double −1, proven exactly through the radicals.
+    assert_eq!(ev("dsp.zeros(dsp.butter(2, pi/2)) == [-1; -1]"), "true");
+    // Complex pole pair: |p|² = a2 exactly (product of conjugate roots).
+    assert_eq!(
+        ev("abs(dsp.poles(dsp.butter(2, pi/2))[1])^2 == (2-sqrt(2))/(2+sqrt(2))"),
+        "true"
+    );
+    // ...and certified inside the unit circle.
+    assert_eq!(ev("abs(dsp.poles(dsp.butter(2, pi/2))[1])^2 < 1"), "true");
+    // Degree ≥ 3, all-real: exact root(p, k) values.
+    assert_eq!(ev("dsp.poles([1, -6, 11, -6])[2] == 2"), "true");
+    // Degree ≥ 3 with complex roots refuses toward SOS form.
+    assert!(ev("dsp.poles([1, 0, 0, -1/8])").contains("second-order sections"));
+    // A first-order section contributes a genuine zero at the origin, not a
+    // padding artifact: b = [1, 1/2], a = [1, 1/3, 1/4] → zeros {0, −1/2}.
+    assert_eq!(
+        norm("dsp.zeros([1, 1/2, 0, 1, 1/3, 1/4])"),
+        "[ 0 ] [ -1/2 ]"
+    );
+}

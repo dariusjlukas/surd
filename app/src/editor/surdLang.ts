@@ -316,6 +316,21 @@ const NAMESPACES: Namespace[] = [
         doc: 'First n samples of the impulse response, exactly; also impz(b, a, n).',
       },
       {
+        name: 'tf',
+        params: ['f'],
+        doc: 'Expand SOS sections into one exact transfer function → struct(b, a).',
+      },
+      {
+        name: 'poles',
+        params: ['f'],
+        doc: 'Exact poles of a filter (complex pairs as exact radicals); takes a filter, SOS matrix, or denominator coefficients.',
+      },
+      {
+        name: 'zeros',
+        params: ['f'],
+        doc: 'Exact zeros of a filter; takes a filter, SOS matrix, or numerator coefficients.',
+      },
+      {
         name: 'stft',
         params: ['v', 'nfft', 'hop'],
         doc: 'Exact short-time Fourier transform of a vector (periodic Hann) → struct(frames, nfft, hop).',
