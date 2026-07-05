@@ -18,11 +18,52 @@ use num_traits::ToPrimitive;
 
 /// Functions in the namespace, in the order the docs list them.
 pub const FUNCTIONS: &[&str] = &[
-    "sum", "mean", "median", "quantile", "min", "max", "var", "std", "cov", "cor", "covmat",
-    "cormat", "linfit", "polyfit", "polyval", "lsq", "regress", "wls", "ridge", "lasso", "cv",
-    "logit", "predict", "robustse", "anova", "bptest", "dwtest", "jbtest", "nlfit", "rmse", "r2",
-    "normcdf", "normpdf", "norminv", "tcdf", "tpdf", "tinv", "chisqcdf", "chisqpdf", "chisqinv",
-    "fcdf", "fpdf", "finv",
+    "sum",
+    "mean",
+    "median",
+    "quantile",
+    "min",
+    "max",
+    "var",
+    "std",
+    "cov",
+    "cor",
+    "covmat",
+    "cormat",
+    "linfit",
+    "polyfit",
+    "polyval",
+    "lsq",
+    "regress",
+    "wls",
+    "ridge",
+    "lasso",
+    "cv",
+    "logit",
+    "predict",
+    "robustse",
+    "anova",
+    "bptest",
+    "dwtest",
+    "jbtest",
+    "ttest",
+    "chisqtest",
+    "cortest",
+    "nlfit",
+    "rmse",
+    "r2",
+    "normcdf",
+    "normpdf",
+    "norminv",
+    "tcdf",
+    "tpdf",
+    "tinv",
+    "chisqcdf",
+    "chisqpdf",
+    "chisqinv",
+    "fcdf",
+    "fpdf",
+    "finv",
 ];
 
 pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
@@ -115,6 +156,9 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "bptest" => bptest(&args),
         "dwtest" => dwtest(&args),
         "jbtest" => jbtest(&args),
+        "ttest" => ttest(&args),
+        "chisqtest" => chisqtest(&args),
+        "cortest" => cortest(&args),
         // Distributions are symbolic until N(...): an arity check here, the
         // arbitrary-precision evaluation in `crate::special`.
         "normcdf" | "normpdf" | "norminv" => dist(name, args, &[1, 3]),
@@ -1403,10 +1447,13 @@ fn model_data(caller: &str, a0: &Expr, a1: &Expr) -> Result<(Expr, Vec<Expr>), S
 }
 
 /// Build a design matrix and response from `response ~ terms` against a data
-/// struct (columns named by the formula's symbols). Numeric columns enter
-/// directly; categorical (symbol-valued) columns are one-hot encoded with the
-/// first level dropped as the reference, since `fit_linear` supplies the
-/// intercept.
+/// struct (columns named by the formula's symbols). A term that is a bare
+/// name enters as its column — directly if numeric, one-hot encoded with the
+/// first level dropped if categorical (`fit_linear` supplies the intercept).
+/// A term that is an *expression* in column names — a transform like `ln(x)`
+/// or `x^2`, or an interaction like `x*z` — is evaluated row by row with the
+/// column values substituted exactly, so `mpg ~ weight + weight^2` regresses
+/// on the exact squares. The response may be a transform too (`ln(y) ~ x`).
 fn build_from_formula(
     caller: &str,
     lhs: &Expr,
@@ -1419,40 +1466,43 @@ fn build_from_formula(
             caller
         ));
     };
-    let Expr::Symbol(resp) = lhs else {
-        return Err(format!(
-            "{}: the formula response (left of ~) must be a single column name",
-            caller
-        ));
+    let y = match lhs {
+        Expr::Symbol(resp) => lookup_column(caller, fields, resp)?,
+        transform => term_rows(caller, transform, fields, None)?,
     };
-    let y = lookup_column(caller, fields, resp)?;
     let n = y.len();
 
     let mut cols: Vec<Vec<Expr>> = Vec::new();
-    for term in formula_terms(caller, rhs)? {
-        let column = lookup_column(caller, fields, &term)?;
-        if column.len() != n {
-            return Err(format!(
-                "{}: column '{}' has {} rows but the response has {}",
-                caller,
-                term,
-                column.len(),
-                n
-            ));
-        }
-        if column.iter().any(|e| !is_numeric(e)) {
-            // Categorical: one indicator column per level past the reference.
-            let levels = distinct(&column);
-            for lv in levels.iter().skip(1) {
-                cols.push(
-                    column
-                        .iter()
-                        .map(|x| if x == lv { int(1) } else { int(0) })
-                        .collect(),
-                );
+    for term in formula_terms(rhs) {
+        match &term {
+            Expr::Symbol(name) => {
+                let column = lookup_column(caller, fields, name)?;
+                if column.len() != n {
+                    return Err(format!(
+                        "{}: column '{}' has {} rows but the response has {}",
+                        caller,
+                        name,
+                        column.len(),
+                        n
+                    ));
+                }
+                if column.iter().any(|e| !is_numeric(e)) {
+                    // Categorical: one indicator column per level past the
+                    // reference.
+                    let levels = distinct(&column);
+                    for lv in levels.iter().skip(1) {
+                        cols.push(
+                            column
+                                .iter()
+                                .map(|x| if x == lv { int(1) } else { int(0) })
+                                .collect(),
+                        );
+                    }
+                } else {
+                    cols.push(column);
+                }
             }
-        } else {
-            cols.push(column);
+            term => cols.push(term_rows(caller, term, fields, Some(n))?),
         }
     }
     if cols.is_empty() {
@@ -1464,19 +1514,97 @@ fn build_from_formula(
     Ok((Expr::Matrix(rows), y))
 }
 
-/// The additive terms on the right of `~`, each a bare column name. (`a + b`
-/// has already canonicalized to `Add([a, b])`.)
-fn formula_terms(caller: &str, rhs: &Expr) -> Result<Vec<String>, String> {
-    let name = |e: &Expr| match e {
-        Expr::Symbol(s) => Ok(s.clone()),
-        other => Err(format!(
-            "{}: formula predictors must be column names, got '{}'",
-            caller, other
-        )),
-    };
+/// The additive terms on the right of `~`: bare column names, transforms of
+/// them, and interactions. (`a + b` has already canonicalized to
+/// `Add([a, b])`; each term is vetted where it is consumed.)
+fn formula_terms(rhs: &Expr) -> Vec<Expr> {
     match rhs {
-        Expr::Add(ts) => ts.iter().map(name).collect(),
-        other => Ok(vec![name(other)?]),
+        Expr::Add(ts) => ts.clone(),
+        other => vec![other.clone()],
+    }
+}
+
+/// The per-row values of a formula term that is an expression in column
+/// names — a transform (`ln(x)`, `x^2`) or an interaction (`x*z`). Every
+/// free symbol must name a **numeric** column (a categorical column has no
+/// arithmetic; encode it with `data.dummy` first), and the term is evaluated
+/// at each row by exact substitution, so the design entries stay exact —
+/// symbolic (`ln(35)`) where no closed numeric form exists.
+fn term_rows(
+    caller: &str,
+    term: &Expr,
+    fields: &[(String, Expr)],
+    expect_n: Option<usize>,
+) -> Result<Vec<Expr>, String> {
+    if !is_scalar(term) {
+        return Err(format!(
+            "{}: '{}' cannot be a formula term (terms are scalar expressions in column names)",
+            caller, term
+        ));
+    }
+    let mut names = Vec::new();
+    free_symbols(term, &mut names);
+    if names.is_empty() {
+        return Err(format!(
+            "{}: the term '{}' names no columns (the intercept is automatic)",
+            caller, term
+        ));
+    }
+    let mut n = expect_n;
+    let mut columns: Vec<(String, Vec<Expr>)> = Vec::with_capacity(names.len());
+    for s in &names {
+        let col = lookup_column(caller, fields, s)?;
+        match n {
+            Some(k) if col.len() != k => {
+                return Err(format!(
+                    "{}: column '{}' has {} rows but the response has {}",
+                    caller,
+                    s,
+                    col.len(),
+                    k
+                ));
+            }
+            None => n = Some(col.len()),
+            _ => {}
+        }
+        if col.iter().any(|e| !is_numeric(e)) {
+            return Err(format!(
+                "{}: the term '{}' uses column '{}', which is categorical — transforms and \
+                 interactions need numeric columns (encode it first with data.dummy)",
+                caller, term, s
+            ));
+        }
+        columns.push((s.clone(), col));
+    }
+    let n = n.expect("names is non-empty, so a column set n");
+    Ok((0..n)
+        .map(|i| {
+            let mut v = term.clone();
+            for (s, col) in &columns {
+                v = substitute(&v, s, &col[i]);
+            }
+            v
+        })
+        .collect())
+}
+
+/// Free symbol names in an expression, first appearance order, deduplicated.
+fn free_symbols(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Symbol(s) => {
+            if !out.iter().any(|n| n == s) {
+                out.push(s.clone());
+            }
+        }
+        Expr::Add(ts) | Expr::Mul(ts) | Expr::Func(_, ts) => {
+            ts.iter().for_each(|t| free_symbols(t, out))
+        }
+        Expr::Pow(a, b) | Expr::Complex(a, b) | Expr::Equation(a, b) | Expr::Formula(a, b) => {
+            free_symbols(a, out);
+            free_symbols(b, out);
+        }
+        Expr::Matrix(rows) => rows.iter().flatten().for_each(|x| free_symbols(x, out)),
+        _ => {}
     }
 }
 
@@ -2140,6 +2268,314 @@ fn chisq_test(statistic: Expr, df: i64) -> Result<Expr, String> {
     structure(vec![
         ("statistic".into(), statistic),
         ("pvalue".into(), pvalue),
+    ])
+}
+
+// -- classical hypothesis tests -------------------------------------------------
+
+/// The symbolic two-sided t p-value, 2·(1 − tcdf(|t|, ν)).
+fn two_sided_t_pvalue(t: &Expr, df: &Expr) -> Expr {
+    mul(vec![
+        int(2),
+        add(vec![
+            int(1),
+            mul(vec![
+                int(-1),
+                func("tcdf", vec![func("abs", vec![t.clone()]), df.clone()]),
+            ]),
+        ]),
+    ])
+}
+
+/// `estimate ± tinv(0.975, df)·se`, as a `[lower, upper]` row.
+fn t_confint(estimate: &Expr, se: &Expr, df: &Expr) -> Expr {
+    let hw = mul(vec![
+        func("tinv", vec![rat(39, 40), df.clone()]),
+        se.clone(),
+    ]);
+    Expr::Matrix(vec![vec![
+        add(vec![estimate.clone(), mul(vec![int(-1), hw.clone()])]),
+        add(vec![estimate.clone(), hw]),
+    ]])
+}
+
+/// `stats.ttest(x, mu)` / `stats.ttest(x, y)` / `stats.ttest(x, y, paired)`:
+/// Student's t-tests. One-sample against a hypothesized mean, two-sample by
+/// **Welch's** unequal-variance statistic (the safe default — it never
+/// assumes what it is testing near), or paired (a one-sample test on the
+/// pairwise differences). The statistic, standard error, and Welch degrees
+/// of freedom are exact (surds and rationals); the p-value and the 95%
+/// confidence interval carry symbolic `tcdf`/`tinv` — `N(...)` for decimals.
+fn ttest(args: &[Expr]) -> Result<Expr, String> {
+    let x = entries("stats.ttest", args.first().ok_or(TTEST_USAGE)?)?;
+    match args {
+        // One-sample: the second argument is the hypothesized mean.
+        [_, mu] if !matches!(mu, Expr::Matrix(_)) => {
+            if !is_scalar(mu) {
+                return Err(format!(
+                    "stats.ttest: the hypothesized mean must be a scalar, got '{}'",
+                    mu
+                ));
+            }
+            let mut fields = t_one_sample("stats.ttest", &x, mu)?;
+            fields.push(("kind".into(), Expr::Symbol("one-sample".into())));
+            fields.push(("mu".into(), mu.clone()));
+            structure(fields)
+        }
+        // Two-sample Welch.
+        [_, y_arg @ Expr::Matrix(_)] => {
+            let y = entries("stats.ttest", y_arg)?;
+            t_welch(&x, &y)
+        }
+        // Paired: a one-sample test on the differences, against 0.
+        [_, y_arg, flag] => {
+            if !matches!(flag, Expr::Symbol(s) if s == "paired") {
+                return Err(format!(
+                    "stats.ttest: the third argument must be the word 'paired', got '{}'",
+                    flag
+                ));
+            }
+            let y = entries("stats.ttest", y_arg)?;
+            if x.len() != y.len() {
+                return Err(format!(
+                    "stats.ttest: paired samples must have equal lengths, got {} and {}",
+                    x.len(),
+                    y.len()
+                ));
+            }
+            let d: Vec<Expr> = x
+                .iter()
+                .zip(&y)
+                .map(|(xi, yi)| add(vec![xi.clone(), mul(vec![int(-1), yi.clone()])]))
+                .collect();
+            let mut fields = t_one_sample("stats.ttest", &d, &int(0))?;
+            fields.push(("kind".into(), Expr::Symbol("paired".into())));
+            structure(fields)
+        }
+        _ => Err(TTEST_USAGE.into()),
+    }
+}
+
+const TTEST_USAGE: &str =
+    "stats.ttest expects (x, mu) for one sample, (x, y) for two, or (x, y, paired)";
+
+/// The one-sample t core: statistic, df, se, p, estimate (the sample mean),
+/// and the CI on that mean. Shared by the one-sample and paired forms.
+fn t_one_sample(caller: &str, xs: &[Expr], mu0: &Expr) -> Result<Vec<(String, Expr)>, String> {
+    let n = xs.len();
+    let v = variance(xs, caller)?;
+    if is_known_zero(&v) {
+        return Err(format!("{}: the data has zero variance", caller));
+    }
+    let xbar = mean_of(xs);
+    let se2 = mul(vec![v, inv_int(n)]);
+    let se = pow(se2.clone(), half());
+    let diff = add(vec![xbar.clone(), mul(vec![int(-1), mu0.clone()])]);
+    let t = mul(vec![diff, pow(se2, neg_half())]);
+    let df = int(n as i64 - 1);
+    Ok(vec![
+        ("statistic".into(), t.clone()),
+        ("df".into(), df.clone()),
+        ("se".into(), se.clone()),
+        ("pvalue".into(), two_sided_t_pvalue(&t, &df)),
+        ("confint".into(), t_confint(&xbar, &se, &df)),
+        ("estimate".into(), xbar),
+        ("n".into(), int(n as i64)),
+    ])
+}
+
+/// Welch's two-sample t: t = (x̄ − ȳ)/√(s₁²/n₁ + s₂²/n₂) with the
+/// Welch–Satterthwaite degrees of freedom — an exact rational, handed
+/// symbolically to `tcdf` (which evaluates at non-integer ν).
+fn t_welch(x: &[Expr], y: &[Expr]) -> Result<Expr, String> {
+    let (n1, n2) = (x.len(), y.len());
+    let v1 = variance(x, "stats.ttest")?;
+    let v2 = variance(y, "stats.ttest")?;
+    let q1 = mul(vec![v1, inv_int(n1)]);
+    let q2 = mul(vec![v2, inv_int(n2)]);
+    let se2 = add(vec![q1.clone(), q2.clone()]);
+    if is_known_zero(&se2) {
+        return Err("stats.ttest: both samples have zero variance".into());
+    }
+    let se = pow(se2.clone(), half());
+    let estimate = add(vec![mean_of(x), mul(vec![int(-1), mean_of(y)])]);
+    let t = mul(vec![estimate.clone(), pow(se2.clone(), neg_half())]);
+    let df = mul(vec![
+        expand(&mul(vec![se2.clone(), se2])),
+        pow(
+            add(vec![
+                mul(vec![expand(&mul(vec![q1.clone(), q1])), inv_int(n1 - 1)]),
+                mul(vec![expand(&mul(vec![q2.clone(), q2])), inv_int(n2 - 1)]),
+            ]),
+            int(-1),
+        ),
+    ]);
+    structure(vec![
+        ("statistic".into(), t.clone()),
+        ("df".into(), df.clone()),
+        ("se".into(), se.clone()),
+        ("pvalue".into(), two_sided_t_pvalue(&t, &df)),
+        ("confint".into(), t_confint(&estimate, &se, &df)),
+        ("estimate".into(), estimate),
+        ("n".into(), col(vec![int(n1 as i64), int(n2 as i64)])),
+        ("kind".into(), Expr::Symbol("welch".into())),
+    ])
+}
+
+/// `stats.chisqtest(table)` / `stats.chisqtest(x, y)`: Pearson's chi-square
+/// test of independence, on an r×c contingency table of counts or on two
+/// same-length categorical columns (cross-tabulated with levels in first
+/// appearance order). The statistic Σ(O−E)²/E and the expected counts are
+/// exact rationals; the p-value is a symbolic `chisqcdf` at (r−1)(c−1)
+/// degrees of freedom.
+fn chisqtest(args: &[Expr]) -> Result<Expr, String> {
+    let (observed, levels) = match args {
+        [table] => {
+            let Expr::Matrix(rows) = table else {
+                return Err(
+                    "stats.chisqtest expects a contingency table (a matrix of counts) \
+                     or two categorical columns"
+                        .into(),
+                );
+            };
+            (rows.clone(), None)
+        }
+        [_, _] => {
+            let (a, b) = two_vectors("stats.chisqtest", args)?;
+            let row_levels = distinct(&a);
+            let col_levels = distinct(&b);
+            let counts: Vec<Vec<Expr>> = row_levels
+                .iter()
+                .map(|rl| {
+                    col_levels
+                        .iter()
+                        .map(|cl| {
+                            int(a
+                                .iter()
+                                .zip(&b)
+                                .filter(|(ai, bi)| *ai == rl && *bi == cl)
+                                .count() as i64)
+                        })
+                        .collect()
+                })
+                .collect();
+            (counts, Some((row_levels, col_levels)))
+        }
+        _ => {
+            return Err(format!(
+                "stats.chisqtest expects 1 or 2 argument(s), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let (r, c) = (observed.len(), observed[0].len());
+    if r < 2 || c < 2 {
+        return Err(format!(
+            "stats.chisqtest needs at least a 2×2 table (each variable with at least \
+             2 levels), got {}×{}",
+            r, c
+        ));
+    }
+    // Counts must be nonnegative numbers — the sums and expected cells are
+    // then exact rationals, and the zero guards below are decidable.
+    let counts: Vec<Vec<BigRational>> = observed
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|e| {
+                    numeric_value(e)
+                        .filter(|v| *v >= BigRational::from_integer(0.into()))
+                        .ok_or_else(|| {
+                            format!(
+                                "stats.chisqtest: counts must be nonnegative numbers, got '{}'",
+                                e
+                            )
+                        })
+                })
+                .collect()
+        })
+        .collect::<Result<_, _>>()?;
+    let row_sums: Vec<BigRational> = counts.iter().map(|row| row.iter().sum()).collect();
+    let col_sums: Vec<BigRational> = (0..c)
+        .map(|j| counts.iter().map(|row| &row[j]).sum())
+        .collect();
+    let total: BigRational = row_sums.iter().sum();
+    let zero = BigRational::from_integer(0.into());
+    if row_sums.contains(&zero) || col_sums.contains(&zero) {
+        return Err("stats.chisqtest: a row or column of the table sums to zero".into());
+    }
+
+    let mut statistic = zero.clone();
+    let mut expected = Vec::with_capacity(r);
+    for (i, row) in counts.iter().enumerate() {
+        let mut erow = Vec::with_capacity(c);
+        for (j, o) in row.iter().enumerate() {
+            let e = &row_sums[i] * &col_sums[j] / &total;
+            let d = o - &e;
+            statistic += &d * &d / &e;
+            erow.push(rat_to_expr(e));
+        }
+        expected.push(erow);
+    }
+    let df = ((r - 1) * (c - 1)) as i64;
+    let pvalue = add(vec![
+        int(1),
+        mul(vec![
+            int(-1),
+            func("chisqcdf", vec![rat_to_expr(statistic.clone()), int(df)]),
+        ]),
+    ]);
+
+    let mut fields = vec![
+        ("statistic".into(), rat_to_expr(statistic)),
+        ("df".into(), int(df)),
+        ("pvalue".into(), pvalue),
+        ("observed".into(), Expr::Matrix(observed)),
+        ("expected".into(), Expr::Matrix(expected)),
+    ];
+    if let Some((row_levels, col_levels)) = levels {
+        fields.push(("rows".into(), col(row_levels)));
+        fields.push(("cols".into(), col(col_levels)));
+    }
+    structure(fields)
+}
+
+/// `stats.cortest(x, y)`: is the Pearson correlation zero? The estimate is
+/// the exact correlation `stats.cor` computes (a surd), the statistic is
+/// t = r·√((n−2)/(1−r²)) at n−2 degrees of freedom, and the p-value stays
+/// symbolic. Perfectly correlated data (|r| = 1) leaves nothing to test.
+fn cortest(args: &[Expr]) -> Result<Expr, String> {
+    let (x, y) = two_vectors("stats.cortest", args)?;
+    let n = x.len();
+    if n < 3 {
+        return Err("stats.cortest needs at least 3 paired observations".into());
+    }
+    let r = correlation(&x, &y).map_err(|e| e.replace("stats.cor ", "stats.cortest "))?;
+    let one_minus_r2 = add(vec![
+        int(1),
+        mul(vec![int(-1), expand(&mul(vec![r.clone(), r.clone()]))]),
+    ]);
+    if is_known_zero(&one_minus_r2) {
+        return Err(
+            "stats.cortest: the data is perfectly correlated (|r| = 1), leaving nothing to test"
+                .into(),
+        );
+    }
+    let t = mul(vec![
+        r.clone(),
+        pow(
+            mul(vec![int(n as i64 - 2), pow(one_minus_r2, int(-1))]),
+            half(),
+        ),
+    ]);
+    let df = int(n as i64 - 2);
+    structure(vec![
+        ("estimate".into(), r),
+        ("statistic".into(), t.clone()),
+        ("df".into(), df.clone()),
+        ("pvalue".into(), two_sided_t_pvalue(&t, &df)),
+        ("n".into(), int(n as i64)),
     ])
 }
 

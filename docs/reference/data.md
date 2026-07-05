@@ -322,6 +322,30 @@ The builder looks each term up as a column, adds an intercept, and — for a
 text column in a CSV imports as) — one-hot encodes it with the first level
 dropped as the reference. The formula's names stay symbolic, so
 a workspace binding of `weight` won't disturb `mpg ~ weight`. The same form
-works for `stats.wls`, `stats.ridge`, and `stats.logit`. (Term order follows the
-canonical ordering of the sum, and interactions like `a:b` are not yet
-supported.)
+works for `stats.wls`, `stats.ridge`, `stats.lasso`, `stats.logit`, and
+`stats.cv`. (Term order follows the canonical ordering of the sum; the
+intercept is always supplied, so a constant term is an error.)
+
+### Transforms and interactions
+
+A term doesn't have to be a bare name: it can be **any scalar expression in
+column names** — a power, a transform, or a product (what R writes `a:b`).
+Each such term is evaluated row by row with the column values substituted
+*exactly*, so the design matrix entries stay exact — symbolic, like `ln(35)`,
+where no closed numeric form exists.
+
+```text
+>> m := stats.regress(y ~ x + x^2, d)          # polynomial terms
+>> m := stats.regress(y ~ ln(x) + z + x*z, d)  # a transform and an interaction
+>> m := stats.regress(ln(y) ~ x, growth)       # the response transforms too
+```
+
+A log-linear fit stays exact end to end: on `y = [2; 4; 8; 16; 32; 64]`
+against `x = [1; ...; 6]`, the slope of `ln(y) ~ x` is an exact combination
+of logarithms, and `N(exp(slope))` collapses to exactly `2` — the growth
+factor, recovered without a decimal in sight.
+
+Columns used inside a transform or interaction must be **numeric** — a
+categorical column has no arithmetic, so `y ~ ln(origin)` or `y ~ weight*origin`
+is an error pointing at [`data.dummy`](#the-data-namespace-preparing-data-for-a-model)
+(encode first, then interact with the indicator columns you mean).

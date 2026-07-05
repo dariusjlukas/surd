@@ -455,6 +455,21 @@ const NAMESPACES: Namespace[] = [
         params: ['model'],
         doc: 'Jarque–Bera test for non-normal residuals.',
       },
+      {
+        name: 'ttest',
+        params: ['x', 'mu|y', 'paired?'],
+        doc: 't-test: one-sample (x, mu), two-sample Welch (x, y), or (x, y, paired).',
+      },
+      {
+        name: 'chisqtest',
+        params: ['table|x', 'y?'],
+        doc: 'Chi-square independence test on a contingency table or two categorical columns.',
+      },
+      {
+        name: 'cortest',
+        params: ['x', 'y'],
+        doc: 'Test whether the Pearson correlation is zero (exact r, symbolic p).',
+      },
       // Probability distributions: each symbolic until N(...). CDF, PDF, inverse.
       {
         name: 'normcdf',

@@ -1876,6 +1876,89 @@ fn formula_interface() {
 }
 
 #[test]
+fn formula_transforms_and_interactions() {
+    // A term may be any expression in column names: powers, transforms,
+    // and products (interactions), evaluated by exact substitution.
+    let d = "d := struct(y = [3; 7; 13; 21; 32], x = [1; 2; 3; 4; 5])";
+    assert_eq!(
+        ev_all(&[d, "stats.regress(y ~ x + x^2, d).k"]),
+        "3" // intercept + x + x²
+    );
+    // An interaction is just a product term.
+    let di =
+        "d := struct(y = [5; 8; 11; 15; 14; 19], a = [1; 2; 3; 1; 2; 3], b = [1; 1; 1; 2; 2; 2])";
+    assert_eq!(ev_all(&[di, "stats.regress(y ~ a + b + a*b, d).k"]), "4");
+    // The response can be transformed too: ln(y) ~ x on y = 2^x holds the
+    // slope as an exact combination of logs — N(exp(slope)) collapses to 2.
+    assert_eq!(
+        ev_all(&[
+            "d := struct(y = [2; 4; 8; 16; 32; 64], x = [1; 2; 3; 4; 5; 6])",
+            "N(exp(stats.regress(ln(y) ~ x, d).coefficients[2]))"
+        ]),
+        "2"
+    );
+    // Transforms need numeric columns; categorical ones point at data.dummy.
+    assert!(ev_all(&[
+        "t := struct(y = [1; 2; 3], g = [us; eu; us])",
+        "stats.regress(y ~ ln(g), t)"
+    ])
+    .contains("categorical"));
+    // A constant term is rejected (the intercept is automatic).
+    assert!(ev_all(&[d, "stats.regress(y ~ x + 1, d)"]).contains("the intercept is automatic"));
+}
+
+#[test]
+fn t_tests_match_the_textbook() {
+    // One-sample: t = (x̄ − μ)/(s/√n) is an exact surd; p and CI symbolic.
+    let t1 = "t := stats.ttest([1; 2; 3; 4; 5], 2)";
+    assert_eq!(ev_all(&[t1, "t.estimate"]), "3");
+    assert_eq!(ev_all(&[t1, "t.df"]), "4");
+    assert_eq!(ev_all(&[t1, "t.statistic^2"]), "2"); // t = √2
+    assert!(ev_all(&[t1, "N(t.pvalue)"]).starts_with("0.2301996"));
+    // Two-sample Welch: the Satterthwaite df is an exact rational, and the
+    // numbers match R's t.test to every printed digit.
+    let t2 = "t := stats.ttest([1; 2; 3; 4], [2; 4; 6; 8; 10])";
+    assert_eq!(ev_all(&[t2, "t.df"]), "2523/457");
+    assert_eq!(ev_all(&[t2, "t.estimate"]), "-7/2");
+    assert!(ev_all(&[t2, "N(t.statistic)"]).starts_with("-2.251436"));
+    assert!(ev_all(&[t2, "N(t.pvalue)"]).starts_with("0.069133"));
+    // Paired: a one-sample test on the differences.
+    let t3 = "t := stats.ttest([2; 4; 7], [1; 3; 5], paired)";
+    assert_eq!(ev_all(&[t3, "t.statistic"]), "4");
+    assert_eq!(ev_all(&[t3, "t.df"]), "2");
+    assert!(ev("stats.ttest([2; 4], [1; 3; 5], paired)")
+        .starts_with("error: stats.ttest: paired samples must have equal lengths"));
+    assert!(ev("stats.ttest([7; 7; 7], 5)")
+        .starts_with("error: stats.ttest: the data has zero variance"));
+}
+
+#[test]
+fn chisq_and_correlation_tests() {
+    // Independence on a contingency table: exact statistic and expected
+    // counts (matches R's chisq.test with correct = FALSE).
+    let c = "c := stats.chisqtest([10, 20; 30, 40])";
+    assert_eq!(ev_all(&[c, "c.statistic"]), "50/63");
+    assert_eq!(ev_all(&[c, "c.df"]), "1");
+    assert_eq!(ev_all(&[c, "c.expected[1, 1]"]), "12");
+    assert!(ev_all(&[c, "N(c.pvalue)"]).starts_with("0.372998"));
+    // The two-column form cross-tabulates categorical data.
+    let c2 = "c := stats.chisqtest([a; a; b; b; a; b], [x; y; x; y; x; y])";
+    assert_eq!(ev_all(&[c2, "c.observed[1, 1]"]), "2"); // (a, x) pairs
+    assert_eq!(ev_all(&[c2, "c.rows[2]"]), "b");
+    assert!(ev("stats.chisqtest([1, 2; 3, -4])")
+        .starts_with("error: stats.chisqtest: counts must be nonnegative"));
+    assert!(ev("stats.chisqtest([a; a; a], [x; y; x])")
+        .starts_with("error: stats.chisqtest needs at least a 2×2 table"));
+    // Correlation test: the estimate is the exact surd r.
+    let r = "r := stats.cortest([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])";
+    assert_eq!(ev_all(&[r, "r.estimate^2"]), "3/5"); // r² = 3/5 exactly
+    assert_eq!(ev_all(&[r, "r.df"]), "3");
+    assert!(ev_all(&[r, "N(r.statistic)"]).starts_with("2.121320"));
+    assert!(ev("stats.cortest([1; 2; 3], [2; 4; 6])")
+        .starts_with("error: stats.cortest: the data is perfectly correlated"));
+}
+
+#[test]
 fn missing_values_are_refused_until_dropped() {
     // NA is an ordinary symbol to the algebra, but every statistical
     // consumer refuses it, pointing at data.dropna.

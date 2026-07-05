@@ -11,6 +11,31 @@ section into a dated, versioned release.
 
 ### Added
 
+- Formula transforms and interactions. A model-formula term can now be any
+  scalar expression in column names — `y ~ x + x^2`, `y ~ ln(x) + z + x*z`
+  (a product term is what R writes `a:b`), and the response side transforms
+  too (`ln(y) ~ x`). Terms are evaluated row by row by exact substitution, so
+  the design matrix stays exact — symbolic, like `ln(35)`, where no closed
+  numeric form exists; a log-linear fit of `y = 2^x` recovers `N(exp(slope))`
+  as exactly 2. Columns used inside a transform or interaction must be
+  numeric — a categorical column errors with a pointer at `data.dummy` — and
+  a constant term is rejected (the intercept is automatic). Works everywhere
+  formulas do: `regress`, `wls`, `ridge`, `lasso`, `logit`, and `cv`.
+- Classical hypothesis tests, in the house style — exact statistics, symbolic
+  p-values:
+  - `stats.ttest(x, mu)` / `stats.ttest(x, y)` / `stats.ttest(x, y, paired)` —
+    one-sample, two-sample, and paired t-tests. The two-sample form is
+    Welch's (the safe default), with the Welch–Satterthwaite degrees of
+    freedom kept as an exact rational and handed to the symbolic `tcdf`,
+    which evaluates at non-integer ν. Reports statistic, df, se, p-value,
+    95% confidence interval, and estimate.
+  - `stats.chisqtest(table)` / `stats.chisqtest(x, y)` — Pearson's
+    chi-square test of independence on a contingency table or two
+    categorical columns (cross-tabulated, levels reported). The statistic
+    and expected counts are exact rationals; no continuity correction
+    (matches R's `chisq.test(..., correct = FALSE)`).
+  - `stats.cortest(x, y)` — tests whether the Pearson correlation is zero;
+    the estimate is the exact surd `stats.cor` computes.
 - Categorical columns import from CSV. A word-like text cell (`us`,
   `treated`) now imports as a symbol — a categorical level, the same value a
   hand-built `[us; eu; us]` column holds — instead of failing the whole file,

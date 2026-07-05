@@ -145,6 +145,8 @@ see [Signals](signals.md).
 | [`stats.regress(X, y)`](stats.md#statsregress) | OLS with full inference → fitted-model struct |
 | [`stats.wls(X, y, w)`](stats.md#statswls) | Weighted least squares |
 | [`stats.ridge(X, y, lambda)`](stats.md#statsridge) | L2-penalized (ridge) regression |
+| [`stats.lasso(X, y, lambda)`](stats.md#statslasso) | L1-penalized (lasso) regression, zeroes coefficients |
+| [`stats.cv(X, y, k, opts?)`](stats.md#statscv) | k-fold cross-validation (seeded); λ-sweep picks `best` |
 | [`stats.logit(X, y)`](stats.md#statslogit) | Logistic regression (IRLS) |
 | [`stats.nlfit(model, [params], x, y, init?)`](stats.md#statsnlfit) | Nonlinear least squares (exact symbolic Jacobian) |
 | [`stats.predict(model, Xnew, level?)`](stats.md#statspredict) | Predictions with confidence / prediction intervals |
@@ -153,6 +155,9 @@ see [Signals](signals.md).
 | [`stats.dwtest(model)`](stats.md#regression-assumption-tests) | Durbin–Watson autocorrelation test |
 | [`stats.bptest(model)`](stats.md#regression-assumption-tests) | Breusch–Pagan heteroskedasticity test |
 | [`stats.jbtest(model)`](stats.md#regression-assumption-tests) | Jarque–Bera normality test |
+| [`stats.ttest(x, mu)` / `(x, y)` / `(x, y, paired)`](stats.md#statsttest) | t-tests (one-sample, Welch, paired) |
+| [`stats.chisqtest(table)` / `(x, y)`](stats.md#statschisqtest) | Chi-square test of independence |
+| [`stats.cortest(x, y)`](stats.md#statscortest) | Is the Pearson correlation zero? |
 
 Fit from a data table with a [formula](data.md#model-formulas-the-operator)
 (`stats.regress(y ~ x1 + x2, data)`) instead of an explicit `(X, y)`.
@@ -179,6 +184,8 @@ symbolic until [`N(...)`](numeric.md#n). See
 | [`data.rescale(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | Min–max rescale to `[0, 1]` |
 | [`data.dummy(v)`](data.md#the-data-namespace-preparing-data-for-a-model) | One-hot encode a categorical column |
 | [`data.groupby(keys, values)`](data.md#the-data-namespace-preparing-data-for-a-model) | Aggregate `values` by levels of `keys` |
+| [`data.dropna(x)`](data.md#missing-values-na) | Drop rows with missing values (`NA`) |
+| [`data.split(x, frac, seed?)`](data.md#datasplit) | Seeded random train/test split → `struct(train, test)` |
 
 ## Plotting
 

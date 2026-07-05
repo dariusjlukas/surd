@@ -586,6 +586,90 @@ are exact rationals (built from the residuals); the p-values stay symbolic.
 0.752027310235741287995200868876
 ```
 
+## `stats.ttest`
+
+```
+stats.ttest(x, mu)          # one-sample, against a hypothesized mean
+stats.ttest(x, y)           # two-sample (Welch)
+stats.ttest(x, y, paired)   # paired
+```
+
+Student's t-tests. The two-sample form is **Welch's** unequal-variance test
+(the safe default — it never assumes the equal variances it is in no position
+to check), with the Welch–Satterthwaite degrees of freedom as an **exact
+rational**; the paired form is a one-sample test on the pairwise differences.
+The statistic and standard error are exact surds; the p-value and the 95%
+confidence interval carry symbolic `tcdf`/`tinv` — `N(...)` for decimals.
+
+Returns `struct(statistic, df, se, pvalue, confint, estimate, n, kind)` —
+`estimate` is the sample mean (one-sample/paired) or the difference of means
+(two-sample), and `confint` is the 95% interval around it. The one-sample
+form also records `mu`.
+
+```text
+>> t := stats.ttest([1; 2; 3; 4], [2; 4; 6; 8; 10])
+>> t.df                       # Welch–Satterthwaite, exactly
+2523/457
+>> t.statistic
+-7*(29/3)^(-1/2)
+>> N(t.pvalue)
+0.0691335931923924129724721915329
+>> stats.ttest([2; 4; 7], [1; 3; 5], paired).statistic
+4
+```
+
+Zero-variance data (and paired samples of different lengths) are errors.
+
+## `stats.chisqtest`
+
+```
+stats.chisqtest(table)      # an r×c contingency table of counts
+stats.chisqtest(x, y)       # two same-length categorical columns
+```
+
+Pearson's chi-square test of independence. The two-column form cross-tabulates
+the levels of `x` and `y` (in first-appearance order, reported as `rows` and
+`cols`); the statistic Σ(O−E)²/E and the matrix of `expected` counts are exact
+rationals, with the p-value a symbolic `chisqcdf` at (r−1)(c−1) degrees of
+freedom. No continuity correction is applied (matching R's
+`chisq.test(..., correct = FALSE)`).
+
+```text
+>> c := stats.chisqtest([10, 20; 30, 40])
+>> c.statistic
+50/63
+>> c.expected
+[ 12  18 ]
+[ 28  42 ]
+>> N(c.pvalue)
+0.372998483613487117046496052219
+```
+
+Counts must be nonnegative numbers, the table at least 2×2, and no row or
+column may sum to zero.
+
+## `stats.cortest`
+
+```
+stats.cortest(x, y)
+```
+
+Is the Pearson correlation zero? The `estimate` is the exact surd
+[`stats.cor`](#statscov-statscor) computes, the statistic is
+t = r·√((n−2)/(1−r²)) at n−2 degrees of freedom, and the p-value stays
+symbolic. Perfectly correlated data (|r| = 1) is an error — there is nothing
+left to test.
+
+```text
+>> r := stats.cortest([1; 2; 3; 4; 5], [2; 4; 5; 4; 5])
+>> r.estimate^2
+3/5
+>> N(r.statistic)
+2.12132034355964257320253308631
+>> N(r.pvalue)
+0.124027062657554625225778493721
+```
+
 ## `stats.nlfit`
 
 ```
