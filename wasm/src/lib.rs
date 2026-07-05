@@ -62,6 +62,8 @@ struct EvalResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     splom: Option<SplomData>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    spectrogram: Option<SpectrogramData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -142,6 +144,7 @@ fn error_result(msg: String) -> EvalResult {
         plot: None,
         plot3d: None,
         splom: None,
+        spectrogram: None,
         error: Some(msg),
     }
 }
@@ -523,6 +526,193 @@ fn pearson(a: &[Option<f64>], b: &[Option<f64>]) -> Option<f64> {
     (denom != 0.0).then(|| (sxy / denom).clamp(-1.0, 1.0))
 }
 
+/// A `spectrogram(s, nfft, hop)` value, prepared for drawing: dB magnitudes
+/// of hop-strided, Hann-windowed FFT frames, max-pooled down to a display
+/// grid. Computed in f64 from sample midpoints — the plot path is the
+/// engine's one deliberately uncertified boundary, and a spectrogram is a
+/// picture. Exact per-frame spectra: dsp.stft / dsp.fft on a slice.
+#[derive(Serialize, Clone)]
+struct SpectrogramData {
+    /// dB·10 as integers (0.1 dB resolution keeps the payload compact),
+    /// row-major `[frame][bin]`, after max-pooling.
+    db10: Vec<i16>,
+    /// Grid shape after pooling.
+    frames: usize,
+    bins: usize,
+    /// Sample positions covered (frame centers of the first/last frame).
+    t_lo: f64,
+    t_hi: f64,
+    /// Frequency extent in units of π rad/sample: [0, 1] for real signals,
+    /// [-1, 1] (fftshifted) for complex ones.
+    f_lo: f64,
+    f_hi: f64,
+    /// Color range (dB), robust: the 1st percentile to the maximum.
+    db_min: f64,
+    db_max: f64,
+    /// Original frame count, and whether pooling dropped resolution.
+    total_frames: usize,
+    pooled: bool,
+}
+
+/// Display-grid caps: enough for any on-screen panel, small enough that the
+/// serialized payload stays light.
+const SPEC_MAX_FRAMES: usize = 512;
+const SPEC_MAX_BINS: usize = 256;
+/// Silence floor, dB.
+const SPEC_FLOOR_DB: f64 = -140.0;
+
+fn spectrogram_data(e: &Expr) -> Option<Result<SpectrogramData, String>> {
+    let Expr::Func(name, args) = e else {
+        return None;
+    };
+    if name != "spectrogram" || args.len() != 3 {
+        return None;
+    }
+    Some(spectrogram_data_inner(args))
+}
+
+fn spectrogram_data_inner(args: &[Expr]) -> Result<SpectrogramData, String> {
+    let Expr::Signal(sig) = &args[0] else {
+        return Err("spectrogram: expected a signal".into());
+    };
+    let nfft = as_usize(&args[1]).ok_or("spectrogram: bad nfft")?;
+    let hop = as_usize(&args[2]).ok_or("spectrogram: bad hop")?;
+    let (re, im) = surd::signal::midpoints_f64(sig);
+    let complex_input = im.is_some();
+    let n = re.len();
+    if n < nfft {
+        return Err("spectrogram: signal shorter than nfft".into());
+    }
+    let total_frames = (n - nfft) / hop + 1;
+    // Periodic Hann.
+    let window: Vec<f64> = (0..nfft)
+        .map(|k| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / nfft as f64).cos())
+        .collect();
+    let out_bins_full = if complex_input { nfft } else { nfft / 2 + 1 };
+    // dB per frame, at full resolution first (pooled on the fly over frames).
+    let frame_pool = total_frames.div_ceil(SPEC_MAX_FRAMES).max(1);
+    let bin_pool = out_bins_full.div_ceil(SPEC_MAX_BINS).max(1);
+    let frames_out = total_frames.div_ceil(frame_pool);
+    let bins_out = out_bins_full.div_ceil(bin_pool);
+    let mut db10 = vec![i16::MIN; frames_out * bins_out];
+    let mut db_max = f64::NEG_INFINITY;
+    let mut buf_re = vec![0.0f64; nfft];
+    let mut buf_im = vec![0.0f64; nfft];
+    let mut all_db: Vec<f64> = Vec::with_capacity(frames_out * bins_out);
+    for f in 0..total_frames {
+        let start = f * hop;
+        for k in 0..nfft {
+            buf_re[k] = re[start + k] * window[k];
+            buf_im[k] = im.as_ref().map_or(0.0, |v| v[start + k] * window[k]);
+        }
+        fft_in_place(&mut buf_re, &mut buf_im);
+        let fo = f / frame_pool;
+        for b in 0..out_bins_full {
+            // Real input: bins 0..=nfft/2 in order. Complex: fftshift so
+            // the axis runs −π..π.
+            let src = if complex_input {
+                (b + nfft / 2) % nfft
+            } else {
+                b
+            };
+            let p = buf_re[src] * buf_re[src] + buf_im[src] * buf_im[src];
+            let db = if p > 0.0 {
+                (10.0 * p.log10()).max(SPEC_FLOOR_DB)
+            } else {
+                SPEC_FLOOR_DB
+            };
+            let cell = fo * bins_out + b / bin_pool;
+            let v = (db * 10.0).round() as i16;
+            if v > db10[cell] {
+                db10[cell] = v; // max-pool: peaks survive decimation
+            }
+            if db > db_max {
+                db_max = db;
+            }
+        }
+    }
+    for v in &db10 {
+        all_db.push(f64::from(*v) / 10.0);
+    }
+    // Robust lower edge for the color scale: the 1st percentile, so one
+    // silent cell doesn't stretch the ramp to the floor.
+    let mut sorted = all_db.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("finite dB"));
+    let db_min = sorted[(sorted.len() - 1) / 100].max(db_max - 120.0);
+    let (f_lo, f_hi) = if complex_input {
+        (-1.0, 1.0)
+    } else {
+        (0.0, 1.0)
+    };
+    Ok(SpectrogramData {
+        db10,
+        frames: frames_out,
+        bins: bins_out,
+        t_lo: (nfft as f64) / 2.0,
+        t_hi: ((total_frames - 1) * hop) as f64 + (nfft as f64) / 2.0,
+        f_lo,
+        f_hi,
+        db_min,
+        db_max,
+        total_frames,
+        pooled: frame_pool > 1 || bin_pool > 1,
+    })
+}
+
+fn as_usize(e: &Expr) -> Option<usize> {
+    let r = surd::expr::numeric_value(e)?;
+    if !r.is_integer() {
+        return None;
+    }
+    usize::try_from(r.to_integer()).ok()
+}
+
+/// Plain iterative radix-2 FFT over f64 — plot-path only (uncertified by
+/// design; the certified transform lives in surd::signal).
+fn fft_in_place(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    debug_assert!(n.is_power_of_two());
+    // Bit-reversal permutation.
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = -2.0 * std::f64::consts::PI / len as f64;
+        let (wr, wi) = (ang.cos(), ang.sin());
+        let mut i = 0;
+        while i < n {
+            let (mut cr, mut ci) = (1.0f64, 0.0f64);
+            for k in 0..len / 2 {
+                let (ur, ui) = (re[i + k], im[i + k]);
+                let (vr, vi) = (
+                    re[i + k + len / 2] * cr - im[i + k + len / 2] * ci,
+                    re[i + k + len / 2] * ci + im[i + k + len / 2] * cr,
+                );
+                re[i + k] = ur + vr;
+                im[i + k] = ui + vi;
+                re[i + k + len / 2] = ur - vr;
+                im[i + k + len / 2] = ui - vi;
+                let ncr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = ncr;
+            }
+            i += len;
+        }
+        len <<= 1;
+    }
+}
+
 /// A `plot(s1, ..., sk)` over signals: the samples are the data — no
 /// resampling, no window arguments. Long signals decimate to a min/max
 /// envelope (extremes survive; the `undersampled` flag says so).
@@ -871,6 +1061,7 @@ impl Session {
                         plot: None,
                         plot3d: None,
                         splom: None,
+                        spectrogram: None,
                         error: None,
                     }
                 }
@@ -922,6 +1113,7 @@ impl Session {
                         plot: None,
                         plot3d: None,
                         splom: None,
+                        spectrogram: None,
                         error: None,
                     }
                 }
@@ -1016,7 +1208,7 @@ impl Session {
             Err(e) => error_result(e),
             Ok(value) => {
                 let summary = suppressed.then(|| shape_summary(&value));
-                let ok = |kind, plot, plot3d, splom| EvalResult {
+                let ok = |kind, plot, plot3d, splom, spectrogram| EvalResult {
                     ok: true,
                     kind,
                     text: format!("{}", value),
@@ -1026,13 +1218,19 @@ impl Session {
                     plot,
                     plot3d,
                     splom,
+                    spectrogram,
                     error: None,
                 };
-                // A scatterplot matrix is an unambiguous tagged value — handle
-                // it before the curve/surface paths.
-                if let Some(r) = splom_data(&value) {
+                // Tagged drawables are unambiguous — handle them before the
+                // curve/surface paths.
+                if let Some(r) = spectrogram_data(&value) {
                     match r {
-                        Ok(s) => ok("splom", None, None, Some(s)),
+                        Ok(sg) => ok("spectrogram", None, None, None, Some(sg)),
+                        Err(e) => error_result(e),
+                    }
+                } else if let Some(r) = splom_data(&value) {
+                    match r {
+                        Ok(s) => ok("splom", None, None, Some(s), None),
                         Err(e) => error_result(e),
                     }
                 } else {
@@ -1050,10 +1248,10 @@ impl Session {
                                     self.signal_plots.pop_front();
                                 }
                             }
-                            ok("plot", Some(plot), None, None)
+                            ok("plot", Some(plot), None, None, None)
                         }
-                        (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface), None),
-                        (None, None) => ok(kind_of(&value), None, None, None),
+                        (_, Some(Ok(surface))) => ok("plot3d", None, Some(surface), None, None),
+                        (None, None) => ok(kind_of(&value), None, None, None, None),
                     }
                 }
             }

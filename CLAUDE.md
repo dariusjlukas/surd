@@ -107,8 +107,9 @@ inside a `with_consts` closure** — the RefCell re-borrow panics at runtime
 ## Build & dev
 
 - `cargo test` — full suite, ~6 s. Fuzz targets live in fuzz/ (separate crate).
-- REPL: `./target/release/surd`, reads stdin; **piped lines do not share
-  bindings** — drive it with single self-contained expressions.
+- REPL: `./target/release/surd`, reads stdin. **Assignment is `:=`** —
+  `x = 3` builds an *equation* (a value, displayed as `x = 3`, easily
+  mistaken for an assignment echo) and binds nothing.
 - After any wasm API change, rebuild BOTH `web/pkg` and `app/src/engine/pkg`
   (the app pkg is built by deploy-pages.yml via wasm-pack `--out-dir` there;
   locally `npm run build:wasm`).

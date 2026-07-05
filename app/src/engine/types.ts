@@ -92,9 +92,30 @@ export type ResultKind =
   | 'plot3d'
   /** A scatterplot matrix (pairs(...)). */
   | 'splom'
+  /** An STFT heatmap (spectrogram(...)). */
+  | 'spectrogram'
   /** A data import's summary result (Session.import_data). */
   | 'data'
   | 'error'
+
+/** An STFT heatmap prepared by the engine: dB·10 magnitudes on a pooled
+ * display grid, row-major [frame][bin]. Mirrors wasm SpectrogramData. */
+export interface SpectrogramData {
+  db10: number[]
+  frames: number
+  bins: number
+  /** Sample positions of the first/last frame center. */
+  t_lo: number
+  t_hi: number
+  /** Frequency extent in units of π rad/sample ([0,1] real, [-1,1] complex). */
+  f_lo: number
+  f_hi: number
+  /** Color range in dB (robust lower edge). */
+  db_min: number
+  db_max: number
+  total_frames: number
+  pooled: boolean
+}
 
 export interface EvalResult {
   ok: boolean
@@ -111,6 +132,7 @@ export interface EvalResult {
   plot?: PlotData
   plot3d?: Plot3dData
   splom?: SplomData
+  spectrogram?: SpectrogramData
   error?: string
 }
 

@@ -1174,6 +1174,68 @@ impl Interpreter {
                 arity(name, &args, 2)?;
                 matrix::solve(&args[0], &args[1])
             }
+            // The STFT heatmap of a signal: a tagged drawable the frontend
+            // renders (magnitudes on the plot path — the established
+            // uncertified display boundary, like every other plot). Exact
+            // per-frame analysis composes from slice/window/fft; exact STFT
+            // of small vectors is dsp.stft.
+            "spectrogram" => {
+                if args.is_empty() || args.len() > 3 {
+                    return Err(
+                        "spectrogram expects spectrogram(s[, nfft[, hop]]) on a signal".into(),
+                    );
+                }
+                let Expr::Signal(sig) = &args[0] else {
+                    return Err(
+                        "spectrogram expects a signal (pack with signal(...) or import data);                          exact per-frame spectra come from dsp.stft"
+                            .into(),
+                    );
+                };
+                let len = sig.len();
+                let nfft = match args.get(1) {
+                    Some(e) => numeric_value(e)
+                        .filter(|r| r.is_integer())
+                        .and_then(|r| r.to_integer().to_usize())
+                        .filter(|&n| n.is_power_of_two() && (16..=16384).contains(&n))
+                        .ok_or_else(|| {
+                            "spectrogram's nfft must be a power of two between 16 and 16384"
+                                .to_string()
+                        })?,
+                    // Default: a power of two giving a balanced picture,
+                    // capped so short signals still get several frames.
+                    None => {
+                        let mut n = 1024usize;
+                        while n > 16 && n * 4 > len {
+                            n /= 2;
+                        }
+                        n
+                    }
+                };
+                let hop = match args.get(2) {
+                    Some(e) => numeric_value(e)
+                        .filter(|r| r.is_integer())
+                        .and_then(|r| r.to_integer().to_usize())
+                        .filter(|&h| h >= 1)
+                        .ok_or_else(|| {
+                            "spectrogram's hop must be a positive integer".to_string()
+                        })?,
+                    None => (nfft / 4).max(1),
+                };
+                if len < nfft {
+                    return Err(format!(
+                        "spectrogram: the signal has {} samples but nfft is {} —                          pass a smaller nfft",
+                        len, nfft
+                    ));
+                }
+                Ok(Expr::Func(
+                    "spectrogram".into(),
+                    vec![
+                        args[0].clone(),
+                        Expr::Int(BigInt::from(nfft)),
+                        Expr::Int(BigInt::from(hop)),
+                    ],
+                ))
+            }
             // The k-th real root (ascending, 1-based) of a univariate
             // polynomial with rational coefficients — an exact real
             // algebraic number. The value stays symbolic (`root(p, k)`);

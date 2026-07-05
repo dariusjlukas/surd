@@ -1525,7 +1525,8 @@ fn remez_weights_trade_ripple_between_bands() {
 
 #[test]
 fn remez_validates_its_spec() {
-    assert!(ev("dsp.remez(8, [0, pi], [1])").starts_with("error: dsp.remez designs Type I"));
+    // An even tap count is no longer an error — it selects Type II.
+    assert!(ev("dsp.remez(8, [0, 1/2*pi], [1])").starts_with("struct"));
     assert!(ev("dsp.remez(7, [0, 1, 2], [1])").starts_with("error: dsp.remez band edges"));
     assert!(ev("dsp.remez(7, [0, 1], [1, 0])").starts_with("error: dsp.remez expects one desired"));
     assert!(ev("dsp.remez(7, [1, 1/2], [1])")
@@ -2194,4 +2195,91 @@ fn exact_recursive_filtering_and_impulse_response() {
     // Bulk signals are refused with the reason.
     let msg = ev("dsp.filter([1], [1, -1/2], signal([1; 0; 0]))");
     assert!(msg.contains("diverges"), "got: {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// Remez Types II–IV
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remez_type_ii_meets_its_spec_exactly() {
+    // Even length ⇒ Type II. Stopband edge 2π/3 has u = cos(π/3) = 1/2 —
+    // an exact grid point, so compliance there is a decidable exact claim.
+    let pre = "f := dsp.remez(16, [0, 1/2*pi, 2/3*pi, pi], [1, 0])";
+    assert_eq!(ev_all(&[pre, "f.fir_type"]), "2");
+    assert_eq!(
+        ev_all(&[pre, "abs(dsp.freqz(f.taps, [2/3*pi])[1])^2 <= f.ripple^2"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[pre, "(abs(dsp.freqz(f.taps, [0])[1]) - 1)^2 <= f.ripple^2"]),
+        "true"
+    );
+    // The structural zero at Nyquist, exactly.
+    assert_eq!(ev_all(&[pre, "dsp.freqz(f.taps, [pi]) == [0]"]), "true");
+}
+
+#[test]
+fn remez_type_iii_hilbert_transformer() {
+    // Odd length + antisymmetric ⇒ Type III: the classic Hilbert design.
+    let pre = "f := dsp.remez(15, [1/3*pi, 2/3*pi], [1], [1], antisymmetric)";
+    assert_eq!(ev_all(&[pre, "f.fir_type"]), "3");
+    // Forced zeros at BOTH ends, exactly.
+    assert_eq!(ev_all(&[pre, "dsp.freqz(f.taps, [0]) == [0]"]), "true");
+    assert_eq!(ev_all(&[pre, "dsp.freqz(f.taps, [pi]) == [0]"]), "true");
+    // Mid-band the magnitude sits within the ripple of 1 (π/2 is interior,
+    // not necessarily a grid point — allow the ripple plus grid slack).
+    assert_eq!(
+        ev_all(&[
+            pre,
+            "(abs(dsp.freqz(f.taps, [1/2*pi])[1]) - 1)^2 <= (2*f.ripple)^2"
+        ]),
+        "true"
+    );
+}
+
+#[test]
+fn remez_type_iv_meets_its_spec_exactly() {
+    // Even + antisymmetric ⇒ Type IV. Band [π/3, π]: v = sin(ω/2) is
+    // exactly 1/2 and 1 at the edges — both are exact grid points.
+    let pre = "f := dsp.remez(8, [1/3*pi, pi], [1], [1], antisymmetric)";
+    assert_eq!(ev_all(&[pre, "f.fir_type"]), "4");
+    for probe in ["1/3*pi", "pi"] {
+        assert_eq!(
+            ev_all(&[
+                pre,
+                &format!("(abs(dsp.freqz(f.taps, [{probe}])[1]) - 1)^2 <= f.ripple^2")
+            ]),
+            "true",
+            "compliance at {probe}"
+        );
+    }
+    // Forced zero at DC, exactly; no forced zero at π.
+    assert_eq!(ev_all(&[pre, "dsp.freqz(f.taps, [0]) == [0]"]), "true");
+}
+
+// ---------------------------------------------------------------------------
+// STFT and spectrogram
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exact_stft_of_vectors() {
+    // A constant input isolates the window: each frame's spectrum is the
+    // DFT of the periodic Hann itself — [n/2, −n/4, 0, ..., 0, −n/4].
+    assert_eq!(norm("dsp.stft([1, 1, 1, 1], 4, 4).frames"), "[ 2 -1 0 -1 ]");
+    // Frame count and hop: 8 samples, nfft 4, hop 2 → 3 frames.
+    assert_eq!(ev("len(dsp.stft([1,1,1,1,1,1,1,1], 4, 2).frames)"), "3");
+    assert!(ev("dsp.stft([1, 2], 4, 1)").starts_with("error:"));
+}
+
+#[test]
+fn spectrogram_validates_and_tags() {
+    // The value is a tagged drawable; the frontend does the drawing.
+    let out =
+        ev("spectrogram(signal([1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12; 13; 14; 15; 16]), 16, 4)");
+    assert!(out.starts_with("spectrogram("), "got: {out}");
+    // Validation is loud.
+    assert!(ev("spectrogram([1, 2, 3])").contains("expects a signal"));
+    assert!(ev("spectrogram(signal([1; 2; 3]), 7)").contains("power of two"));
+    assert!(ev("spectrogram(signal([1; 2; 3]), 16)").contains("3 samples"));
 }

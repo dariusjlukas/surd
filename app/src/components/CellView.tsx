@@ -42,6 +42,11 @@ const Surface3DView = lazy(() =>
 const SplomView = lazy(() =>
   import('../plot/SplomView').then((m) => ({ default: m.SplomView })),
 )
+const SpectrogramView = lazy(() =>
+  import('../plot/SpectrogramView').then((m) => ({
+    default: m.SpectrogramView,
+  })),
+)
 
 // Memoized so a keystroke in one cell (which re-renders NotebookView to
 // recompute the stale set) only re-renders cells whose `stale` flag flips.
@@ -418,6 +423,16 @@ function ResultBody({ cell, r }: { cell: Cell; r: EvalResult }) {
           }
         >
           <SplomView splom={r.splom} cellId={cell.id} />
+        </Suspense>
+      ) : null
+    case 'spectrogram':
+      return r.spectrogram ? (
+        <Suspense
+          fallback={
+            <div className="aspect-video max-w-2xl animate-pulse rounded-lg bg-surface" />
+          }
+        >
+          <SpectrogramView spectrogram={r.spectrogram} cellId={cell.id} />
         </Suspense>
       ) : null
     case 'function':

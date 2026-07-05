@@ -202,6 +202,39 @@ coefficients:
 Overflow is the implementer's concern: `quantize` snaps, it never clamps.
 
 ## `dsp.remez`
+```
+dsp.remez(n, edges, desired)
+dsp.remez(n, edges, desired, weights)
+dsp.remez(n, edges, desired[, weights], antisymmetric)
+```
+
+All four linear-phase types, chosen by tap-count parity and the optional
+trailing `antisymmetric` flag (alias `hilbert`):
+
+| taps | symmetry | type | forced zeros | designs in |
+|------|----------|------|--------------|------------|
+| odd  | symmetric | I | — | x = cos ω |
+| even | symmetric | II | ω = π | u = cos(ω/2) |
+| odd  | antisymmetric | III | ω = 0 and π | t = tan(ω/2) |
+| even | antisymmetric | IV | ω = 0 | v = sin(ω/2) |
+
+Types II–IV multiply the response by cos(ω/2), sin ω, or sin(ω/2) — 
+irrational in x — so each designs in its own variable where the whole
+exchange stays in ℚ (for Type III the Weierstrass substitution makes both
+sin ω and cos ω rational). A Hilbert transformer is one call:
+
+```text
+>> h := dsp.remez(15, [1/3*pi, 2/3*pi], [1], [1], antisymmetric)
+>> dsp.freqz(h.taps, [0]) == [0]     # the structural zeros, exactly
+true
+>> h.fir_type
+3
+```
+
+Types II–IV cap at 64 taps (their exact solve carries twice the lattice
+precision per row; ~48 taps designs in seconds, 64 in tens of seconds).
+Type I keeps the 127-tap cap.
+
 
 ```
 dsp.remez(n, edges, desired)
@@ -350,3 +383,24 @@ The first `n` samples of the impulse response, exactly.
 >> dsp.impz([1], [1, -1/2], 5)
 [ 1  1/2  1/4  1/8  1/16 ]
 ```
+
+## `dsp.stft`
+
+```
+dsp.stft(v, nfft, hop)
+```
+
+The exact short-time Fourier transform of a vector: one row per frame,
+each the DFT of the periodic-Hann-windowed frame (w[k] = 1/2 −
+1/2·cos(2πk/nfft)), frames `hop` samples apart, full frames only. Exact —
+surds on the twiddle table, symbolic beyond — so a frame here is the
+certified reference for what the `spectrogram` picture displays.
+
+```text
+>> dsp.stft([1, 1, 1, 1], 4, 4).frames    # the Hann window's own DFT
+[ 2  -1  0  -1 ]
+```
+
+Returns `struct(frames, nfft, hop)`. For bulk data, use
+`spectrogram(...)`; for one exact frame of a signal, compose
+`dsp.dft(N(mid(slice(s, i, nfft))) .* dsp.hann(nfft))`.

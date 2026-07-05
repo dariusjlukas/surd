@@ -186,6 +186,11 @@ const BUILTINS: Builtin[] = [
     doc: '3D data points (x, y, z) as markers; overlay in plot3d(…) over a surface, or plot3d(scatter3d(x, y, z)) alone.',
   },
   {
+    name: 'spectrogram',
+    params: ['s', 'nfft?', 'hop?'],
+    doc: 'STFT heatmap of a signal (Hann window, dB): time × frequency. nfft a power of two; hop defaults to nfft/4.',
+  },
+  {
     name: 'pairs',
     params: ['M'],
     doc: 'Scatterplot matrix of a data matrix (columns are variables) or a struct of columns — pairs(M, [name1, …]) labels the columns.',
@@ -311,6 +316,11 @@ const NAMESPACES: Namespace[] = [
         doc: 'First n samples of the impulse response, exactly; also impz(b, a, n).',
       },
       {
+        name: 'stft',
+        params: ['v', 'nfft', 'hop'],
+        doc: 'Exact short-time Fourier transform of a vector (periodic Hann) → struct(frames, nfft, hop).',
+      },
+      {
         name: 'stable',
         params: ['f'],
         doc: 'Certified strict stability (all poles inside the unit circle) — exact Schur–Cohn; takes a filter, SOS matrix, or denominator coefficients.',
@@ -318,8 +328,8 @@ const NAMESPACES: Namespace[] = [
       { name: 'hamming', params: ['n'], doc: 'Hamming window (27/50, 23/50).' },
       {
         name: 'remez',
-        params: ['n', 'edges', 'desired', 'weights?'],
-        doc: 'Exact Parks–McClellan equiripple FIR design → struct(taps, ripple).',
+        params: ['n', 'edges', 'desired', 'weights?', 'antisymmetric?'],
+        doc: 'Exact Parks–McClellan equiripple FIR design, all four linear-phase types (even n → Type II; trailing antisymmetric → III/IV, e.g. Hilbert) → struct(taps, ripple, fir_type).',
       },
       { name: 'hann', params: ['n'], doc: 'Hann window.' },
       {

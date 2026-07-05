@@ -94,6 +94,24 @@ expect("splom diagonal r is 1", sp.splom.cor[0], 1);
 expect("splom struct labels", ev("pairs(struct(b=[2;4;6], a=[1;2;3]))").splom.labels, ["a", "b"]);
 expect("splom field selection", ev("pairs(struct(a=[1;2;3], b=[2;4;6], c=[1;0;1]), [c, a])").splom.labels, ["c", "a"]);
 
+// A spectrogram of a pure tone: energy concentrates in one frequency band.
+{
+  const sg = ev("spectrogram(signal(N(sin(pi/4*linspace(1, 256, 256)))), 32, 8)");
+  expect("spectrogram kind", sg.kind, "spectrogram");
+  const d = sg.spectrogram;
+  expect("spectrogram bins (real one-sided)", d.bins, 17);
+  expect("spectrogram frames", d.frames, 29);
+  expect("spectrogram grid size", d.db10.length, 29 * 17);
+  expect("spectrogram freq extent", [d.f_lo, d.f_hi], [0, 1]);
+  // ω = π/4 lands in bin 4 of 32 (= index 4 one-sided): the loudest bin of
+  // the middle frame should be there.
+  const mid = Math.floor(d.frames / 2);
+  let best = 0;
+  for (let b = 1; b < d.bins; b++)
+    if (d.db10[mid * d.bins + b] > d.db10[mid * d.bins + best]) best = b;
+  expect("tone concentrates at pi/4 (bin 4)", best, 4);
+}
+
 const surf = ev("plot3d(u^2 - v^2, u, -1, 1, v, -1, 1)");
 expect("plot3d kind", surf.kind, "plot3d");
 expect(

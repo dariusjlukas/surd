@@ -31,6 +31,7 @@ pub const FUNCTIONS: &[&str] = &[
     "blackman",
     "window",
     "quantize",
+    "stft",
     "butter",
     "stable",
     "filter",
@@ -117,6 +118,7 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "hamming" => window("dsp.hamming", args, (27, 50), (23, 50), (0, 1)),
         "blackman" => window("dsp.blackman", args, (21, 50), (1, 2), (2, 25)),
         "quantize" => quantize(args),
+        "stft" => stft(args),
         "butter" => crate::iir::butter(args),
         "stable" => crate::iir::stable(args),
         "filter" => crate::iir::filter(args),
@@ -426,14 +428,33 @@ fn bulk_transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, St
     Ok(Expr::Signal(Rc::new(signal::fft_signal(&input, inverse)?)))
 }
 
-/// `dsp.remez(n, edges, desired[, weights])`: exact Parks–McClellan. Band
-/// edges in radians/sample, ascending pairs within [0, π]; one desired value
-/// (and optional weight) per band. Returns struct(taps, ripple): exact
-/// rational taps and the exact minimax ripple on the design grid.
-fn remez_design(args: Vec<Expr>) -> Result<Expr, String> {
+/// `dsp.remez(n, edges, desired[, weights][, antisymmetric])`: exact
+/// Parks–McClellan, all four linear-phase types. Band edges in
+/// radians/sample, ascending pairs within [0, π]; one desired value (and
+/// optional weight) per band. The type follows the length parity and the
+/// optional trailing `antisymmetric` flag: odd+symmetric = I,
+/// even+symmetric = II, odd+antisymmetric = III (Hilbert transformers),
+/// even+antisymmetric = IV. Returns struct(taps, ripple, iterations,
+/// fir_type): exact rational taps and the exact minimax ripple on the
+/// design grid.
+fn remez_design(mut args: Vec<Expr>) -> Result<Expr, String> {
+    // Optional trailing symmetry flag.
+    let mut antisymmetric = false;
+    if let Some(Expr::Symbol(sym)) = args.last() {
+        match sym.as_str() {
+            "antisymmetric" | "hilbert" => {
+                antisymmetric = true;
+                args.pop();
+            }
+            "symmetric" => {
+                args.pop();
+            }
+            _ => {}
+        }
+    }
     if !(3..=4).contains(&args.len()) {
         return Err(format!(
-            "dsp.remez expects remez(n, edges, desired[, weights]), got {} argument(s)",
+            "dsp.remez expects remez(n, edges, desired[, weights][, antisymmetric]),              got {} argument(s)",
             args.len()
         ));
     }
@@ -444,12 +465,14 @@ fn remez_design(args: Vec<Expr>) -> Result<Expr, String> {
         Some(wv) => as_vector("dsp.remez", wv)?.0,
         None => vec![int(1); desired.len()],
     };
-    let d = remez::design(n, &edges, &desired, &weights)?;
+    let ty = remez::Ty::classify(n, antisymmetric);
+    let d = remez::design_typed(n, antisymmetric, &edges, &desired, &weights)?;
     let taps = Expr::Matrix(vec![d.taps.into_iter().map(rat_to_expr).collect()]);
     structure(vec![
         ("taps".to_string(), taps),
         ("ripple".to_string(), rat_to_expr(d.ripple)),
         ("iterations".to_string(), int(d.iterations as i64)),
+        ("fir_type".to_string(), int(ty.number())),
     ])
 }
 
@@ -516,4 +539,67 @@ fn arity(name: &str, args: &[Expr], n: usize) -> Result<(), String> {
             args.len()
         ))
     }
+}
+
+/// `dsp.stft(v, nfft, hop)`: the exact short-time Fourier transform of an
+/// exact vector — one row per frame: DFT(w .* frame), periodic Hann window
+/// w[k] = 1/2 − 1/2·cos(2πk/nfft), frames starting at 0, hop apart, only
+/// full frames. Exact (surds on the twiddle table, symbolic beyond), so a
+/// frame's spectrum here is the certified reference for the spectrogram's
+/// display path. Bulk data belongs to `spectrogram(...)`.
+pub fn stft(args: Vec<Expr>) -> Result<Expr, String> {
+    arity("dsp.stft", &args, 3)?;
+    let (x, _) = as_vector("dsp.stft", &args[0])?;
+    let nfft = as_size("dsp.stft", &args[1])?;
+    let hop = as_size("dsp.stft", &args[2])?;
+    if x.len() < nfft {
+        return Err(format!(
+            "dsp.stft: the vector has {} entries but nfft is {}",
+            x.len(),
+            nfft
+        ));
+    }
+    let frames = (x.len() - nfft) / hop + 1;
+    check_ops("dsp.stft", frames.saturating_mul(nfft.saturating_mul(nfft)))?;
+    // Periodic Hann, exact: cos of rational multiples of π.
+    let window: Vec<Expr> = (0..nfft)
+        .map(|k| {
+            let angle = mul(vec![
+                rat_to_expr(BigRational::new(
+                    BigInt::from(2 * k as i64),
+                    BigInt::from(nfft as i64),
+                )),
+                Expr::Const(Constant::Pi),
+            ]);
+            add(vec![
+                rat_to_expr(BigRational::new(BigInt::from(1), BigInt::from(2))),
+                mul(vec![
+                    rat_to_expr(BigRational::new(BigInt::from(-1), BigInt::from(2))),
+                    func("cos", vec![angle]),
+                ]),
+            ])
+        })
+        .collect();
+    let mut rows = Vec::with_capacity(frames);
+    for f in 0..frames {
+        let start = f * hop;
+        let frame: Vec<Expr> = (0..nfft)
+            .map(|k| mul(vec![window[k].clone(), x[start + k].clone()]))
+            .collect();
+        let mut row = Vec::with_capacity(nfft);
+        for bin in 0..nfft {
+            let terms = frame
+                .iter()
+                .enumerate()
+                .map(|(j, xj)| mul(vec![xj.clone(), root_of_unity(bin * j, nfft, false)]))
+                .collect();
+            row.push(expand(&add(terms)));
+        }
+        rows.push(row);
+    }
+    structure(vec![
+        ("frames".to_string(), Expr::Matrix(rows)),
+        ("nfft".to_string(), int(nfft as i64)),
+        ("hop".to_string(), int(hop as i64)),
+    ])
 }

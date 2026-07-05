@@ -20,13 +20,27 @@
 //!   tolerance. The returned ripple is the exact rational minimax error on
 //!   the grid.
 //!
-//! v1 designs Type I filters (odd length, even symmetry) — lowpass,
-//! highpass, bandpass, and arbitrary multiband all fit.
+//! All four linear-phase types are supported. Types II–IV multiply the
+//! cosine polynomial by Q(ω) = cos(ω/2), sin(ω), or sin(ω/2) — irrational
+//! in x — so each type designs in its own variable where the whole basis is
+//! rational on a rational grid:
+//!
+//! * Type II (even n, symmetric):      u = cos(ω/2), basis u·Tₖ(2u²−1)
+//! * Type III (odd n, antisymmetric):  t = tan(ω/2), basis
+//!   (2t/(1+t²))·Tₖ((1−t²)/(1+t²)) — the Weierstrass substitution makes
+//!   both sin ω and cos ω rational
+//! * Type IV (even n, antisymmetric):  v = sin(ω/2), basis v·Tₖ(1−2v²)
+//!
+//! Each basis spans a Chebyshev (Haar) system on the open design domain, so
+//! the alternation theory — and the exact-termination argument — carry over
+//! unchanged. The types' forced zeros (II: ω=π, III: ω=0 and π, IV: ω=0)
+//! are structural: a band demanding a nonzero response at a forced zero
+//! gets the honest best approximation, not an error.
 
-use crate::expr::{func, numeric_value, BigRational, Expr};
+use crate::expr::{func, mul, numeric_value, rat_to_expr, BigRational, Expr};
 use crate::interval;
 use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 /// Largest supported filter length (odd). The exact solve is O(r³) on
 /// rationals whose size grows with r — past this it stops being interactive.
@@ -45,6 +59,11 @@ const MAX_GRID: usize = 8192;
 /// Exchange-iteration backstop. Termination is guaranteed by the strictly
 /// increasing levelled error; this guards implementation bugs, not math.
 const MAX_ITERATIONS: usize = 100;
+
+/// Length cap for Types II–IV: their design variables enter the basis
+/// squared, so rows carry ~2× the bits of a Type I row of the same order —
+/// 48 taps designs in seconds, 64 takes tens of seconds.
+pub const MAX_TAPS_II_IV: usize = 64;
 
 /// One frequency band of the specification, already mapped to x = cos ω
 /// (so `x_lo < x_hi`, and bands are sorted ascending in x).
@@ -137,7 +156,7 @@ pub fn design(
         }
 
         // Solve for a_0..a_{r-1} and δ on the current extremals.
-        let (a, delta) = solve_levelled(&grid, &d, &w, &extremals, r)?;
+        let (a, delta) = solve_levelled(Ty::I, &grid, &d, &w, &extremals, r)?;
 
         // Weighted error over the grid, as *integer numerators* over one
         // shared denominator — comparisons stay in ℤ, with no per-op gcd
@@ -407,6 +426,7 @@ fn band_ranges(bands: &[Band], grid: &[BigRational]) -> Vec<(usize, usize)> {
 /// intermediate growth determinant-bounded; the system is a Chebyshev
 /// alternation system, so it is provably nonsingular for distinct nodes.
 fn solve_levelled(
+    ty: Ty,
     grid: &[BigRational],
     d: &[BigRational],
     w: &[BigRational],
@@ -419,22 +439,8 @@ fn solve_levelled(
     let mut aug: Vec<Vec<BigInt>> = Vec::with_capacity(m);
     for (i, &j) in extremals.iter().enumerate() {
         let x = &grid[j];
-        let mut row_rat: Vec<BigRational> = Vec::with_capacity(m + 1);
-        // T_0..T_{r-1} by the Chebyshev recurrence.
-        let mut t_prev = BigRational::from_integer(1.into());
-        let mut t_curr = x.clone();
-        for k in 0..r {
-            let t_k = match k {
-                0 => t_prev.clone(),
-                1 => t_curr.clone(),
-                _ => {
-                    let t_next = BigRational::from_integer(2.into()) * x * &t_curr - &t_prev;
-                    t_prev = std::mem::replace(&mut t_curr, t_next);
-                    t_curr.clone()
-                }
-            };
-            row_rat.push(t_k);
-        }
+        let mut row_rat: Vec<BigRational> = basis_row(ty, x, r);
+        row_rat.reserve(2);
         let sign = if i % 2 == 0 { 1 } else { -1 };
         row_rat.push(BigRational::from_integer(sign.into()) / &w[j]);
         row_rat.push(d[j].clone());
@@ -491,8 +497,8 @@ fn solve_levelled(
 /// per band, *unioned with the current extremals* (which sit at exactly ±δ
 /// in alternation, so at least `want` alternating candidates always exist),
 /// alternation enforced, trimmed to `want` keeping the largest.
-fn select_extremals(
-    err: &[BigInt],
+fn select_extremals<T: Signed + Ord + Clone>(
+    err: &[T],
     ranges: &[(usize, usize)],
     current: &[usize],
     want: usize,
@@ -559,4 +565,540 @@ fn taps_from_cosine(a: &[BigRational]) -> Vec<BigRational> {
         h[m + k] = v;
     }
     h
+}
+
+// ---------------------------------------------------------------------------
+// Types II–IV: the generalized-basis exchange.
+// ---------------------------------------------------------------------------
+
+/// The four linear-phase FIR types, keyed by length parity and symmetry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Ty {
+    I,
+    II,
+    III,
+    IV,
+}
+
+impl Ty {
+    pub fn classify(n: usize, antisymmetric: bool) -> Ty {
+        match (n % 2 == 1, antisymmetric) {
+            (true, false) => Ty::I,
+            (false, false) => Ty::II,
+            (true, true) => Ty::III,
+            (false, true) => Ty::IV,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Ty::I => "I",
+            Ty::II => "II",
+            Ty::III => "III",
+            Ty::IV => "IV",
+        }
+    }
+
+    pub fn number(self) -> i64 {
+        match self {
+            Ty::I => 1,
+            Ty::II => 2,
+            Ty::III => 3,
+            Ty::IV => 4,
+        }
+    }
+
+    /// Number of basis coefficients for an n-tap filter of this type.
+    fn r_of(self, n: usize) -> usize {
+        match self {
+            Ty::I => n.div_ceil(2),
+            Ty::II | Ty::IV => n / 2,
+            Ty::III => (n - 1) / 2,
+        }
+    }
+
+    /// The design variable for an ω band edge, as an Expr: x = cos ω,
+    /// u = cos(ω/2), t = tan(ω/2), v = sin(ω/2).
+    fn var_expr(self, e: &Expr) -> Expr {
+        let half = rat_to_expr(BigRational::new(BigInt::from(1), BigInt::from(2)));
+        match self {
+            Ty::I => func("cos", vec![e.clone()]),
+            Ty::II => func("cos", vec![mul(vec![half, e.clone()])]),
+            Ty::III => func("tan", vec![mul(vec![half, e.clone()])]),
+            Ty::IV => func("sin", vec![mul(vec![half, e.clone()])]),
+        }
+    }
+
+    /// Whether the design variable decreases as ω increases.
+    fn descending(self) -> bool {
+        matches!(self, Ty::I | Ty::II)
+    }
+}
+
+/// The r basis-function values [φ₀(x) … φ_{r−1}(x)] at one design point, in
+/// the type's own variable — rational everywhere:
+///   I:  Tₖ(x)                    II: u·Tₖ(2u²−1)
+///   III: (2t/(1+t²))·Tₖ(y), y = (1−t²)/(1+t²)
+///   IV: v·Tₖ(1−2v²)
+fn basis_row(ty: Ty, var: &BigRational, r: usize) -> Vec<BigRational> {
+    let one = BigRational::one();
+    let two = BigRational::from_integer(2.into());
+    let (y, pref) = match ty {
+        Ty::I => (var.clone(), one.clone()),
+        Ty::II => (&two * var * var - &one, var.clone()),
+        Ty::IV => (&one - &two * var * var, var.clone()),
+        Ty::III => {
+            let t2 = var * var;
+            let den = &one + &t2;
+            ((&one - &t2) / &den, &two * var / &den)
+        }
+    };
+    let mut row = Vec::with_capacity(r);
+    let mut t_prev = one;
+    let mut t_curr = y.clone();
+    for k in 0..r {
+        let t_k = match k {
+            0 => t_prev.clone(),
+            1 => t_curr.clone(),
+            _ => {
+                let t_next = BigRational::from_integer(2.into()) * &y * &t_curr - &t_prev;
+                t_prev = std::mem::replace(&mut t_curr, t_next);
+                t_curr.clone()
+            }
+        };
+        row.push(&pref * t_k);
+    }
+    row
+}
+
+/// Σₖ αₖ·φₖ(var) for integer-cleared coefficients α (= a·da), evaluated by
+/// a scaled integer Chebyshev recurrence — one BigRational materializes per
+/// point. For var = m/s: II/IV run Cₖ = s^{2k}·Tₖ(y) with y-numerator
+/// ±(2m²−s²) over s²; III runs Cₖ = d^k·Tₖ(y) with d = s²+m², y-numerator
+/// s²−m², prefactor 2ms/d.
+fn eval_p_scaled(ty: Ty, var: &BigRational, alpha: &[BigInt]) -> (BigInt, BigInt) {
+    let r = alpha.len();
+    let m = var.numer().clone();
+    let s = var.denom().clone();
+    let (y_num, modulus, pref_num): (BigInt, BigInt, BigInt) = match ty {
+        Ty::I => (m.clone(), s.clone(), BigInt::from(1)),
+        Ty::II => (BigInt::from(2) * &m * &m - &s * &s, &s * &s, m.clone()),
+        Ty::IV => (&s * &s - BigInt::from(2) * &m * &m, &s * &s, m.clone()),
+        Ty::III => (
+            &s * &s - &m * &m,
+            &s * &s + &m * &m,
+            BigInt::from(2) * &m * &s,
+        ),
+    };
+    // Cₖ = modulusᵏ·Tₖ(y_num/modulus): Cₖ = 2·y_num·Cₖ₋₁ − modulus²·Cₖ₋₂.
+    let mod2 = &modulus * &modulus;
+    let mut mod_pow = vec![BigInt::from(1); r];
+    for k in 1..r {
+        mod_pow[k] = &mod_pow[k - 1] * &modulus;
+    }
+    let mut c_prev = BigInt::from(1);
+    let mut c_curr = y_num.clone();
+    let mut sum = &alpha[0] * &mod_pow[r - 1];
+    if r > 1 {
+        sum += &alpha[1] * &c_curr * &mod_pow[r - 2];
+    }
+    for (k, ak) in alpha.iter().enumerate().skip(2) {
+        let c_next = BigInt::from(2) * &y_num * &c_curr - &mod2 * &c_prev;
+        c_prev = std::mem::replace(&mut c_curr, c_next);
+        sum += ak * &c_curr * &mod_pow[r - 1 - k];
+    }
+    // Total = pref · Σ αₖTₖ, as a RAW (numerator, positive denominator)
+    // pair — callers fold it into per-point error numerators; nothing here
+    // may construct a reducing BigRational (gcds on determinant-sized
+    // integers were a 60×+ slowdown):
+    //   I:   sum / s^{r−1}
+    //   II:  (m/s)·sum / s^{2(r−1)}          = m·sum / s^{2r−1}
+    //   IV:  same shape as II
+    //   III: (2ms/d)·sum / d^{r−1}           = 2ms·sum / d^r
+    match ty {
+        Ty::I => (sum, mod_pow[r - 1].clone()),
+        // u = m/s times sum/(s²)^{r−1}: m·sum over s^{2r−1}.
+        Ty::II | Ty::IV => (&pref_num * &sum, &mod_pow[r - 1] * &s),
+        // (2ms/d) times sum/d^{r−1}: 2ms·sum over d^r.
+        Ty::III => (&pref_num * &sum, &mod_pow[r - 1] * &modulus),
+    }
+}
+
+/// Design any linear-phase type. `antisymmetric` selects Types III/IV.
+pub fn design_typed(
+    n: usize,
+    antisymmetric: bool,
+    edges: &[Expr],
+    desired: &[Expr],
+    weights: &[Expr],
+) -> Result<Design, String> {
+    let ty = Ty::classify(n, antisymmetric);
+    if ty == Ty::I {
+        return design(n, edges, desired, weights);
+    }
+    let min_taps = if ty == Ty::III { 3 } else { 2 };
+    if n < min_taps {
+        return Err(format!(
+            "dsp.remez: a Type {} filter needs at least {} taps",
+            ty.name(),
+            min_taps
+        ));
+    }
+    if n > MAX_TAPS_II_IV {
+        return Err(format!(
+            "dsp.remez supports up to {} taps for Type {} designs (their exact solve \
+             carries twice the lattice precision per row), got {}",
+            MAX_TAPS_II_IV,
+            ty.name(),
+            n
+        ));
+    }
+    if edges.len() < 2 || !edges.len().is_multiple_of(2) {
+        return Err("dsp.remez band edges come in pairs: [lo1, hi1, lo2, hi2, ...]".into());
+    }
+    let nbands = edges.len() / 2;
+    if desired.len() != nbands || weights.len() != nbands {
+        return Err(format!(
+            "dsp.remez expects one desired value and one weight per band ({} bands)",
+            nbands
+        ));
+    }
+    let r = ty.r_of(n);
+    let bands = resolve_bands_var(ty, edges, desired, weights)?;
+    let (grid, d, w) = build_grid(&bands, r)?;
+    if grid.len() < r + 2 {
+        return Err(
+            "dsp.remez: the bands are too narrow for this filter order (not enough design \
+             grid points) — reduce the order or widen the bands"
+                .into(),
+        );
+    }
+    let mut extremals: Vec<usize> = (0..=r).map(|i| i * (grid.len() - 1) / r).collect();
+    extremals.dedup();
+    if extremals.len() != r + 1 {
+        return Err("dsp.remez: grid too coarse to seed the exchange".into());
+    }
+    let ranges = band_ranges(&bands, &grid);
+    let mut iterations = 0;
+    loop {
+        iterations += 1;
+        if iterations > MAX_ITERATIONS {
+            return Err(
+                "dsp.remez: the exchange did not settle (this should be impossible — \
+                 please report it)"
+                    .into(),
+            );
+        }
+        let (a, delta) = solve_levelled(ty, &grid, &d, &w, &extremals, r)?;
+        // Integer-cleared coefficients for the scaled sweep.
+        let mut da = BigInt::from(1);
+        for v in &a {
+            da = num_integer::lcm(da, v.denom().clone());
+        }
+        let alpha: Vec<BigInt> = a
+            .iter()
+            .map(|v| (v * BigRational::from_integer(da.clone())).to_integer())
+            .collect();
+        // Error per point as a RAW ratio (never reduced: num-rational's
+        // comparisons cross-multiply, so `new_raw` keeps the exchange
+        // gcd-free), and *scaled by da*: the numerator carries the
+        // determinant-sized da, so leaving da OUT of the denominator keeps
+        // every cross-multiplied comparison at da×small instead of da×da —
+        // the difference between interactive and minutes at r = 32. All
+        // errors share the same scale, so extremal selection is unchanged;
+        // only the termination threshold must scale to match:
+        // e·da = wn·(dn·da·pd − dd·pn) / (wd·dd·pd), |δ|·da likewise.
+        let err: Vec<BigRational> = (0..grid.len())
+            .map(|j| {
+                let (pn, pd) = eval_p_scaled(ty, &grid[j], &alpha);
+                let n = w[j].numer() * (d[j].numer() * &da * &pd - d[j].denom() * &pn);
+                let q = w[j].denom() * d[j].denom() * &pd;
+                BigRational::new_raw(n, q)
+            })
+            .collect();
+        let abs_delta = delta.abs();
+        let scaled_delta = BigRational::new_raw(abs_delta.numer() * &da, abs_delta.denom().clone());
+        let max_err = err.iter().map(|e| e.abs()).max().expect("grid nonempty");
+        if max_err == scaled_delta {
+            let taps = taps_of_type(ty, &a);
+            return Ok(Design {
+                taps,
+                ripple: abs_delta,
+                iterations,
+            });
+        }
+        extremals = select_extremals(&err, &ranges, &extremals, r + 1)?;
+    }
+}
+
+/// Map ω-band edges into the type's design variable, snapping inexact
+/// values inward on the 2^-EDGE_BITS lattice, validating order, and nudging
+/// a forced-zero endpoint (u = 0, v = 0, t = 0) one lattice step inside —
+/// the basis vanishes identically there, so the point carries no design
+/// freedom.
+fn resolve_bands_var(
+    ty: Ty,
+    edges: &[Expr],
+    desired: &[Expr],
+    weights: &[Expr],
+) -> Result<Vec<Band>, String> {
+    let snap = BigInt::from(1u64) << EDGE_BITS;
+    let one_step = BigRational::new(BigInt::from(1), snap.clone());
+    let mut vals: Vec<(BigRational, BigRational)> = Vec::with_capacity(edges.len());
+    for e in edges {
+        // Domain [0, π], checked on the edge itself (see resolve_bands).
+        let edge_ok = |e: &Expr| -> Option<bool> {
+            let (lo, _) = interval::rational_enclosure(e, 128)?;
+            if lo < BigRational::zero() {
+                return Some(false);
+            }
+            let pi_minus = crate::expr::add(vec![
+                Expr::Const(crate::expr::Constant::Pi),
+                crate::expr::mul(vec![crate::expr::int(-1), e.clone()]),
+            ]);
+            let (lo, _) = interval::rational_enclosure(&pi_minus, 128)?;
+            Some(lo >= BigRational::zero())
+        };
+        match edge_ok(e) {
+            Some(false) => return Err(format!("band edge '{}' is outside [0, π]", e)),
+            Some(true) => {}
+            None => {}
+        }
+        let v = ty.var_expr(e);
+        if let Some(x) = numeric_value(&v) {
+            vals.push((x.clone(), x));
+        } else {
+            let (lo, hi) = interval::rational_enclosure(&v, 128).ok_or_else(|| {
+                if ty == Ty::III {
+                    format!(
+                        "band edge '{}' is not usable for a Type III design (tan(ω/2) must be \
+                         finite — end the band strictly before π, where the response is \
+                         structurally zero anyway)",
+                        e
+                    )
+                } else {
+                    format!("band edge '{}' is not a constant frequency", e)
+                }
+            })?;
+            vals.push((lo, hi));
+        }
+    }
+    // Ascending ω ⇒ var strictly descending (I, II) or ascending (III, IV).
+    for pair in vals.windows(2) {
+        let ok = if ty.descending() {
+            pair[1].1 < pair[0].0
+        } else {
+            pair[1].0 > pair[0].1
+        };
+        if !ok {
+            return Err(
+                "dsp.remez band edges must be strictly increasing within [0, π] \
+                 (and separated by more than the design lattice)"
+                    .into(),
+            );
+        }
+    }
+    let nbands = edges.len() / 2;
+    let mut bands = Vec::with_capacity(nbands);
+    let band_order: Vec<usize> = if ty.descending() {
+        (0..nbands).rev().collect()
+    } else {
+        (0..nbands).collect()
+    };
+    for b in band_order {
+        let (omega_lo, omega_hi) = (&vals[2 * b], &vals[2 * b + 1]);
+        // Inward snap per side; which ω edge is the var-low side depends on
+        // the variable's direction.
+        let (raw_lo, raw_hi) = if ty.descending() {
+            (omega_hi, omega_lo)
+        } else {
+            (omega_lo, omega_hi)
+        };
+        let mut lo = if raw_lo.0 == raw_lo.1 {
+            raw_lo.0.clone()
+        } else {
+            ceil_to(&raw_lo.1, &snap)
+        };
+        let mut hi = if raw_hi.0 == raw_hi.1 {
+            raw_hi.0.clone()
+        } else {
+            floor_to(&raw_hi.0, &snap)
+        };
+        // A forced-zero endpoint contributes nothing: step inside.
+        if lo.is_zero() {
+            lo = one_step.clone();
+        }
+        if ty == Ty::II && hi.is_zero() {
+            // (descending var: hi is the ω-low edge; u = 0 only at ω = π,
+            // which lands in `lo` — but guard both ends anyway.)
+            hi = -one_step.clone();
+        }
+        if lo >= hi {
+            return Err("dsp.remez: a band is too narrow (its edges collapse)".into());
+        }
+        let dv = numeric_value(&desired[b])
+            .ok_or_else(|| format!("desired value '{}' must be a number", desired[b]))?;
+        let wv = numeric_value(&weights[b])
+            .filter(|v| v > &BigRational::zero())
+            .ok_or_else(|| format!("weight '{}' must be a positive number", weights[b]))?;
+        bands.push(Band {
+            x_lo: lo,
+            x_hi: hi,
+            desired: dv,
+            weight: wv,
+        });
+    }
+    Ok(bands)
+}
+
+/// Taps from the exchange coefficients, per type (standard Parks–McClellan
+/// coefficient maps; α indexes the cosine-basis solution).
+///   II:  A = Σ bₙ·cos((n−½)ω),  b₁ = α₀ + α₁/2,  bₙ = (αₙ₋₁ + αₙ)/2
+///        h[r−n] = h[r+n−1] = bₙ/2
+///   III: A = Σ cₙ·sin(nω),      c₁ = α₀ − α₂/2,  cₙ = (αₙ₋₁ − αₙ₊₁)/2
+///        h[M−n] = cₙ/2 = −h[M+n], h[M] = 0
+///   IV:  A = Σ dₙ·sin((n−½)ω),  d₁ = α₀ − α₁/2,  dₙ = (αₙ₋₁ − αₙ)/2
+///        h[r−n] = dₙ/2 = −h[r+n−1]
+/// (out-of-range α are zero; H carries e^{−iωM̃} — times i for III/IV.)
+fn taps_of_type(ty: Ty, a: &[BigRational]) -> Vec<BigRational> {
+    let r = a.len();
+    let at = |k: usize| -> BigRational {
+        if k < r {
+            a[k].clone()
+        } else {
+            BigRational::zero()
+        }
+    };
+    let half = BigRational::new(1.into(), 2.into());
+    match ty {
+        Ty::I => taps_from_cosine(a),
+        Ty::II => {
+            let mut h = vec![BigRational::zero(); 2 * r];
+            for nn in 1..=r {
+                let b_n = if nn == 1 {
+                    at(0) + at(1) * &half
+                } else {
+                    (at(nn - 1) + at(nn)) * &half
+                };
+                let v = &b_n * &half;
+                h[r - nn] = v.clone();
+                h[r + nn - 1] = v;
+            }
+            h
+        }
+        Ty::III => {
+            let m = r; // middle index; n = 2r + 1
+            let mut h = vec![BigRational::zero(); 2 * r + 1];
+            for nn in 1..=r {
+                let c_n = if nn == 1 {
+                    at(0) - at(2) * &half
+                } else {
+                    (at(nn - 1) - at(nn + 1)) * &half
+                };
+                let v = &c_n * &half;
+                h[m - nn] = v.clone();
+                h[m + nn] = -v;
+            }
+            h
+        }
+        Ty::IV => {
+            let mut h = vec![BigRational::zero(); 2 * r];
+            for nn in 1..=r {
+                let d_n = if nn == 1 {
+                    at(0) - at(1) * &half
+                } else {
+                    (at(nn - 1) - at(nn)) * &half
+                };
+                let v = &d_n * &half;
+                h[r - nn] = v.clone();
+                h[r + nn - 1] = -v;
+            }
+            h
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::{int, mul, rat_to_expr, Constant};
+
+    fn pi_frac(n: i64, d: i64) -> Expr {
+        mul(vec![
+            rat_to_expr(BigRational::new(BigInt::from(n), BigInt::from(d))),
+            Expr::Const(Constant::Pi),
+        ])
+    }
+
+    /// The structural invariants of each type, checked on exact taps:
+    /// symmetry/antisymmetry, forced zeros (as exact tap-sum identities),
+    /// and the middle tap of Type III.
+    #[test]
+    fn tap_structure_per_type() {
+        // Type II: even length, symmetric; H(π) = Σ (−1)^k h[k] = 0.
+        let d2 = design_typed(
+            10,
+            false,
+            &[pi_frac(0, 1), pi_frac(2, 5), pi_frac(3, 5), pi_frac(1, 1)],
+            &[int(1), int(0)],
+            &[int(1), int(1)],
+        )
+        .unwrap();
+        assert_eq!(d2.taps.len(), 10);
+        for k in 0..10 {
+            assert_eq!(d2.taps[k], d2.taps[9 - k], "Type II symmetry at {k}");
+        }
+        let nyq: BigRational = d2
+            .taps
+            .iter()
+            .enumerate()
+            .map(|(k, h)| if k % 2 == 0 { h.clone() } else { -h.clone() })
+            .sum();
+        assert!(nyq.is_zero(), "Type II forces H(π) = 0");
+
+        // Type III: odd length, antisymmetric, zero middle tap;
+        // H(0) = Σ h = 0 and H(π) = Σ (−1)^k h[k] = 0.
+        let d3 = design_typed(
+            11,
+            true,
+            &[pi_frac(1, 5), pi_frac(4, 5)],
+            &[int(1)],
+            &[int(1)],
+        )
+        .unwrap();
+        assert_eq!(d3.taps.len(), 11);
+        for k in 0..11 {
+            assert_eq!(
+                d3.taps[k],
+                -d3.taps[10 - k].clone(),
+                "Type III antisymmetry"
+            );
+        }
+        assert!(d3.taps[5].is_zero(), "Type III middle tap is 0");
+        let dc: BigRational = d3.taps.iter().cloned().sum();
+        assert!(dc.is_zero(), "Type III forces H(0) = 0");
+
+        // Type IV: even length, antisymmetric; H(0) = 0, H(π) free.
+        let d4 = design_typed(
+            8,
+            true,
+            &[pi_frac(1, 3), pi_frac(1, 1)],
+            &[int(1)],
+            &[int(1)],
+        )
+        .unwrap();
+        assert_eq!(d4.taps.len(), 8);
+        for k in 0..8 {
+            assert_eq!(d4.taps[k], -d4.taps[7 - k].clone(), "Type IV antisymmetry");
+        }
+        let dc: BigRational = d4.taps.iter().cloned().sum();
+        assert!(dc.is_zero(), "Type IV forces H(0) = 0");
+        let nyq: BigRational = d4
+            .taps
+            .iter()
+            .enumerate()
+            .map(|(k, h)| if k % 2 == 0 { h.clone() } else { -h.clone() })
+            .sum();
+        assert!(!nyq.is_zero(), "Type IV does NOT force H(π) = 0");
+    }
 }

@@ -204,3 +204,22 @@ In the web app:
 - Points with a non-finite coordinate are dropped. Coordinates evaluate to f64
   for drawing, like every plotted value — the data stays exact in the
   workspace.
+
+## Spectrograms
+
+```
+spectrogram(s)
+spectrogram(s, nfft)
+spectrogram(s, nfft, hop)
+```
+
+The STFT heatmap of a signal: time (samples) across, frequency (in units of
+π rad/sample) up, magnitude in dB — periodic Hann window, `nfft` a power of
+two (default fitted to the signal, hop = nfft/4). Real signals show the
+one-sided spectrum [0, π]; complex (I/Q) signals show the full centered
+spectrum [−π, π].
+
+Like every plot, the picture is display-path (f64 midpoints, max-pooled to
+the screen grid — the caption notes when pooling engaged); the exact
+counterpart for any single frame is [`dsp.stft`](dsp.md#dspstft) or a
+windowed `dsp.fft` of a `slice`.
