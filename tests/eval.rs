@@ -645,6 +645,51 @@ fn trig_stays_symbolic_outside_the_table() {
 }
 
 #[test]
+fn symbolic_trig_angles_normalize_into_the_first_quadrant() {
+    // Outside the surd table the *angle* still canonicalizes into [0, π/2]
+    // (periodicity, antipode, reflection — exact identities), so every angle
+    // with the same trig value gets one canonical form and differences cancel
+    // structurally instead of needing the certified comparison engine.
+    assert_eq!(ev("cos(4/7*pi)"), "-cos(3/7*π)"); // reflection across π/2
+    assert_eq!(ev("cos(10/7*pi)"), "-cos(3/7*π)"); // 10/7π = 2π − 4/7π
+    assert_eq!(ev("cos(-3/7*pi)"), "cos(3/7*π)"); // evenness
+    assert_eq!(ev("sin(10/7*pi)"), "-sin(3/7*π)"); // third-quadrant sine
+    assert_eq!(ev("sin(-2/7*pi)"), "-sin(2/7*π)"); // oddness
+    assert_eq!(ev("tan(8/7*pi)"), "tan(1/7*π)"); // tan has period π
+    assert_eq!(ev("tan(6/7*pi)"), "-tan(1/7*π)"); // reflection negates tan
+    assert_eq!(ev("cos(3/7*pi)"), "cos(3/7*π)"); // already reduced: fixed point
+                                                 // A huge angle collapses exactly — no π digits needed to reduce it.
+    assert_eq!(ev("cos(100000000000000000001/7*pi)"), "cos(3/7*π)");
+    // Equal values now cancel by construction.
+    assert_eq!(ev("cos(10/7*pi) - cos(4/7*pi)"), "0");
+    assert_eq!(ev("sin(9/7*pi) + sin(2/7*pi)"), "0");
+}
+
+#[test]
+fn certified_equality_refuses_instead_of_asserting_a_false_disequality() {
+    // The size-7 DFT round-trip is exactly the input, but the residue mixes
+    // sin·sin products past the algebraic degree caps: the honest answers are
+    // `true` or a refusal — `false` would be a wrong certified claim. (This
+    // was a shipped bug: value_eq defaulted to false on the fall-through.)
+    let out = ev("dsp.idft(dsp.dft([1; 2; 3; 4; 5; 6; 7]))[5] == 5");
+    assert!(
+        out.starts_with("error:") && out.contains("may be equal"),
+        "expected an honest refusal, got: {out}"
+    );
+    // Sizes on the surd table fold all the way and decide entry-by-entry.
+    assert_eq!(ev("dsp.idft(dsp.dft([1; 2; 3])) == [1; 2; 3]"), "true");
+    // Where the difference stays inside the algebraic caps, equality decides
+    // exactly — the heptagon identity has no surd form but IS algebraic.
+    assert_eq!(ev("cos(1/7*pi) - cos(2/7*pi) + cos(3/7*pi) == 1/2"), "true");
+    // Certified inequality still separates (the classic near-integer)...
+    assert_eq!(ev("exp(pi*sqrt(163)) == 262537412640768744"), "false");
+    assert_eq!(ev("exp(pi*sqrt(163)) != 262537412640768744"), "true");
+    // ...and free symbols keep structural semantics, not refusals.
+    assert_eq!(ev("sin(x) == cos(x)"), "false");
+    assert_eq!(ev("x != y"), "true");
+}
+
+#[test]
 fn pentagon_trig_folds_to_golden_ratio_surds() {
     assert_eq!(ev("cos(pi/5)"), "1/4 + 1/4*sqrt(5)"); // φ/2
     assert_eq!(ev("sin(pi/10)"), "-1/4 + 1/4*sqrt(5)");

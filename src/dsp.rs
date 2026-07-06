@@ -164,12 +164,16 @@ fn transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, String>
     let n = x.len();
     check_ops(name, n.saturating_mul(n))?;
     let scale = BigRational::new(BigInt::one(), BigInt::from(n));
+    // k·j only matters mod n, so there are just n distinct twiddles; build
+    // each once (surd-table lookups and angle canonicalization are the
+    // expensive part) and clone thereafter — output-identical to rebuilding.
+    let tw: Vec<Expr> = (0..n).map(|r| root_of_unity(r, n, inverse)).collect();
     let mut out = Vec::with_capacity(n);
     for k in 0..n {
         let terms = x
             .iter()
             .enumerate()
-            .map(|(j, xj)| mul(vec![xj.clone(), root_of_unity(k * j, n, inverse)]))
+            .map(|(j, xj)| mul(vec![xj.clone(), tw[(k * j) % n].clone()]))
             .collect();
         let mut value = expand(&add(terms));
         if inverse {
@@ -185,8 +189,10 @@ fn transform(name: &str, args: Vec<Expr>, inverse: bool) -> Result<Expr, String>
 fn dft_matrix(arg: &Expr) -> Result<Expr, String> {
     let n = as_size("dsp.dftmatrix", arg)?;
     check_ops("dsp.dftmatrix", n.saturating_mul(n))?;
+    // Same residue trick as `transform`: n distinct twiddles, not n².
+    let tw: Vec<Expr> = (0..n).map(|r| root_of_unity(r, n, false)).collect();
     let rows = (0..n)
-        .map(|j| (0..n).map(|k| root_of_unity(j * k, n, false)).collect())
+        .map(|j| (0..n).map(|k| tw[(j * k) % n].clone()).collect())
         .collect();
     Ok(Expr::Matrix(rows))
 }
@@ -334,7 +340,12 @@ fn window(
             Expr::Const(Constant::Pi),
         ])
     };
-    let row = (0..n)
+    // The window is symmetric: w[k] = w[n−1−k] because cos(2π−θ) = cos(θ)
+    // exactly, and trig angle normalization canonicalizes both sides to the
+    // *same* expression — so mirroring is output-identical to recomputing,
+    // at half the symbolic-construction cost.
+    let half = n.div_ceil(2);
+    let mut row: Vec<Expr> = (0..half)
         .map(|k| {
             add(vec![
                 rat(a0),
@@ -343,6 +354,9 @@ fn window(
             ])
         })
         .collect();
+    for k in half..n {
+        row.push(row[n - 1 - k].clone());
+    }
     Ok(Expr::Matrix(vec![row]))
 }
 

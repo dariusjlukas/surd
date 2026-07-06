@@ -930,15 +930,46 @@ fn factorial_i(n: i64) -> BigInt {
 /// Exact trig at `r·π` (and at zero): `sin(pi/6)` is 1/2, not an opaque
 /// application. Tan folds only where the cosine is nonzero — `tan(pi/2)`
 /// stays symbolic rather than inventing a value at a pole.
+///
+/// When the surd table has no closed form, the *angle* is still normalized
+/// into [0, π/2] (periodicity, antipode, reflection — exact identities on
+/// exact rationals), so every angle with the same trig value gets one
+/// canonical form: `cos(10/7·π)`, `cos(4/7·π)` and `cos(−3/7·π)` all become
+/// `−cos(3/7·π)`. On [0, π/2] sin, cos and tan are nonnegative and injective,
+/// so equal values reduce to the same (angle, sign) pair; the sign rides
+/// outside as a −1 coefficient. This is what makes mirrored structures
+/// (window entries, conjugate DFT twiddles) structurally identical instead of
+/// equal-but-unrecognizable.
 fn trig_exact(name: &str, arg: &Expr) -> Option<Expr> {
     let r = pi_multiple(arg)?;
-    let (s, c) = sin_cos_pi(&r)?;
-    match name {
-        "sin" => Some(s),
-        "cos" => Some(c),
-        _ if is_zero(&c) => None,
-        _ => Some(mul(vec![s, pow(c, int(-1))])),
+    if let Some((s, c)) = sin_cos_pi(&r) {
+        return match name {
+            "sin" => Some(s),
+            "cos" => Some(c),
+            _ if is_zero(&c) => None,
+            _ => Some(mul(vec![s, pow(c, int(-1))])),
+        };
     }
+    let (rr, s_sign, c_sign) = reduce_pi_angle(&r);
+    let f_sign = match name {
+        "sin" => s_sign,
+        "cos" => c_sign,
+        // tan = sin/cos, so its sign is the product — which is also why the
+        // period-π shift (both signs flip) leaves tan unchanged.
+        _ => s_sign * c_sign,
+    };
+    if rr == r && f_sign == 1 {
+        return None; // already canonical — leave the application opaque
+    }
+    // The table missed, so the reduced denominator is outside the surd set:
+    // rr is strictly inside (0, 1/2) — in particular never at tan's pole.
+    let angle = mul(vec![rat_to_expr(rr), Expr::Const(Constant::Pi)]);
+    let f = Expr::Func(name.to_string(), vec![angle]);
+    Some(if f_sign == 1 {
+        f
+    } else {
+        mul(vec![int(-1), f])
+    })
 }
 
 /// If `e` is `r·π` for an exact rational `r` (including `π` itself and `0`),
@@ -955,9 +986,13 @@ fn pi_multiple(e: &Expr) -> Option<BigRational> {
     }
 }
 
-/// sin(r·π) and cos(r·π) as exact values, where the (reduced) denominator of
-/// `r` admits a surd form: 1, 2, 3, 4, 5, 6, 8, 10, or 12. `None` otherwise.
-fn sin_cos_pi(r: &BigRational) -> Option<(Expr, Expr)> {
+/// Reduce the angle `r·π` into [0, π/2]: returns `(rr, s_sign, c_sign)` with
+/// `sin(r·π) = s_sign·sin(rr·π)` and `cos(r·π) = c_sign·cos(rr·π)`,
+/// `rr ∈ [0, 1/2]`. Periodicity, the antipode, and reflection across π/2 —
+/// exact identities applied to exact rationals; this is the single source of
+/// truth for angle reduction (the surd table below and the symbolic
+/// normalization in `trig_exact` both use it).
+fn reduce_pi_angle(r: &BigRational) -> (BigRational, i64, i64) {
     let one = BigRational::one();
     let two = &one + &one;
     let half_turn = BigRational::new(BigInt::from(1), BigInt::from(2));
@@ -975,6 +1010,13 @@ fn sin_cos_pi(r: &BigRational) -> Option<(Expr, Expr)> {
         r = &one - &r;
         cos_sign = -sign;
     }
+    (r, sign, cos_sign)
+}
+
+/// sin(r·π) and cos(r·π) as exact values, where the (reduced) denominator of
+/// `r` admits a surd form: 1, 2, 3, 4, 5, 6, 8, 10, or 12. `None` otherwise.
+fn sin_cos_pi(r: &BigRational) -> Option<(Expr, Expr)> {
+    let (r, sign, cos_sign) = reduce_pi_angle(r);
     let (s, c) = first_quadrant_sin_cos(&r)?;
     Some((mul(vec![int(sign), s]), mul(vec![int(cos_sign), c])))
 }

@@ -94,10 +94,14 @@ symbols have no fixed value, and constants whose enclosures never separate
 >> x < 4
 error: cannot order 'x' and '4'; both must be constant real values (a free
 symbol has no fixed value — try subs(...) or N(...))
->> (sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)    # the two sides are exactly equal
-error: cannot order '(sqrt(2) + sqrt(3))^2' and '5 + 2*sqrt(6)': they agree
-to at least 2466 significant digits — the values may be equal
+>> exp(1) < e                              # the two sides are exactly equal
+error: cannot order 'exp(1)' and 'e': they agree to at least 2466 significant
+digits — the values may be equal
 ```
+
+Exactly-equal *algebraic* values do decide — `(sqrt(2)+sqrt(3))^2 < 5 + 2*sqrt(6)`
+is `false` by [exact algebra](../reference/algebraic.md); only ties beyond
+algebra's reach (π, e) refuse.
 
 One exception cuts through even free symbols: when the *difference*
 canonicalizes to an exact number, the answer holds for every real value —
@@ -114,8 +118,24 @@ true
 false
 ```
 
-For non-numbers, `==`/`!=` test *decidable structural* equality after
-canonicalization — **not** mathematical equality (which is undecidable):
+For **constant** symbolic values, `==`/`!=` are certified the same way as
+ordering: structural or exact-algebraic equality proves `true`, separated
+enclosures prove `false`, and what the engine cannot decide refuses rather
+than guessing:
+
+```text
+>> cos(1/7*pi) - cos(2/7*pi) + cos(3/7*pi) == 1/2   # no surd form, but algebraic
+true
+>> exp(pi*sqrt(163)) == 262537412640768744          # agree to 12 digits, differ at the 13th
+false
+>> exp(1) == e
+error: cannot decide 'exp(1)' == 'e': they agree to at least 2466 significant
+digits — the values may be equal
+```
+
+With free symbols the question becomes shape, not value: `==`/`!=` test
+*decidable structural* equality after canonicalization — **not** mathematical
+equality (which is undecidable):
 
 ```text
 >> (x-1)*(x+1) == x^2 - 1

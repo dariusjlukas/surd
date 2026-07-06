@@ -312,11 +312,13 @@ impl Interpreter {
         let y = self.eval_node(b)?;
         match op {
             // Two numbers compare by value — decidable, and it keeps `==`
-            // consistent with `<`/`<=` (so N(2) == 2 is true). Everything else
-            // is decidable *structural* equality after canonicalization; that
+            // consistent with `<`/`<=` (so N(2) == 2 is true). Constant
+            // symbolic values go through the certified equality machinery
+            // (which refuses when it cannot decide); expressions with free
+            // symbols compare *structurally* after canonicalization — that
             // is NOT a claim about mathematical equality of reals (undecidable).
-            Op::Equal => Ok(Expr::Bool(value_eq(&x, &y))),
-            Op::NotEqual => Ok(Expr::Bool(!value_eq(&x, &y))),
+            Op::Equal => Ok(Expr::Bool(value_eq(&x, &y)?)),
+            Op::NotEqual => Ok(Expr::Bool(!value_eq(&x, &y)?)),
             Op::Less | Op::Greater | Op::LessEq | Op::GreaterEq => compare(op, &x, &y),
             _ => self.eval_arith(op, x, y),
         }
@@ -1663,38 +1665,108 @@ fn comparable_value(e: &Expr) -> Option<BigRational> {
 /// Equality test: by value when both sides are numbers (decidable, and floats
 /// participate); by exact algebra when both sides are constant real algebraic
 /// expressions (`(sqrt(2)+sqrt(3))^2 == 5+2*sqrt(6)` is `true`, not a
-/// structural mismatch); structural otherwise.
-fn value_eq(x: &Expr, y: &Expr) -> bool {
-    match (comparable_value(x), comparable_value(y)) {
-        (Some(p), Some(q)) => p == q,
-        _ => {
-            if x == y {
-                return true;
+/// structural mismatch).
+///
+/// For *constant* expressions the fall-through is decided by the same
+/// certified machinery ordering uses: interval refinement can prove ≠
+/// (disjoint enclosures), exact algebra can prove =, and when neither can,
+/// the comparison refuses (`Err`) rather than defaulting to `false` — a
+/// certified `==` must never assert a false disequality (`dsp.idft(dsp.dft(v))`
+/// entries *are* the input, whether or not the prover can see it).
+/// Expressions with free symbols keep structural semantics (`sin(x) == cos(x)`
+/// is `false`, not an error: with unknowns the question is shape, not value).
+fn value_eq(x: &Expr, y: &Expr) -> Result<bool, String> {
+    if let (Some(p), Some(q)) = (comparable_value(x), comparable_value(y)) {
+        return Ok(p == q);
+    }
+    if x == y {
+        return Ok(true);
+    }
+    // Matrices and complex values compare componentwise, so exact algebraic
+    // equality reaches inside them (a frequency-response vector equal to [1]
+    // entry-by-entry IS equal). Three-valued combine: one certain mismatch
+    // decides ≠ even if another entry refuses; a refusal only propagates when
+    // nothing settled the answer first.
+    match (x, y) {
+        (Expr::Matrix(a), Expr::Matrix(b)) => {
+            if a.len() != b.len() {
+                return Ok(false);
             }
-            // Matrices and complex values compare componentwise, so exact
-            // algebraic equality reaches inside them (a frequency-response
-            // vector equal to [1] entry-by-entry IS equal).
-            match (x, y) {
-                (Expr::Matrix(a), Expr::Matrix(b)) => {
-                    return a.len() == b.len()
-                        && a.iter().zip(b).all(|(ra, rb)| {
-                            ra.len() == rb.len()
-                                && ra.iter().zip(rb).all(|(ea, eb)| value_eq(ea, eb))
-                        });
+            let mut refusal = None;
+            for (ra, rb) in a.iter().zip(b) {
+                if ra.len() != rb.len() {
+                    return Ok(false);
                 }
-                (Expr::Complex(ar, ai), Expr::Complex(br, bi)) => {
-                    return value_eq(ar, br) && value_eq(ai, bi);
+                for (ea, eb) in ra.iter().zip(rb) {
+                    match value_eq(ea, eb) {
+                        Ok(false) => return Ok(false),
+                        Ok(true) => {}
+                        Err(e) => refusal = Some(e),
+                    }
                 }
-                _ => {}
             }
-            if let (Some(a), Some(b)) = (
-                crate::algebraic::from_expr(x),
-                crate::algebraic::from_expr(y),
-            ) {
-                return a.cmp_alg(&b) == std::cmp::Ordering::Equal;
-            }
-            false
+            return match refusal {
+                None => Ok(true),
+                Some(e) => Err(e),
+            };
         }
+        (Expr::Complex(ar, ai), Expr::Complex(br, bi)) => {
+            return combine_eq(value_eq(ar, br), value_eq(ai, bi));
+        }
+        // Complex against a real scalar: equal iff the real parts are and the
+        // imaginary part is exactly zero. A surviving Complex usually has a
+        // nonzero-but-unproven imaginary part, so this refuses rather than
+        // wrongly answering `false`.
+        (Expr::Complex(ar, ai), b) | (b, Expr::Complex(ar, ai)) if is_scalar(b) => {
+            return combine_eq(value_eq(ar, b), value_eq(ai, &int(0)));
+        }
+        _ => {}
+    }
+    if let (Some(a), Some(b)) = (
+        crate::algebraic::from_expr(x),
+        crate::algebraic::from_expr(y),
+    ) {
+        return Ok(a.cmp_alg(&b) == std::cmp::Ordering::Equal);
+    }
+    // Opaque values (functions, bools, equations, signals, …) can't enter the
+    // difference construction below — the smart constructors would build
+    // well-sorted nonsense around them. Their equality stays structural.
+    if !is_scalar(x) || !is_scalar(y) {
+        return Ok(false);
+    }
+    let d = add(vec![x.clone(), mul(vec![int(-1), y.clone()])]);
+    if let Some(r) = comparable_value(&d) {
+        return Ok(r.is_zero());
+    }
+    match interval::certified_sign(&d) {
+        interval::Sign::Positive | interval::Sign::Negative => Ok(false),
+        interval::Sign::Zero => Ok(true),
+        // Not a constant real expression (free symbols, complex values):
+        // structural semantics, exactly the pre-certified behavior.
+        interval::Sign::Unsupported => Ok(false),
+        // Enclosures touched or straddled zero at the ceiling: refinement can
+        // never prove equality — algebra can, when the difference is a real
+        // algebraic number. π/e ties refuse honestly.
+        _ => match crate::algebraic::certified_sign(&d) {
+            Some(ord) => Ok(ord == std::cmp::Ordering::Equal),
+            None => Err(format!(
+                "cannot decide '{}' == '{}': they agree to at least {} significant digits — \
+                 the values may be equal",
+                x,
+                y,
+                interval::max_digits()
+            )),
+        },
+    }
+}
+
+/// Three-valued AND for equality verdicts: any certain ≠ decides, both
+/// certain = decide, otherwise the refusal wins.
+fn combine_eq(a: Result<bool, String>, b: Result<bool, String>) -> Result<bool, String> {
+    match (a, b) {
+        (Ok(false), _) | (_, Ok(false)) => Ok(false),
+        (Ok(true), Ok(true)) => Ok(true),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     }
 }
 

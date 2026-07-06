@@ -9,8 +9,45 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`==`/`!=` on constant values now refuse instead of answering `false` when
+  equality is undecidable.** Previously the fall-through defaulted to `false`,
+  so e.g. `dsp.idft(dsp.dft([1;2;3;4;5;6;7]))[5] == 5` — two exactly equal
+  values whose difference exceeds the algebraic engine's degree caps —
+  asserted a false disequality. Constant comparisons now go through the same
+  certified machinery as `<`/`>`: interval separation proves `≠`, exact
+  algebra proves `=` (the heptagon identity
+  `cos(π/7) − cos(2π/7) + cos(3π/7) == 1/2` now answers `true`), and anything
+  undecided errors with "the values may be equal". Comparisons involving free
+  symbols keep their structural semantics.
+
+### Changed
+
+- Trig of rational multiples of π now canonicalizes the *angle* into
+  [0, π/2] even when no surd form exists: `cos(10/7·π)`, `cos(4/7·π)` and
+  `cos(−3/7·π)` all render as `−cos(3/7·π)` (periodicity, antipode, and
+  reflection — exact identities). Equal values get equal canonical forms, so
+  differences cancel structurally, mirrored structures (window entries,
+  conjugate DFT twiddles) become recognizably identical, and huge angles
+  collapse without needing digits of π.
+- Performance, without any change in results: `expand` collects like terms
+  between distribution rounds instead of building the full cartesian mountain
+  (`expand((x+y+1)^12)`: 1.55 s → 3.3 ms); signal packing verifies f64
+  enclosures by integer cross-multiplication instead of bignum gcd + division
+  (6×); sum canonicalization no longer re-canonicalizes each term's basis
+  (20–40% across exact matrix algebra, stats, and filter design); symbolic
+  windows are built as half + mirror and DFT/dftmatrix twiddles are built
+  once per residue class instead of once per matrix cell (exact 16-point DFT:
+  25 ms → 4 ms; 256-point exact Hann window: 7.8 ms → 2.6 ms).
+
 ### Added
 
+- A criterion benchmark suite (`cargo bench`, benches/engine.rs) driving the
+  engine through `Interpreter::eval_line` — parsing, canonicalization,
+  certified comparison, `N(...)`, algebraic numbers, both signal substrates,
+  exact linear algebra, stats, and filter design. `--save-baseline` /
+  `--baseline` give before/after comparisons.
 - Formula transforms and interactions. A model-formula term can now be any
   scalar expression in column names — `y ~ x + x^2`, `y ~ ln(x) + z + x*z`
   (a product term is what R writes `a:b`), and the response side transforms
