@@ -50,7 +50,7 @@ not the constant 9.
 
 ```
 plot(..., title = "...", xlabel = "...", ylabel = "...")
-plot3d(..., title = "...")
+plot3d(..., title = "...", xlabel = "...", ylabel = "...", zlabel = "...")
 ```
 
 Every plot form — curves, signals, scatter — takes optional trailing
@@ -65,8 +65,9 @@ segments rendered as LaTeX math (`\$` is a literal dollar):
   `"$\omega$"` just works. Only `\"` (a quote) and `\\` (a backslash) escape.
 - Labels must come after all positional arguments, must be string literals,
   and each may appear once; anything else is an error, never a silent drop.
-- `plot3d` takes only `title` for now — the surface view has no honest place
-  to draw per-axis labels yet, so it refuses them rather than dropping them.
+- On `plot3d`, the axis labels replace the default axis names (the plot
+  variables and `z`) on the box edges, and turn with the box as you orbit.
+  `zlabel` names the height axis; a 2D `plot` has no z axis and refuses it.
 - Labels show in the live view and are baked into the **png** button's export
   and PDF reports (along with tick numbers and, for multi-curve plots, the
   legend).

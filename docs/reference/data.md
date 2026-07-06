@@ -149,16 +149,53 @@ have.
 
 ```
 map(f, m)
+map(f, m1, ..., mk)
 ```
 
-Apply a function entrywise, preserving shape. `f` is a function value or a
-function's name — built-in or your own:
+Apply a function entrywise, preserving shape. `f` is a function value — a
+name, built-in or your own, or a [lambda](../language/programs.md#anonymous-functions-and-closures).
+With several same-shape matrices the function receives one entry from each,
+so `map(f, a, b)` is the elementwise zip of `a` and `b`:
 
 ```text
->> f(x) := x^2 + 1
->> map(f, [1, 2, 3])
+>> map(x -> x^2 + 1, [1, 2, 3])
 [ 2  5  10 ]
 >> map(abs, dsp.freqz(h, w))     # magnitude response
+>> map((a, b) -> a*b, [1, 2, 3], [4, 5, 6])
+[ 4  10  18 ]
+```
+
+## `filter`
+
+```
+filter(pred, v)
+```
+
+The elements of a vector for which `pred` returns `true`, preserving
+orientation (row in, row out). The predicate must return an actual boolean
+for every element — a symbolic comparison refuses rather than guessing. And
+because there is no empty matrix, keeping *no* elements is an error too.
+
+```text
+>> filter(x -> x > 2, [1, 2, 3, 4])
+[ 3  4 ]
+```
+
+## `fold`
+
+```
+fold(f, init, v)
+```
+
+Left fold: starting from `init`, apply `acc := f(acc, x)` over the elements
+of a vector (or the entries of a matrix, row-major). The accumulator may be
+any value — a scalar sum, a growing vector via `vcat`, a struct.
+
+```text
+>> fold((acc, x) -> acc + x, 0, [1, 2, 3, 4])
+10
+>> fold((acc, x) -> acc*10 + x, 0, [1, 9, 8, 4])
+1984
 ```
 
 ## `dot`

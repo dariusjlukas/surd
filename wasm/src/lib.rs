@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 use std::collections::BTreeSet;
-use surd::ast::{IndexArg, Node, Step};
+use surd::ast::{ForIter, IndexArg, Node, Step};
 use surd::expr::Expr;
 use surd::{f64eval, latex};
 use wasm_bindgen::prelude::*;
@@ -96,6 +96,7 @@ struct PlotLabels {
     title: Option<String>,
     xlabel: Option<String>,
     ylabel: Option<String>,
+    zlabel: Option<String>,
 }
 
 fn split_plot_labels(args: &[Expr]) -> (&[Expr], PlotLabels) {
@@ -112,6 +113,7 @@ fn split_plot_labels(args: &[Expr]) -> (&[Expr], PlotLabels) {
             "title" => &mut labels.title,
             "xlabel" => &mut labels.xlabel,
             "ylabel" => &mut labels.ylabel,
+            "zlabel" => &mut labels.zlabel,
             _ => break,
         };
         *slot = Some(text.clone());
@@ -171,9 +173,16 @@ struct Plot3dData {
     /// Static data — the frontend boxes and re-windows them without resampling.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scatter: Vec<(f64, f64, f64)>,
-    /// Optional figure title from `plot3d(..., title = "...")` (mathtext).
+    /// Optional figure title / axis labels from `plot3d(..., title = "...")`.
+    /// Mathtext: plain text with `$...$` segments rendered as LaTeX.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xlabel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ylabel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zlabel: Option<String>,
 }
 
 fn error_result(msg: String) -> EvalResult {
@@ -957,6 +966,9 @@ fn plot3d_surface_inner(
         heights,
         scatter,
         title: labels.title,
+        xlabel: labels.xlabel,
+        ylabel: labels.ylabel,
+        zlabel: labels.zlabel,
     })
 }
 
@@ -1001,6 +1013,9 @@ fn plot3d_scatter_inner(args: &[Expr], labels: PlotLabels) -> Result<Plot3dData,
         heights: Vec::new(),
         scatter,
         title: labels.title,
+        xlabel: labels.xlabel,
+        ylabel: labels.ylabel,
+        zlabel: labels.zlabel,
     })
 }
 
@@ -1563,6 +1578,32 @@ fn symbol_walk(
             symbol_walk(c, top, cond, bound, defs, uses);
             let mut wb = bound.clone();
             symbol_walk(body, top, true, &mut wb, defs, uses);
+        }
+        Node::For { var, iter, body } => {
+            match iter {
+                ForIter::Range { lo, step, hi } => {
+                    symbol_walk(lo, top, cond, bound, defs, uses);
+                    if let Some(s) = step {
+                        symbol_walk(s, top, cond, bound, defs, uses);
+                    }
+                    symbol_walk(hi, top, cond, bound, defs, uses);
+                }
+                ForIter::Expr(e) => symbol_walk(e, top, cond, bound, defs, uses),
+            }
+            // The body may run zero times, so — like `while` — its bindings
+            // (including the loop variable) stay in a throwaway scope.
+            let mut fb = bound.clone();
+            fb.insert(var.clone());
+            symbol_walk(body, top, true, &mut fb, defs, uses);
+        }
+        Node::Lambda(params, body) => {
+            // Like a function body: params are local, free names are reads.
+            let mut inner = bound.clone();
+            for p in params {
+                inner.insert(p.clone());
+            }
+            let mut local = BTreeSet::new();
+            symbol_walk(body, false, cond, &mut inner, &mut local, uses);
         }
         Node::Block(stmts) => {
             for s in stmts {

@@ -48,6 +48,9 @@ interface AxisLabel {
   p: [number, number, number]
   /** Axis names render larger than tick values. */
   isName?: boolean
+  /** True for user-provided labels (`xlabel = "..."`): `text` is mathtext.
+   * False for default axis names, which are variable names (nameToLatex). */
+  mathtext?: boolean
 }
 
 /** Tick + name labels anchored to the box edges facing the camera, so they
@@ -95,22 +98,26 @@ function axisLabels(
     })
   }
   // Names push outward along the edge normal, not downward — below-the-box
-  // anchors fall off the bottom of the frame at the default orbit.
+  // anchors fall off the bottom of the frame at the default orbit. A user
+  // label (`xlabel = "..."`, mathtext) replaces the default variable name.
   out.push({
     key: 'xname',
-    text: plot.xvar,
+    text: plot.xlabel ?? plot.xvar,
+    mathtext: plot.xlabel != null,
     isName: true,
     p: [0, -Z_SCALE - 0.08, zSide * 1.38],
   })
   out.push({
     key: 'yname',
-    text: plot.yvar,
+    text: plot.ylabel ?? plot.yvar,
+    mathtext: plot.ylabel != null,
     isName: true,
     p: [xSide * 1.38, -Z_SCALE - 0.08, 0],
   })
   out.push({
     key: 'zname',
-    text: 'z',
+    text: plot.zlabel ?? 'z',
+    mathtext: plot.zlabel != null,
     isName: true,
     p: [-xSide * 1.14, Z_SCALE + 0.16, zSide * 1.14],
   })
@@ -473,9 +480,11 @@ export function Surface3DView({
     }
   }, [])
 
-  // The composite PNG export: the WebGL frame with the theme background and
-  // the optional title (the 3D box carries no 2D ticks, so those gutters
-  // collapse). Ref'd so the PDF registration stays stable (see PlotView).
+  // The composite PNG export: the WebGL frame with the theme background, the
+  // optional title, and the projected axis names + tick values that live as
+  // DOM overlays in the live view (the 3D box carries no 2D tick gutters, so
+  // those collapse and the overlays ride inside the frame instead). Ref'd so
+  // the PDF registration stays stable (see PlotView).
   const buildExportPng = () => {
     const painter = painterRef.current
     if (!painter) return Promise.reject(new Error('plot is not mounted'))
@@ -488,6 +497,24 @@ export function Surface3DView({
       xTicks: [],
       yTicks: [],
       title: plot.title,
+      overlays: labels.flatMap((l, i) => {
+        if (!positions[i].visible) return []
+        return [
+          {
+            // Default axis names are variable names — render them through
+            // the same LaTeX path the live view uses; user labels are
+            // already mathtext; tick values stay plain.
+            text: l.mathtext
+              ? l.text
+              : l.isName
+                ? `$${nameToLatex(l.text)}$`
+                : l.text,
+            x: positions[i].x,
+            y: positions[i].y,
+            kind: l.isName ? ('name' as const) : ('tick' as const),
+          },
+        ]
+      }),
     })
   }
   const exportRef = useRef(buildExportPng)
@@ -659,7 +686,9 @@ export function Surface3DView({
               }`}
               style={{ left: positions[i].x, top: positions[i].y }}
             >
-              {l.isName ? (
+              {l.mathtext ? (
+                <MathText text={l.text} />
+              ) : l.isName ? (
                 <MathInline latex={nameToLatex(l.text)} fallback={l.text} />
               ) : (
                 l.text

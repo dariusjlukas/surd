@@ -9,8 +9,8 @@
 //! by `then`/`do`/`else`/`end`. Block keywords and `and`/`or`/`not` are plain
 //! identifiers recognized here.
 
-use crate::ast::{IndexArg, Node, Op, Step};
-use crate::lexer::Token;
+use crate::ast::{ForIter, IndexArg, Node, Op, Step};
+use crate::lexer::{is_reserved, Token};
 
 /// The parsed middle field of a range, before we know whether it is a stride
 /// (three-field `lo:step:hi`) or an upper bound (two-field `lo:hi`). Only a
@@ -276,6 +276,9 @@ impl Parser {
     /// `response ~ terms` — a model formula, just inside `=` in precedence and
     /// non-associative (one tilde), so `y ~ a + b` is `y ~ (a + b)`.
     fn parse_formula(&mut self) -> Result<Node, String> {
+        if let Some(lambda) = self.try_lambda()? {
+            return Ok(lambda);
+        }
         let left = self.parse_or()?;
         if self.eat(&Token::Tilde) {
             let right = self.parse_or()?;
@@ -283,6 +286,47 @@ impl Parser {
         } else {
             Ok(left)
         }
+    }
+
+    /// A lambda, if one starts here: `x -> body` or `(a, b) -> body` (also
+    /// `() -> body`). The body is a full expression, so lambdas nest
+    /// right-associatively: `x -> y -> x + y`. Detected by lookahead — a bare
+    /// identifier followed by `->`, or a `(...)` group whose closing paren is
+    /// followed by `->` — so ordinary parenthesized expressions are untouched.
+    fn try_lambda(&mut self) -> Result<Option<Node>, String> {
+        let params = match self.peek().clone() {
+            Token::Ident(name) if !is_reserved(&name) && self.at(1) == Some(&Token::Arrow) => {
+                self.pos += 2; // consume the name and '->'
+                vec![name]
+            }
+            Token::LParen => {
+                // Find the `)` matching the `(` at self.pos.
+                let mut i = self.pos + 1;
+                let mut depth = 1;
+                while i < self.tokens.len() && depth > 0 {
+                    match &self.tokens[i] {
+                        Token::LParen => depth += 1,
+                        Token::RParen => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                    i += 1;
+                }
+                if self.tokens.get(i + 1) != Some(&Token::Arrow) {
+                    return Ok(None);
+                }
+                self.pos += 1; // consume '('
+                let params = self.parse_params()?;
+                self.expect(Token::RParen)?;
+                self.expect(Token::Arrow)?;
+                params
+            }
+            _ => return Ok(None),
+        };
+        let body = self.parse_expr()?;
+        Ok(Some(Node::Lambda(params, Box::new(body))))
     }
 
     fn parse_or(&mut self) -> Result<Node, String> {
@@ -503,6 +547,9 @@ impl Parser {
         if self.is_kw("while") {
             return self.parse_while();
         }
+        if self.is_kw("for") {
+            return self.parse_for();
+        }
 
         match self.advance() {
             Token::Num(s) => Ok(Node::Num(s)),
@@ -525,12 +572,26 @@ impl Parser {
         }
     }
 
+    /// `if cond then … (elseif cond then …)* [else …] end` — one `end` closes
+    /// the whole chain (each `elseif` desugars to a nested `if` in the else
+    /// slot). A spelled-out `else if … end end` still works, with its own `end`.
     fn parse_if(&mut self) -> Result<Node, String> {
         self.expect_kw("if")?;
+        self.parse_if_after_kw()
+    }
+
+    fn parse_if_after_kw(&mut self) -> Result<Node, String> {
         let cond = self.parse_expr()?;
         self.expect_kw("then")?;
-        let then_block = self.parse_block(&["else", "end"], &[])?;
-        let else_block = if self.eat_kw("else") {
+        let then_block = self.parse_block(&["else", "elseif", "end"], &[])?;
+        let else_block = if self.eat_kw("elseif") {
+            // The nested if consumes the chain's single `end`.
+            return Ok(Node::If(
+                Box::new(cond),
+                Box::new(then_block),
+                Some(Box::new(self.parse_if_after_kw()?)),
+            ));
+        } else if self.eat_kw("else") {
             Some(Box::new(self.parse_block(&["end"], &[])?))
         } else {
             None
@@ -546,6 +607,42 @@ impl Parser {
         let body = self.parse_block(&["end"], &[])?;
         self.expect_kw("end")?;
         Ok(Node::While(Box::new(cond), Box::new(body)))
+    }
+
+    /// `for var in lo:hi do … end` / `for var in lo:step:hi do … end` (an
+    /// inclusive range of values), or `for var in expr do … end` where `expr`
+    /// evaluates to a matrix. The `:` here is for-header-local, like the
+    /// bracket-local range `:` in indexing — it never participates in ordinary
+    /// expression precedence.
+    fn parse_for(&mut self) -> Result<Node, String> {
+        self.expect_kw("for")?;
+        let var = self.expect_ident()?;
+        self.expect_kw("in")?;
+        let first = self.parse_or()?;
+        let iter = if self.eat(&Token::Colon) {
+            let second = self.parse_or()?;
+            let (step, hi) = if self.eat(&Token::Colon) {
+                // Three fields, MATLAB/Julia order: the middle one is the step.
+                (Some(Box::new(second)), self.parse_or()?)
+            } else {
+                (None, second)
+            };
+            ForIter::Range {
+                lo: Box::new(first),
+                step,
+                hi: Box::new(hi),
+            }
+        } else {
+            ForIter::Expr(Box::new(first))
+        };
+        self.expect_kw("do")?;
+        let body = self.parse_block(&["end"], &[])?;
+        self.expect_kw("end")?;
+        Ok(Node::For {
+            var,
+            iter,
+            body: Box::new(body),
+        })
     }
 
     /// Matrix literal: `[ row (';' row)* ]`. The opening `[` was consumed.

@@ -11,7 +11,7 @@ or adversarial input turns into a clean error, never a crash:
 | Parser nesting depth | 512 |
 | Expression-evaluation depth | 8,000 |
 | Function-call recursion frames | 1,500 |
-| `while` loop iterations | 10,000,000 |
+| `while`/`for` loop iterations | 10,000,000 |
 | Exact exponent ceiling | `2^(10^15)` stays symbolic instead of building a gigabyte bignum |
 | `precision(d)` | clamped to 1…100,000 digits |
 | `dsp` pairwise products per call | 4,000,000 (a DFT of length n costs n²) |
@@ -53,7 +53,7 @@ Scoped out of the prototype on purpose — this is where an exact CAS balloons:
 
 - **An assumptions system** (is `x > 0`? an integer?) — wants an SMT backend.
 - **Piecewise results / symbolic predicates** in conditionals.
-- **`return` / `break` / `continue`**, closures capturing locals, `print`.
+- **`return` / `break` / `continue`**, `print`.
 - **Deep simplification** (equality saturation), **integration** (Risch),
   **equation solving**.
 - **Exact trig beyond the surd table** — `sin(pi/6)` folds to `1/2` and

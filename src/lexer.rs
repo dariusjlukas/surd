@@ -40,6 +40,8 @@ pub enum Token {
     Newline,
     /// `:=` — assignment.
     Assign,
+    /// `->` — a lambda: `x -> x^2`, `(a, b) -> a + b`.
+    Arrow,
     /// `:` — range separator inside an index, e.g. `A[1:10, 3]`.
     Colon,
     /// `=` — builds an equation, not a truth test.
@@ -88,7 +90,14 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
 
         match c {
             '+' => push(&mut tokens, Token::Plus, &mut i),
-            '-' => push(&mut tokens, Token::Minus, &mut i),
+            '-' => {
+                if chars.get(i + 1) == Some(&'>') {
+                    tokens.push(Token::Arrow);
+                    i += 2;
+                } else {
+                    push(&mut tokens, Token::Minus, &mut i);
+                }
+            }
             '~' => push(&mut tokens, Token::Tilde, &mut i),
             '*' => push(&mut tokens, Token::Star, &mut i),
             '/' => push(&mut tokens, Token::Slash, &mut i),
@@ -229,7 +238,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
 /// Reserved words with grammatical meaning. Implicit multiplication never
 /// fires before one, so `while (x < 3) do … end` keeps parsing.
 const RESERVED: &[&str] = &[
-    "if", "then", "else", "end", "while", "do", "function", "and", "or", "not", "true", "false",
+    "if", "then", "else", "elseif", "end", "while", "do", "for", "in", "function", "and", "or",
+    "not", "true", "false",
 ];
 
 pub(crate) fn is_reserved(s: &str) -> bool {
@@ -299,7 +309,9 @@ pub fn is_incomplete(src: &str) -> bool {
         match t {
             Token::LParen | Token::LBracket => depth += 1,
             Token::RParen | Token::RBracket => depth -= 1,
-            Token::Ident(s) if s == "if" || s == "while" || s == "function" => depth += 1,
+            Token::Ident(s) if s == "if" || s == "while" || s == "for" || s == "function" => {
+                depth += 1
+            }
             Token::Ident(s) if s == "end" => depth -= 1,
             _ => {}
         }

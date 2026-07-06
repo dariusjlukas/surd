@@ -101,11 +101,24 @@ Booleans are opaque to arithmetic — `true + 1` is an error, not a `2`.
 10
 ```
 
-The `else` branch is optional; without it, a false condition yields `0`:
+Chain cases with `elseif` — one `end` closes the whole chain:
 
 ```text
->> if 1 > 2 then 10 end
-0
+>> grade(x) := if x >= 90 then 4 elseif x >= 80 then 3 else 0 end
+>> grade(85)
+3
+```
+
+The `else` branch is optional **in statement position** — running an `if`
+purely for its side effect (a conditional assignment) is fine. But using the
+*value* of an `if` that has no `else` is an error when the condition is
+false: there is no value to use, and inventing one (an earlier version
+yielded a silent `0`) is exactly the kind of guess surd refuses to make.
+
+```text
+>> if 1 > 2 then x := 10 end      # fine: nothing consumes the value
+>> y := if 1 > 2 then 10 end
+error: this 'if' has no 'else', so it has no value when the condition is false — add an else branch
 ```
 
 **The decidable-boolean rule.** Conditions must evaluate to a real
@@ -132,6 +145,59 @@ infinite loop errors instead of hanging.
 5
 ```
 
+## `for`
+
+`for x in lo:hi do body end` iterates an **inclusive range** of exact values
+(`lo:step:hi` with a step in the middle, MATLAB/Julia order — steps may be
+negative or rational). Endpoints and step must be exact numbers, so the
+stopping comparison is always decidable; there is no float drift, and a
+rational step lands exactly on the endpoint:
+
+```text
+>> s := 0
+>> for x in 0:1/4:1 do s := s + x end
+>> s
+5/2
+```
+
+`for x in m do ... end` over a matrix iterates a vector's elements, or an
+m×n matrix's rows (matching `m[i]`). The loop variable stays bound after the
+loop, like a `while` counter, and the same 10,000,000-iteration cap applies.
+
+## Anonymous functions and closures
+
+`x -> expr` is a function value with no name; multiple parameters take
+parentheses, `(a, b) -> a + b`. Lambdas go anywhere a value goes — most
+usefully straight into [`map`/`filter`/`fold`](../reference/data.md#map):
+
+```text
+>> map(x -> x^2, [1, 2, 3])
+[ 1  4  9 ]
+>> filter(x -> x > 2, [1, 2, 3, 4])
+[ 3  4 ]
+>> fold((acc, x) -> acc + x, 0, [1, 2, 3, 4])
+10
+```
+
+Functions created inside another function **capture the locals they mention,
+by value**, at the moment they are created — the classic closure factory
+works:
+
+```text
+>> make(k) := (x -> k*x)
+>> double := make(2)
+>> double(21)
+42
+```
+
+Capture is a snapshot: later changes to the original variable don't reach
+the closure (values in surd are immutable, and closures are values too).
+Free names at the *top level* are not captured — they stay late-bound
+against the live workspace, which is what lets `fact(n) := ... fact(n-1) ...`
+refer to itself before it exists. Named `function`/`:=` definitions written
+inside another function capture the same way, and a local function can call
+itself by name.
+
 ## Blocks
 
 Statements are separated by newlines or `;`; the value of a block is its
@@ -148,7 +214,7 @@ stays symbolic instead of building a gigabyte bignum).
 
 ## Not in the language (yet)
 
-`return`/`break`/`continue`, closures that capture locals, and `print` are
-deliberately deferred — a function's value is its last statement, and since
-`if` is an expression, recursion needs no early return. See
-[Limits and design notes](../limits.md).
+`return`/`break`/`continue` and `print` are deliberately deferred — a
+function's value is its last statement, and since `if` is an expression,
+recursion needs no early return; `for` plus `filter`/`fold` cover most of
+what `break` is for. See [Limits and design notes](../limits.md).

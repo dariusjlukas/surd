@@ -64,8 +64,14 @@ export interface Plot3dData {
   /** 3D scatter markers `(x, y, z)` in data coordinates; absent when none.
    * Static data — re-windowed client-side, never resampled. */
   scatter?: [number, number, number][]
-  /** Optional figure title from `plot3d(..., title = "...")` (mathtext). */
+  /** Optional figure title / axis labels from `plot3d(..., title = "...")`.
+   * Mathtext: plain text, with `$...$` segments rendered as LaTeX math.
+   * Axis labels replace the default axis names (xvar / yvar / "z") on the
+   * box edges. */
   title?: string
+  xlabel?: string
+  ylabel?: string
+  zlabel?: string
 }
 
 /** A scatterplot matrix (SPLOM) from `pairs(...)`: k variables drawn as a k×k

@@ -229,10 +229,14 @@ fn encode(e: &Expr) -> Result<Value, String> {
         Expr::Complex(re, im) => json!({ "t": "complex", "re": encode(re)?, "im": encode(im)? }),
         Expr::Equation(l, r) => json!({ "t": "eq", "lhs": encode(l)?, "rhs": encode(r)? }),
         Expr::Formula(l, r) => json!({ "t": "formula", "lhs": encode(l)?, "rhs": encode(r)? }),
-        Expr::Function { params, body } => {
+        Expr::Function { params, body, env } => {
             let body = serde_json::to_value(body.as_ref())
                 .map_err(|e| format!("could not serialize function body: {}", e))?;
-            json!({ "t": "function", "params": params, "body": body })
+            let env = env
+                .iter()
+                .map(|(n, v)| Ok(json!([n, encode(v)?])))
+                .collect::<Result<Vec<_>, String>>()?;
+            json!({ "t": "function", "params": params, "body": body, "env": env })
         }
         Expr::Struct(fields) => {
             let mut map = Map::new();
@@ -499,9 +503,29 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
                 .map_err(|_| "'function' params must be an array of strings".to_string())?;
             let body: Node = serde_json::from_value(field("body")?.clone())
                 .map_err(|e| format!("bad function body: {}", e))?;
+            // The captured environment; absent in workspaces saved before
+            // closures existed (an empty capture is the compatible reading).
+            let mut env = Vec::new();
+            if let Some(pairs) = map.get("env") {
+                let pairs = pairs
+                    .as_array()
+                    .ok_or("'env' of 'function' must be an array")?;
+                for pair in pairs {
+                    let (n, v) = match pair.as_array().map(Vec::as_slice) {
+                        Some([n, v]) => (n, v),
+                        _ => return Err("'env' entries must be [name, value] pairs".into()),
+                    };
+                    let n = n
+                        .as_str()
+                        .ok_or("'env' entry names must be strings")?
+                        .to_string();
+                    env.push((n, decode(v, Mode::Tagged)?));
+                }
+            }
             Ok(Expr::Function {
                 params,
                 body: Rc::new(body),
+                env,
             })
         }
         "struct" => {

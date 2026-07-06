@@ -43,10 +43,34 @@ pub enum Node {
     If(Box<Node>, Box<Node>, Option<Box<Node>>),
     /// `while cond do <block> end`
     While(Box<Node>, Box<Node>),
+    /// `for var in <iterable> do <block> end`
+    For {
+        var: String,
+        iter: ForIter,
+        body: Box<Node>,
+    },
     /// A function definition: name, parameters, body block.
     FuncDef(String, Vec<String>, Box<Node>),
+    /// An anonymous function: `x -> x^2`, `(a, b) -> a + b`. Unlike a named
+    /// `FuncDef` it is an expression, and it captures (by value) the local
+    /// variables it mentions from the frame where it was created.
+    Lambda(Vec<String>, Box<Node>),
     /// A sequence of statements; its value is the last one's.
     Block(Vec<Node>),
+}
+
+/// What a [`Node::For`] loop runs over: an inclusive range `lo:hi` /
+/// `lo:step:hi` (spelled with the same `:` syntax as matrix indexing, but the
+/// bounds here are values, not positions), or any expression that evaluates to
+/// a matrix (elements of a vector, rows of a matrix).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ForIter {
+    Range {
+        lo: Box<Node>,
+        step: Option<Box<Node>>,
+        hi: Box<Node>,
+    },
+    Expr(Box<Node>),
 }
 
 /// One argument of an [`Node::Index`]. `Scalar` selects a single position and

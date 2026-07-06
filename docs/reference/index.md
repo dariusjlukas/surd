@@ -66,7 +66,9 @@ entrywise to matrices automatically.
 | --- | --- |
 | [`len(v)`](data.md#len-size) | Entries of a vector (rows of a matrix) |
 | [`size(m)`](data.md#len-size) | Dimensions, as `struct(rows, cols)` |
-| [`map(f, m)`](data.md#map) | Apply a function entrywise |
+| [`map(f, m, ...)`](data.md#map) | Apply a function entrywise (several matrices zip) |
+| [`filter(pred, v)`](data.md#filter) | Elements where the predicate is true |
+| [`fold(f, init, v)`](data.md#fold) | Left fold: `acc := f(acc, x)` over elements |
 | [`dot(a, b)`](data.md#dot) | Σ aᵢ·bᵢ |
 | [`vcat(a, ...)` / `hcat(a, ...)`](data.md#vcat-hcat) | Stack vertically / horizontally |
 | [`linspace(a, b, n)`](data.md#linspace) | n evenly spaced points, exact step |

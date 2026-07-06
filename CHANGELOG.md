@@ -9,6 +9,44 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymous functions and closures.** `x -> x^2` and `(a, b) -> a + b` are
+  function values usable anywhere a value goes. Functions created inside
+  another function capture the locals they mention **by value** at creation,
+  so the closure factory `make(k) := (x -> k*x)` works; top-level free names
+  stay late-bound against the workspace (recursion keeps working). Local
+  functions can call themselves by name.
+- **`for` loops.** `for x in lo:hi do ... end` / `lo:step:hi` iterates an
+  inclusive range of exact values (rational and negative steps included —
+  endpoints and step must be exact so the stopping comparison is decidable);
+  `for x in m do ... end` iterates a vector's elements or a matrix's rows.
+- **`elseif`.** `if a then ... elseif b then ... else ... end` chains cases
+  under a single `end` (the spelled-out nested `else if ... end end` still
+  works).
+- **`filter` and `fold`.** `filter(pred, v)` keeps the elements where the
+  predicate is `true` (a non-boolean verdict refuses; so does keeping
+  nothing — there is no empty matrix). `fold(f, init, v)` is the left fold
+  over a vector's elements or a matrix's entries.
+- **Multi-argument `map`.** `map(f, a, b, ...)` over same-shape matrices
+  passes one entry from each — the elementwise zip.
+
+### Changed
+
+- **A false `if` without `else` no longer yields a silent `0` in value
+  position.** Using the value of such an `if` (assignment right side,
+  function result, arithmetic operand) is now an error; in statement
+  position — a conditional assignment for its side effect — it remains
+  allowed. The silent `0` was the same bug family as defaulting an
+  undecidable `==` to false (soundness audit #12).
+
+- **3D axis labels.** `plot3d(..., xlabel = "...", ylabel = "...",
+  zlabel = "...")` — the labels replace the default axis names (the plot
+  variables and `z`) on the box edges and turn with the box as you orbit.
+  Mathtext like the 2D labels (`$...$` renders LaTeX). PNG/PDF exports of 3D
+  plots now composite the projected axis names *and* tick values around the
+  frame, which previously exported without either.
+
 ## [0.9.0] - 2026-07-05
 
 ### Added

@@ -161,6 +161,21 @@ expect(
   surf.plot3d.nx * surf.plot3d.ny,
 );
 
+// plot3d titles and per-axis labels ride the payload like the 2D plot's.
+const labeled3d = ev(
+  'plot3d(u*v, u, 0, 1, v, 0, 1, title = "saddle", xlabel = "$u$ (m)", ylabel = "$v$ (m)", zlabel = "$u v$")',
+);
+expect("labeled3d title", labeled3d.plot3d.title, "saddle");
+expect("labeled3d xlabel", labeled3d.plot3d.xlabel, "$u$ (m)");
+expect("labeled3d ylabel", labeled3d.plot3d.ylabel, "$v$ (m)");
+expect("labeled3d zlabel", labeled3d.plot3d.zlabel, "$u v$");
+expect(
+  "labeled3d echo re-parses",
+  ev(labeled3d.text).text === labeled3d.text,
+  true,
+);
+expect("unlabeled plot3d carries no zlabel", "zlabel" in surf.plot3d, false);
+
 // 3D scatter: a bare point cloud (no surface), and overlaid on a surface.
 const sc3 = ev("plot3d(scatter3d([0, 1, 2, 3], [0, 1, 0, 1], [1, 2, 3, 4]))");
 expect("scatter3d kind", sc3.kind, "plot3d");

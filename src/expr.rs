@@ -63,8 +63,15 @@ pub enum Expr {
     /// `\text{...}`.
     Str(String),
     /// A user-defined function: parameter names + body AST. `Rc` keeps `Expr`
-    /// cheap to clone.
-    Function { params: Vec<String>, body: Rc<Node> },
+    /// cheap to clone. `env` is the captured environment — the local variables
+    /// (snapshotted by value, sorted by name) that were in scope where the
+    /// function was created. Empty for top-level definitions, whose free names
+    /// resolve against the live global workspace at call time.
+    Function {
+        params: Vec<String>,
+        body: Rc<Node>,
+        env: Vec<(String, Expr)>,
+    },
     /// `lhs = rhs`. A piece of data, not a boolean.
     Equation(Box<Expr>, Box<Expr>),
     /// `response ~ terms`. A model formula consumed by the `stats` models; its

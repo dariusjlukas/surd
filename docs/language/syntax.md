@@ -49,7 +49,8 @@ Identifiers start with a letter or `_` and continue with letters, digits, or
 `_`. These words are reserved and carry grammar:
 
 ```
-if  then  else  end  while  do  function  and  or  not  true  false
+if  then  else  elseif  end  while  do  for  in  function
+and  or  not  true  false
 ```
 
 `true` and `false` are literals and can never be assigned to. The constants
@@ -98,6 +99,9 @@ From loosest to tightest binding:
 | 10 (tightest) | `.` | struct field access — binds tighter than `^`, so `s.a^2` is `(s.a)^2` |
 
 Assignment `:=` and function definition are statement forms, not operators.
+A lambda `params -> body` sits alongside `=` at the loosest level: the body
+extends as far right as possible, so `x -> x + 1` is `x -> (x + 1)` and
+`x -> y -> x + y` nests right-associatively.
 
 ## Implicit multiplication
 

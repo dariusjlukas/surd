@@ -2428,6 +2428,19 @@ fn plot_labels_attach_and_roundtrip() {
         ev_all(&["s := signal([1; 2])", r#"plot(s, title = "sig")"#]).starts_with("plotsignal(")
     );
     assert!(ev(r#"plot3d(x*y, x, 0, 1, y, 0, 1, title = "surf")"#).starts_with("plot3d("));
+    // plot3d takes per-axis labels too, and the echo is a fixed point.
+    let printed3d = ev(
+        r#"plot3d(x*y, x, 0, 1, y, 0, 1, title = "s", xlabel = "$x$", ylabel = "$y$", zlabel = "$x y$")"#,
+    );
+    assert_eq!(
+        printed3d,
+        r#"plot3d(x*y, x, 0, 1, y, 0, 1, title = "s", xlabel = "$x$", ylabel = "$y$", zlabel = "$x y$")"#
+    );
+    assert_eq!(ev(&printed3d), printed3d);
+    // ...including on a bare scatter3d cloud.
+    assert!(
+        ev(r#"plot3d(scatter3d([1], [2], [3]), zlabel = "height")"#).starts_with("plot3dscatter(")
+    );
 }
 
 #[test]
@@ -2438,9 +2451,203 @@ fn plot_labels_refuse_misuse() {
     assert!(ev(r#"plot(sin(x), x, 0, 6, title = "a", title = "b")"#).contains("twice"));
     // Not a string.
     assert!(ev("plot(sin(x), x, 0, 6, title = 3)").contains("must be a string"));
-    // Unsupported key for the plot kind — refused, never silently dropped.
+    // Unsupported key for the plot kind — refused, never silently dropped
+    // (a 2D plot has no z axis).
     assert!(ev(r#"plot(sin(x), x, 0, 6, zlabel = "z")"#).contains("does not support"));
-    assert!(ev(r#"plot3d(x*y, x, 0, 1, y, 0, 1, xlabel = "x")"#).contains("does not support"));
     // Labels are keyword-only extras: they don't count toward the window args.
     assert!(ev(r#"plot(sin(x), title = "t")"#).starts_with("error: plot expects"));
+}
+
+// ---------------------------------------------------------------------------
+// General programming: lambdas/closures, for loops, elseif, filter/fold/map,
+// and the missing-else refusal (milestone 1 of the programming-features work).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lambdas_are_function_values() {
+    // A lambda is a value; there is no call-an-expression syntax, so a
+    // parenthesized lambda cannot be invoked in place (implicit multiplication
+    // reads `(...)(5)` as a product and refuses the arithmetic).
+    assert!(ev("(x -> x^2)(5)").starts_with("error:"));
+    assert_eq!(ev_all(&["f := x -> x^2", "f(5)"]), "25");
+    assert_eq!(ev_all(&["g := (a, b) -> a + b", "g(2, 3)"]), "5");
+    assert_eq!(ev_all(&["h := () -> 42", "h()"]), "42");
+    // Right-associative nesting: a curried adder.
+    assert_eq!(
+        ev_all(&["add := a -> b -> a + b", "inc := add(1)", "inc(41)"]),
+        "42"
+    );
+    // A lambda in argument position needs no parentheses.
+    assert_eq!(norm("map(x -> x^2, [1, 2, 3])"), "[ 1 4 9 ]");
+}
+
+#[test]
+fn lambdas_capture_locals_by_value() {
+    // The canonical closure factory: the parameter is captured at creation.
+    assert_eq!(
+        ev_all(&["make(k) := (x -> k*x)", "double := make(2)", "double(21)"]),
+        "42"
+    );
+    // Two closures from one factory hold different snapshots.
+    assert_eq!(
+        ev_all(&[
+            "make(k) := (x -> k*x)",
+            "d := make(2)",
+            "t := make(3)",
+            "d(10) + t(10)",
+        ]),
+        "50"
+    );
+    // Top-level free names stay late-bound, same as named functions.
+    assert_eq!(ev_all(&["f := x -> k*x", "k := 7", "f(6)"]), "42");
+}
+
+#[test]
+fn local_functions_can_recurse() {
+    // A function value called through a local binding can call itself by name.
+    assert_eq!(
+        ev_all(&[
+            "function run(n)
+               fact := m -> if m == 0 then 1 else m*fact(m-1) end
+               fact(n)
+             end",
+            "run(5)",
+        ]),
+        "120"
+    );
+}
+
+#[test]
+fn for_loops_over_ranges() {
+    assert_eq!(
+        ev_all(&["s := 0", "for i in 1:10 do s := s + i end", "s"]),
+        "55"
+    );
+    // Stepped and descending ranges, inclusive endpoints.
+    assert_eq!(
+        ev_all(&["s := 0", "for i in 1:2:9 do s := s + i end", "s"]),
+        "25"
+    );
+    assert_eq!(
+        ev_all(&["s := 0", "for i in 5:-1:1 do s := s + i end", "s"]),
+        "15"
+    );
+    // Exact rational steps — no float drift, the endpoint is hit exactly.
+    assert_eq!(
+        ev_all(&["s := 0", "for x in 0:1/4:1 do s := s + x end", "s"]),
+        "5/2"
+    );
+    // A backwards range simply runs zero times.
+    assert_eq!(
+        ev_all(&["s := 0", "for i in 3:1 do s := s + i end", "s"]),
+        "0"
+    );
+    // Bounds must be exact numbers; symbols refuse.
+    assert!(ev("for i in 1:n do 1 end").starts_with("error:"));
+    // A zero step refuses instead of looping forever.
+    assert!(ev("for i in 1:0:5 do 1 end").starts_with("error:"));
+}
+
+#[test]
+fn for_loops_over_matrices() {
+    assert_eq!(
+        ev_all(&["s := 0", "for x in [3, 1, 4, 1, 5] do s := s + x end", "s"]),
+        "14"
+    );
+    // Column vectors iterate their entries too.
+    assert_eq!(
+        ev_all(&["s := 0", "for x in [1; 2; 3] do s := s + x end", "s"]),
+        "6"
+    );
+    // An m×n matrix iterates rows, matching m[i].
+    assert_eq!(
+        ev_all(&["s := 0", "for r in [1, 2; 3, 4] do s := s + r[2] end", "s"]),
+        "6"
+    );
+    assert!(ev("for x in 5 do 1 end").starts_with("error:"));
+}
+
+#[test]
+fn elseif_chains_with_a_single_end() {
+    let grade =
+        "grade(x) := if x >= 90 then 4 elseif x >= 80 then 3 elseif x >= 70 then 2 else 0 end";
+    assert_eq!(ev_all(&[grade, "grade(95)"]), "4");
+    assert_eq!(ev_all(&[grade, "grade(85)"]), "3");
+    assert_eq!(ev_all(&[grade, "grade(75)"]), "2");
+    assert_eq!(ev_all(&[grade, "grade(5)"]), "0");
+    // The spelled-out nested form still works, with its own end.
+    assert_eq!(
+        ev("if 1 > 2 then 1 else if 2 > 1 then 2 else 3 end end"),
+        "2"
+    );
+}
+
+#[test]
+fn missing_else_refuses_in_value_position() {
+    // Using the (absent) value of a false if is an error, not a silent 0.
+    assert!(ev("y := if 1 > 2 then 7 end").starts_with("error:"));
+    assert!(ev_all(&["f(x) := if x > 0 then x end", "f(-1)"]).starts_with("error:"));
+    assert!(ev("1 + if 1 > 2 then 7 end").starts_with("error:"));
+    // The true branch still flows as a value.
+    assert_eq!(ev("y := if 2 > 1 then 7 end"), "7");
+    // Statement position stays fine: nothing consumes the missing value.
+    assert_eq!(ev_all(&["x := 1", "if 1 > 2 then x := 7 end", "x"]), "1");
+    assert_eq!(
+        ev_all(&[
+            "x := 1",
+            "while x < 4 do if x == 2 then x := x + 1 end; x := x + 1 end",
+            "x"
+        ]),
+        "4"
+    );
+    assert_eq!(
+        ev_all(&[
+            "s := 0",
+            "for i in 1:3 do if i == 2 then s := i end end",
+            "s"
+        ]),
+        "2"
+    );
+}
+
+#[test]
+fn filter_fold_and_multi_arg_map() {
+    assert_eq!(norm("filter(x -> x > 2, [1, 2, 3, 4])"), "[ 3 4 ]");
+    // Column orientation is preserved.
+    assert_eq!(norm("filter(x -> x > 2, [1; 2; 3; 4])"), "[ 3 ] [ 4 ]");
+    // The predicate must be decidably boolean for every element.
+    assert!(ev("filter(x -> x, [1, 2])").starts_with("error:"));
+    // Keeping nothing refuses (there is no empty matrix).
+    assert!(ev("filter(x -> x > 9, [1, 2])").starts_with("error:"));
+    assert_eq!(ev("fold((a, x) -> a + x, 0, [1, 2, 3, 4])"), "10");
+    // Fold is exact and ordered: build a continued-fraction-ish nest.
+    assert_eq!(ev("fold((a, x) -> 1/(a + x), 1, [1, 1])"), "2/3");
+    // map over two same-shape vectors zips them.
+    assert_eq!(
+        norm("map((a, b) -> a*b, [1, 2, 3], [4, 5, 6])"),
+        "[ 4 10 18 ]"
+    );
+    assert!(ev("map((a, b) -> a*b, [1, 2], [1, 2, 3])").starts_with("error:"));
+    assert!(ev("map(3, [1])").starts_with("error: map expects a function"));
+}
+
+#[test]
+fn closures_survive_struct_fields_and_higher_order_use() {
+    // A closure stored in a struct field keeps its captured environment.
+    assert_eq!(
+        ev_all(&[
+            "make(k) := struct(scale = x -> k*x)",
+            "m := make(10)",
+            "m.scale(4)",
+        ]),
+        "40"
+    );
+    // Passing a closure to map keeps the capture too.
+    assert_eq!(
+        ev_all(&["scaled(k, v) := map(x -> k*x, v)", "scaled(3, [1, 2, 3])"])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        "[ 3 6 9 ]"
+    );
 }

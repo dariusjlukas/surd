@@ -1,7 +1,7 @@
 //! The tree-walking evaluator: lowers an [`crate::ast::Node`] into a canonical
 //! [`Expr`] within a scope, dispatches builtins, and runs control flow.
 
-use crate::ast::{IndexArg, Node, Op, Step};
+use crate::ast::{ForIter, IndexArg, Node, Op, Step};
 use crate::dsp;
 use crate::expr::*;
 use crate::interval;
@@ -50,10 +50,13 @@ impl Interpreter {
     }
 
     /// Parse and evaluate a complete program (one or more statements). The
-    /// value is that of the final statement.
+    /// value is that of the final statement. Top-level statements run in
+    /// statement position (their values feed only the REPL echo), so a
+    /// conditional statement — `if converged then r := x end` — is allowed
+    /// even though a false `if` without `else` has no value.
     pub fn eval_line(&mut self, src: &str) -> Result<Expr, String> {
         let program = parse(lex(src)?)?;
-        self.eval_node(&program)
+        self.eval_discarded(&program)
     }
 
     /// The global workspace, for `:vars`.
@@ -255,20 +258,34 @@ impl Interpreter {
                 let re = self.eval_shadowed(&names, r)?;
                 Ok(Expr::Formula(Box::new(le), Box::new(re)))
             }
+            // This arm evaluates an `if` whose value is *used* (an assignment's
+            // right side, a function argument, a function's result, ...). With
+            // no `else` and a false condition there is no value to produce —
+            // refuse rather than invent one (a silent `0` here shipped as the
+            // same bug family as defaulting an undecidable `==` to false). In
+            // statement position [`Self::eval_discarded`] allows the same
+            // program, because nothing consumes the missing value there.
             Node::If(cond, then_b, else_b) => {
                 if as_bool(&self.eval_node(cond)?)? {
                     self.eval_node(then_b)
                 } else if let Some(e) = else_b {
                     self.eval_node(e)
                 } else {
-                    Ok(int(0))
+                    Err(
+                        "this 'if' has no 'else', so it has no value when the condition \
+                         is false — add an else branch"
+                            .to_string(),
+                    )
                 }
             }
             Node::While(cond, body) => {
                 let mut last = int(0);
                 let mut iters: u64 = 0;
                 while as_bool(&self.eval_node(cond)?)? {
-                    last = self.eval_node(body)?;
+                    // The body is statement position: its statements run for
+                    // their bindings, and the loop's value (the last body
+                    // evaluation) is almost never consumed.
+                    last = self.eval_discarded(body)?;
                     iters += 1;
                     if iters >= MAX_ITERS {
                         return Err(format!(
@@ -279,23 +296,157 @@ impl Interpreter {
                 }
                 Ok(last)
             }
+            Node::For { var, iter, body } => self.eval_for(var, iter, body),
             Node::FuncDef(name, params, body) => {
                 check_assignable(name)?;
                 let f = Expr::Function {
                     params: params.clone(),
                     body: Rc::new((**body).clone()),
+                    env: self.capture_env(params, body),
                 };
                 self.set_var(name, f.clone());
                 Ok(f)
             }
+            Node::Lambda(params, body) => Ok(Expr::Function {
+                params: params.clone(),
+                body: Rc::new((**body).clone()),
+                env: self.capture_env(params, body),
+            }),
+            Node::Block(stmts) => {
+                if let Some((final_stmt, rest)) = stmts.split_last() {
+                    for s in rest {
+                        self.eval_discarded(s)?;
+                    }
+                    // The final statement's value is the block's value.
+                    self.eval_node(final_stmt)
+                } else {
+                    Ok(int(0))
+                }
+            }
+        }
+    }
+
+    /// Evaluate a node in *statement position* — its value is discarded (or
+    /// only echoed by the REPL), so an `if` without `else` is allowed to take
+    /// its false branch. Discard-ness propagates structurally: through every
+    /// statement of a block, and into the branches of an `if`. Everything
+    /// else is evaluated normally.
+    fn eval_discarded(&mut self, node: &Node) -> Result<Expr, String> {
+        self.eval_depth += 1;
+        if self.eval_depth > MAX_EVAL_DEPTH {
+            self.eval_depth -= 1;
+            return Err("expression is nested too deeply".to_string());
+        }
+        let result = match node {
+            Node::If(cond, then_b, else_b) => {
+                match self.eval_node(cond).and_then(|c| as_bool(&c)) {
+                    Err(e) => Err(e),
+                    Ok(true) => self.eval_discarded(then_b),
+                    Ok(false) => match else_b {
+                        Some(e) => self.eval_discarded(e),
+                        None => Ok(int(0)),
+                    },
+                }
+            }
             Node::Block(stmts) => {
                 let mut last = int(0);
                 for s in stmts {
-                    last = self.eval_node(s)?;
+                    last = self.eval_discarded(s)?;
                 }
                 Ok(last)
             }
+            other => self.eval_node_inner(other),
+        };
+        self.eval_depth -= 1;
+        result
+    }
+
+    /// Run a `for` loop. A range `lo:hi` / `lo:step:hi` iterates the exact
+    /// values lo, lo+step, … up to and including `hi` when it lands on it
+    /// (endpoints and step must be exact numbers — the comparisons that stop
+    /// the loop must be decidable). A matrix iterates its elements (vector)
+    /// or its rows (m×n). The loop variable stays bound after the loop, like
+    /// a `while` counter; the loop's value is the last body evaluation.
+    fn eval_for(&mut self, var: &str, iter: &ForIter, body: &Node) -> Result<Expr, String> {
+        check_assignable(var)?;
+        let mut last = int(0);
+        match iter {
+            ForIter::Range { lo, step, hi } => {
+                let lo = exact_bound(&self.eval_node(lo)?)?;
+                let hi = exact_bound(&self.eval_node(hi)?)?;
+                let step = match step {
+                    Some(s) => exact_bound(&self.eval_node(s)?)?,
+                    None => BigRational::from_integer(BigInt::from(1)),
+                };
+                if step.is_zero() {
+                    return Err("for: the range step must be nonzero".into());
+                }
+                // Bound the trip count before running (exact arithmetic, so
+                // this is cheap and cannot be fooled by rounding).
+                let span = (&hi - &lo) / &step;
+                if span >= BigRational::from_integer(BigInt::from(MAX_ITERS)) {
+                    return Err(format!(
+                        "for loop would run more than {} iterations",
+                        MAX_ITERS
+                    ));
+                }
+                let ascending = step > BigRational::zero();
+                let mut i = lo;
+                loop {
+                    if (ascending && i > hi) || (!ascending && i < hi) {
+                        break;
+                    }
+                    self.set_var(var, rat_to_expr(i.clone()));
+                    last = self.eval_discarded(body)?;
+                    i += &step;
+                }
+            }
+            ForIter::Expr(node) => {
+                let value = self.eval_node(node)?;
+                let Expr::Matrix(rows) = &value else {
+                    return Err(format!(
+                        "for: cannot iterate over '{}' — loop over a range \
+                         (for i in 1:n do ... end) or a matrix",
+                        value
+                    ));
+                };
+                let items: Vec<Expr> = if rows.len() == 1 {
+                    rows[0].clone()
+                } else if rows.iter().all(|r| r.len() == 1) {
+                    rows.iter().map(|r| r[0].clone()).collect()
+                } else {
+                    // An m×n matrix iterates its rows, matching `m[i]`.
+                    rows.iter().map(|r| Expr::Matrix(vec![r.clone()])).collect()
+                };
+                for item in items {
+                    self.set_var(var, item);
+                    last = self.eval_discarded(body)?;
+                }
+            }
         }
+        Ok(last)
+    }
+
+    /// The environment a function value captures at creation: the *local*
+    /// variables (current frame) that its body mentions, snapshotted by
+    /// value. At top level the current frame is the global workspace and
+    /// nothing is captured — free names there stay late-bound (which is what
+    /// makes `fact(n) := ... fact(n-1) ...` work before `fact` exists).
+    fn capture_env(&self, params: &[String], body: &Node) -> Vec<(String, Expr)> {
+        if self.frames.len() <= 1 {
+            return Vec::new();
+        }
+        let mut names = Vec::new();
+        collect_capture_names(body, &mut names);
+        let frame = self.frames.last().unwrap();
+        let mut env: Vec<(String, Expr)> = names
+            .into_iter()
+            .filter(|n| !params.contains(n))
+            .filter_map(|n| frame.get(&n).map(|v| (n, v.clone())))
+            .collect();
+        // Sorted so equal captures compare equal regardless of mention order.
+        env.sort_by(|a, b| a.0.cmp(&b.0));
+        env
     }
 
     fn eval_binop(&mut self, op: Op, a: &Node, b: &Node) -> Result<Expr, String> {
@@ -375,51 +526,85 @@ impl Interpreter {
 
     /// Call `name`: a user-defined function if one is bound, otherwise a builtin.
     fn call(&mut self, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
-        if let Some(Expr::Function { params, body }) = self.get_var(name) {
-            return self.call_function(name, params, body, args);
+        if let Some(f @ Expr::Function { .. }) = self.get_var(name) {
+            return self.call_value(name, &f, args, Some(name));
         }
-        // `precision` and `map` need &mut self (one mutates state, the other
-        // calls back into user functions), so they live here rather than
-        // among the (read-only) builtins.
-        if name == "precision" {
-            return self.set_precision(args);
+        // `precision` and the higher-order builtins need &mut self (one
+        // mutates state, the others call back into user functions), so they
+        // live here rather than among the (read-only) builtins.
+        match name {
+            "precision" => self.set_precision(args),
+            "map" => self.call_map(args),
+            "fill" => self.call_fill(args),
+            "filter" => self.call_filter(args),
+            "fold" => self.call_fold(args),
+            _ => self.call_builtin(name, args),
         }
-        if name == "map" {
-            return self.call_map(args);
-        }
-        if name == "fill" {
-            return self.call_fill(args);
-        }
-        self.call_builtin(name, args)
     }
 
-    /// `map(f, m)` — apply a function entrywise, preserving shape. `f` is a
-    /// function value or a function's name (user-defined or built-in), so
-    /// both `map(sin, v)` and `map(myfunc, v)` work.
+    /// Apply a function value (or a builtin named by a bare symbol, so
+    /// `map(sin, v)` works) to arguments. `who` is only for error messages;
+    /// `self_name` optionally rebinds the function under its own name inside
+    /// the call, so a *local* function can recurse (a global one already can,
+    /// through the workspace).
+    fn call_value(
+        &mut self,
+        who: &str,
+        f: &Expr,
+        args: Vec<Expr>,
+        self_name: Option<&str>,
+    ) -> Result<Expr, String> {
+        match f {
+            Expr::Function { params, body, env } => self.call_function(
+                who,
+                params.clone(),
+                body.clone(),
+                env.clone(),
+                args,
+                self_name,
+            ),
+            Expr::Symbol(s) => self.call(&s.clone(), args),
+            other => Err(format!("{} expects a function, got '{}'", who, other)),
+        }
+    }
+
+    /// `map(f, m)` / `map(f, m1, ..., mk)` — apply a function entrywise,
+    /// preserving shape; with several matrices (all the same shape) the
+    /// function receives one entry from each, so `map(f, a, b)` is the
+    /// zip-with-`f` of `a` and `b`. `f` is a function value or a function's
+    /// name (user-defined or built-in), so both `map(sin, v)` and
+    /// `map(myfunc, v)` work.
     fn call_map(&mut self, args: Vec<Expr>) -> Result<Expr, String> {
-        arity("map", &args, 2)?;
-        let Expr::Matrix(rows) = &args[1] else {
-            return Err("map expects a vector or matrix as its second argument".into());
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut new_row = Vec::with_capacity(row.len());
-            for cell in row {
-                let v = match &args[0] {
-                    Expr::Function { params, body } => self.call_function(
-                        "the mapped function",
-                        params.clone(),
-                        body.clone(),
-                        vec![cell.clone()],
-                    )?,
-                    Expr::Symbol(s) => self.call(&s.clone(), vec![cell.clone()])?,
-                    other => {
-                        return Err(format!(
-                            "map expects a function as its first argument, got '{}'",
-                            other
-                        ))
-                    }
-                };
+        if args.len() < 2 {
+            return Err(format!(
+                "map expects map(f, m) or map(f, m1, ..., mk), got {} argument(s)",
+                args.len()
+            ));
+        }
+        check_callable("map", &args[0])?;
+        let mut shapes = Vec::with_capacity(args.len() - 1);
+        for m in &args[1..] {
+            let Expr::Matrix(rows) = m else {
+                return Err("map expects vectors or matrices after the function".into());
+            };
+            shapes.push((rows.len(), rows[0].len()));
+        }
+        if shapes.iter().any(|s| *s != shapes[0]) {
+            return Err("map: all matrices must have the same shape".into());
+        }
+        let (nrows, ncols) = shapes[0];
+        let mut out = Vec::with_capacity(nrows);
+        for i in 0..nrows {
+            let mut new_row = Vec::with_capacity(ncols);
+            for j in 0..ncols {
+                let cells: Vec<Expr> = args[1..]
+                    .iter()
+                    .map(|m| match m {
+                        Expr::Matrix(rows) => rows[i][j].clone(),
+                        _ => unreachable!("checked above"),
+                    })
+                    .collect();
+                let v = self.call_value("the mapped function", &args[0], cells, None)?;
                 if !is_scalar(&v) {
                     return Err(format!(
                         "map: the mapped function must return a scalar for each entry, got '{}'",
@@ -431,6 +616,62 @@ impl Interpreter {
             out.push(new_row);
         }
         Ok(Expr::Matrix(out))
+    }
+
+    /// `filter(pred, v)` — the elements of a vector for which `pred` returns
+    /// `true`, preserving orientation (row in, row out). The predicate must
+    /// return an actual boolean for every element — anything else refuses.
+    /// Keeping *no* elements is an error too: there is no empty matrix.
+    fn call_filter(&mut self, args: Vec<Expr>) -> Result<Expr, String> {
+        arity("filter", &args, 2)?;
+        check_callable("filter", &args[0])?;
+        let entries = vector_entries("filter", &args[1])?;
+        let is_row = matches!(&args[1], Expr::Matrix(rows) if rows.len() == 1);
+        let mut kept = Vec::new();
+        for cell in entries {
+            let verdict =
+                self.call_value("the filter predicate", &args[0], vec![cell.clone()], None)?;
+            let Expr::Bool(keep) = verdict else {
+                return Err(format!(
+                    "filter: the predicate must return true or false for every element, \
+                     got '{}'",
+                    verdict
+                ));
+            };
+            if keep {
+                kept.push(cell);
+            }
+        }
+        if kept.is_empty() {
+            return Err("filter kept no elements, and there is no empty matrix — \
+                        check the predicate"
+                .into());
+        }
+        Ok(if is_row {
+            Expr::Matrix(vec![kept])
+        } else {
+            Expr::Matrix(kept.into_iter().map(|e| vec![e]).collect())
+        })
+    }
+
+    /// `fold(f, init, v)` — left fold: acc := f(acc, x) over the elements of a
+    /// vector (or the entries of a matrix, row-major), starting from `init`.
+    /// The accumulator may be any value, so folds can build matrices or
+    /// structs, not just scalars.
+    fn call_fold(&mut self, args: Vec<Expr>) -> Result<Expr, String> {
+        arity("fold", &args, 3)?;
+        check_callable("fold", &args[0])?;
+        let Expr::Matrix(rows) = &args[2] else {
+            return Err("fold expects a vector or matrix as its third argument".into());
+        };
+        let rows = rows.clone();
+        let mut acc = args[1].clone();
+        for row in rows {
+            for cell in row {
+                acc = self.call_value("the fold function", &args[0], vec![acc, cell], None)?;
+            }
+        }
+        Ok(acc)
     }
 
     /// `fill(value, n)` / `fill(value, rows, cols)` — a matrix whose every entry
@@ -456,17 +697,17 @@ impl Interpreter {
             return Err("fill needs positive dimensions (there is no empty matrix)".into());
         }
         // A function is applied at each coordinate; anything else is repeated.
-        if let Expr::Function { params, body } = &args[0] {
-            let (params, body) = (params.clone(), body.clone());
+        if matches!(&args[0], Expr::Function { .. }) {
+            let f = args[0].clone();
             let mut out = Vec::with_capacity(rows);
             for i in 1..=rows {
                 let mut row = Vec::with_capacity(cols);
                 for j in 1..=cols {
-                    let v = self.call_function(
+                    let v = self.call_value(
                         "the fill function",
-                        params.clone(),
-                        body.clone(),
+                        &f,
                         vec![int(i as i64), int(j as i64)],
+                        None,
                     )?;
                     if !is_scalar(&v) {
                         return Err(format!(
@@ -490,14 +731,19 @@ impl Interpreter {
         matrix::fill(value, rows, cols)
     }
 
-    /// Invoke a function value: bind the arguments in a fresh frame, run the
-    /// body, pop the frame. `name` is only for error messages.
+    /// Invoke a function value: bind the captured environment, then the
+    /// arguments (parameters win a name collision), in a fresh frame; run the
+    /// body; pop the frame. `name` is only for error messages. `self_name`
+    /// additionally binds the function to its own name inside the frame, so
+    /// local functions and lambdas can recurse.
     fn call_function(
         &mut self,
         name: &str,
         params: Vec<String>,
         body: Rc<Node>,
+        env: Vec<(String, Expr)>,
         args: Vec<Expr>,
+        self_name: Option<&str>,
     ) -> Result<Expr, String> {
         if params.len() != args.len() {
             return Err(format!(
@@ -510,7 +756,18 @@ impl Interpreter {
         if self.frames.len() >= MAX_FRAMES {
             return Err("maximum recursion depth exceeded".into());
         }
-        let frame: HashMap<String, Expr> = params.into_iter().zip(args).collect();
+        let mut frame: HashMap<String, Expr> = env.iter().cloned().collect();
+        if let Some(self_name) = self_name {
+            frame.insert(
+                self_name.to_string(),
+                Expr::Function {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env,
+                },
+            );
+        }
+        frame.extend(params.into_iter().zip(args));
         self.frames.push(frame);
         let result = self.eval_node(&body);
         self.frames.pop();
@@ -552,7 +809,7 @@ impl Interpreter {
                 names.join(", ")
             ));
         };
-        let Expr::Function { params, body } = field.clone() else {
+        let Expr::Function { params, body, env } = field.clone() else {
             return Err(format!(
                 "field '{}' holds '{}', which is not a function",
                 name, field
@@ -562,7 +819,10 @@ impl Interpreter {
             .iter()
             .map(|a| self.eval_node(a))
             .collect::<Result<Vec<_>, _>>()?;
-        self.call_function(name, params, body, evaluated)
+        // No self-binding by field name: the body may use that name for
+        // something else entirely (a struct field `sin` must not shadow the
+        // builtin `sin` inside the function it holds).
+        self.call_function(name, params, body, env, evaluated, None)
     }
 
     /// `stats.nlfit(model, [params], x, y[, init])`: nonlinear least squares.
@@ -778,7 +1038,7 @@ impl Interpreter {
             // A bare function value — a fit's `predict`, or any user function —
             // plots as its body: apply it to the plot variable to get the curve.
             let curve = match curve {
-                Expr::Function { params, body } => {
+                Expr::Function { params, body, env } => {
                     if params.len() != 1 {
                         return Err(format!(
                             "plot: a function curve must take one argument, but this takes {}",
@@ -789,7 +1049,9 @@ impl Interpreter {
                         "the plotted function",
                         params,
                         body,
+                        env,
                         vec![Expr::Symbol(var.clone())],
+                        None,
                     )?
                 }
                 other => other,
@@ -810,9 +1072,8 @@ impl Interpreter {
     /// surface at most), and `plot3d(scatter3d(...))` draws points alone over a
     /// window derived from the data. Stays symbolic, like `plot`.
     fn call_plot3d(&mut self, args: &[Node]) -> Result<Expr, String> {
-        // Only `title` for now: the surface view has no honest place to draw
-        // per-axis labels yet, and accepting-then-dropping them would lie.
-        let (args, labels) = self.split_plot_labels(args, &["title"], "plot3d")?;
+        let (args, labels) =
+            self.split_plot_labels(args, &["title", "xlabel", "ylabel", "zlabel"], "plot3d")?;
         // Bare 3D scatter: all data and no window — box it from the data.
         if !args.is_empty() && args.len() < 7 {
             let evaluated = args
@@ -1498,6 +1759,113 @@ fn collect_node_idents(node: &Node, out: &mut Vec<String>) {
             .for_each(|c| collect_node_idents(c, out)),
         _ => {}
     }
+}
+
+/// Every name a function body could *read* — used to decide what a lambda (or
+/// a locally defined function) captures. Unlike [`collect_node_idents`], this
+/// traverses all statement forms and includes call targets (`f(x)` reads `f`),
+/// because a captured local may well be a function value. Over-collection is
+/// harmless: a name that turns out to be bound by a parameter or a local
+/// assignment at call time simply shadows its captured snapshot.
+fn collect_capture_names(node: &Node, out: &mut Vec<String>) {
+    fn push(s: &String, out: &mut Vec<String>) {
+        if !out.contains(s) {
+            out.push(s.clone());
+        }
+    }
+    match node {
+        Node::Num(_) | Node::Str(_) => {}
+        Node::Ident(s) => push(s, out),
+        Node::BinOp(_, a, b) | Node::Equation(a, b) | Node::Formula(a, b) => {
+            collect_capture_names(a, out);
+            collect_capture_names(b, out);
+        }
+        Node::Neg(a) | Node::Not(a) | Node::Assign(_, a) => collect_capture_names(a, out),
+        Node::Call(name, args) => {
+            push(name, out);
+            args.iter().for_each(|a| collect_capture_names(a, out));
+        }
+        Node::Field(b, _) => collect_capture_names(b, out),
+        Node::FieldCall(b, _, args) => {
+            collect_capture_names(b, out);
+            args.iter().for_each(|a| collect_capture_names(a, out));
+        }
+        Node::Index(b, idx) => {
+            collect_capture_names(b, out);
+            for arg in idx {
+                match arg {
+                    IndexArg::Scalar(n) => collect_capture_names(n, out),
+                    IndexArg::Range { lo, hi, step } => {
+                        for n in [lo, hi].into_iter().flatten() {
+                            collect_capture_names(n, out);
+                        }
+                        match step {
+                            None => {}
+                            Some(Step::By(k)) => collect_capture_names(k, out),
+                            Some(Step::TakeSkip(t, s)) => {
+                                collect_capture_names(t, out);
+                                collect_capture_names(s, out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Node::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .for_each(|c| collect_capture_names(c, out)),
+        Node::If(c, t, e) => {
+            collect_capture_names(c, out);
+            collect_capture_names(t, out);
+            if let Some(e) = e {
+                collect_capture_names(e, out);
+            }
+        }
+        Node::While(c, b) => {
+            collect_capture_names(c, out);
+            collect_capture_names(b, out);
+        }
+        Node::For { iter, body, .. } => {
+            match iter {
+                ForIter::Range { lo, step, hi } => {
+                    collect_capture_names(lo, out);
+                    if let Some(s) = step {
+                        collect_capture_names(s, out);
+                    }
+                    collect_capture_names(hi, out);
+                }
+                ForIter::Expr(e) => collect_capture_names(e, out),
+            }
+            collect_capture_names(body, out);
+        }
+        Node::FuncDef(_, _, body) | Node::Lambda(_, body) => collect_capture_names(body, out),
+        Node::Block(stmts) => stmts.iter().for_each(|s| collect_capture_names(s, out)),
+    }
+}
+
+/// A callable first argument of a higher-order builtin: a function value, or
+/// a bare name (an unbound symbol) that will dispatch to a builtin.
+fn check_callable(who: &str, f: &Expr) -> Result<(), String> {
+    match f {
+        Expr::Function { .. } | Expr::Symbol(_) => Ok(()),
+        other => Err(format!(
+            "{} expects a function as its first argument, got '{}'",
+            who, other
+        )),
+    }
+}
+
+/// A `for`-range endpoint or step, which must be an exact number: the loop's
+/// stopping comparison has to be decidable, and exact rationals keep it so.
+fn exact_bound(e: &Expr) -> Result<BigRational, String> {
+    numeric_value(e).ok_or_else(|| {
+        format!(
+            "for: range bounds and step must be exact numbers (integers or rationals), \
+             got '{}'",
+            e
+        )
+    })
 }
 
 /// Read a bracketed list of plain identifiers, e.g. the `[a, b]` parameter list
@@ -2218,6 +2586,7 @@ pub(crate) fn function_from_expr(var: &str, body: &Expr) -> Result<Expr, String>
     Ok(Expr::Function {
         params: vec![var.to_string()],
         body: Rc::new(node),
+        env: Vec::new(),
     })
 }
 

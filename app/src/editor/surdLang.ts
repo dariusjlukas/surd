@@ -31,9 +31,12 @@ const KEYWORDS = [
   'if',
   'then',
   'else',
+  'elseif',
   'end',
   'while',
   'do',
+  'for',
+  'in',
   'function',
   'and',
   'or',
@@ -114,6 +117,16 @@ const BUILTINS: Builtin[] = [
     params: ['value', 'rows', 'cols?'],
     doc: 'Matrix of a constant value: fill(v, n) is n×n, fill(v, rows, cols) is rows×cols. If value is a function, each entry is f(row, col).',
   },
+  {
+    name: 'filter',
+    params: ['pred', 'v'],
+    doc: 'Elements of a vector where pred returns true (orientation preserved).',
+  },
+  {
+    name: 'fold',
+    params: ['f', 'init', 'v'],
+    doc: 'Left fold: acc := f(acc, x) over the elements, starting from init.',
+  },
   { name: 'identity', params: ['n'], doc: 'n×n identity matrix.' },
   { name: 'im', params: ['z'], doc: 'Imaginary part (alias of imag).' },
   { name: 'imag', params: ['z'], doc: 'Imaginary part.' },
@@ -150,7 +163,8 @@ const BUILTINS: Builtin[] = [
   {
     name: 'map',
     params: ['f', 'm'],
-    doc: 'Apply a function entrywise, preserving shape.',
+    doc: 'Apply a function entrywise, preserving shape. Several same-shape matrices zip: map(f, a, b).',
+    variadic: true,
   },
   {
     name: 'mid',
@@ -172,7 +186,7 @@ const BUILTINS: Builtin[] = [
   {
     name: 'plot3d',
     params: ['f', 'x', 'a', 'b', 'y', 'c', 'd'],
-    doc: 'Surface z = f(x, y) over [a, b] × [c, d] (overlay scatter3d(x, y, z) data before x) — or plot3d(scatter3d(…)) alone. Optional trailing title = "…" ($…$ renders LaTeX math).',
+    doc: 'Surface z = f(x, y) over [a, b] × [c, d] (overlay scatter3d(x, y, z) data before x) — or plot3d(scatter3d(…)) alone. Optional trailing title = "…", xlabel = "…", ylabel = "…", zlabel = "…" ($…$ renders LaTeX math).',
     variadic: true,
   },
   {
@@ -681,7 +695,7 @@ const surdStream = StreamLanguage.define<void>({
       }
       return 'variableName'
     }
-    if (stream.match(/^(:=|==|!=|<=|>=|[+\-*/^=<>.~])/)) return 'operator'
+    if (stream.match(/^(:=|->|==|!=|<=|>=|[+\-*/^=<>.~])/)) return 'operator'
     if (stream.match(/^[[\](){},;]/)) return 'bracket'
     stream.next()
     return null

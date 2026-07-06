@@ -33,6 +33,19 @@ export interface PlotPngSpec {
   /** Legend entries; pass when curve identification is needed (≥ 2 series).
    * `latex` is engine LaTeX (not mathtext); `color` is a CSS color. */
   legend?: { latex: string; color: string }[]
+  /** Labels drawn at fixed frame-relative pixel positions, center-anchored —
+   * the 3D view's projected axis names and tick values (its box carries no
+   * 2D tick gutters, so these ride inside the frame like the live DOM). */
+  overlays?: PlotOverlay[]
+}
+
+export interface PlotOverlay {
+  /** Mathtext for `kind: 'name'`; plain text for `kind: 'tick'`. */
+  text: string
+  /** CSS px from the frame's top-left corner (center anchor). */
+  x: number
+  y: number
+  kind: 'name' | 'tick'
 }
 
 const TICK_FONT = '10px ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -109,7 +122,7 @@ export async function exportPlotPng(spec: PlotPngSpec): Promise<string> {
   const edge = cssColor('--edge', '#1e293b')
 
   const measure = document.createElement('canvas').getContext('2d')!
-  const [title, xlabel, ylabel, legend] = await Promise.all([
+  const [title, xlabel, ylabel, legend, overlayNames] = await Promise.all([
     prepare(measure, spec.title, ink, TITLE_PX, scale),
     prepare(measure, spec.xlabel, muted, LABEL_PX, scale),
     prepare(measure, spec.ylabel, muted, LABEL_PX, scale),
@@ -118,6 +131,14 @@ export async function exportPlotPng(spec: PlotPngSpec): Promise<string> {
         color: entry.color,
         label: await prepare(measure, `$${entry.latex}$`, ink, LABEL_PX, scale),
       })),
+    ),
+    Promise.all(
+      (spec.overlays ?? [])
+        .filter((o) => o.kind === 'name')
+        .map(async (o) => ({
+          o,
+          label: await prepare(measure, o.text, muted, 11, scale),
+        })),
     ),
   ])
 
@@ -193,6 +214,19 @@ export async function exportPlotPng(spec: PlotPngSpec): Promise<string> {
   ctx.textAlign = 'right'
   ctx.textBaseline = 'middle'
   for (const t of spec.yTicks) ctx.fillText(formatTick(t), left - 5, yPos(t))
+
+  // -- projected overlays (3D axis names and tick values) ----------------------
+  ctx.font = TICK_FONT
+  ctx.fillStyle = faint
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (const o of spec.overlays ?? []) {
+    if (o.kind === 'tick') ctx.fillText(o.text, left + o.x, top + o.y)
+  }
+  for (const { o, label } of overlayNames) {
+    if (label)
+      drawLabel(ctx, label, left + o.x - label.w / 2, top + o.y - label.h / 2)
+  }
 
   // -- title, legend, labels ----------------------------------------------------
   if (title) drawLabel(ctx, title, left + (spec.width - title.w) / 2, PAD)
