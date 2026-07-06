@@ -6,8 +6,6 @@ never a silent approximation. Users trust results so they only have to debug
 their model, not the tool. **A wrong certified/exact answer is the worst
 possible bug; refusing ("may be equal", an error) is always acceptable.**
 
-See SOUNDNESS-AUDIT-2026-07-04.md for the current known-defect list.
-
 ## Soundness rules (each one exists because violating it shipped a real bug)
 
 **Certified enclosures [lo, hi] must contain the true real value.** Certified
@@ -22,6 +20,18 @@ compares by raw exponent, so 2.7e-20 < 0) and `is_positive(+0) == true`. Use
 mispositions the decimal point of fractional strings > ~19 digits on wasm32
 (integers are fine). Route: `dataio::decimal_to_rat` → integer parses →
 directed division.
+
+**Never call astro-float's `exp`/`pow`/`powi`/`sinh`/`cosh` on a BigFloat
+directly — use `expr::bf_exp`/`bf_pow_round`/`bf_sinh`/`bf_cosh`, and exact
+exponent shifts for powers of two.** astro-float only special-cases x86 for
+its 32-bit word type, so on wasm32 it runs u64 words against a 32-bit `usize`
+and every truncating `as usize` inside it breaks: `exp` drops the integer
+part of its argument (exp(1) = 1 — the certified engine asserted exp(1) ≠ e
+in the browser), `powi(x, n≥2)` returns `x` (special.rs's convergence eps
+became 2⁻¹ and every CDF series stopped after two terms), and `pow`/`sinh`/
+`cosh` are built on that `exp`. The fractional-`parse` bug above is the same
+root cause. Native is unaffected — `cargo test` cannot catch this class; the
+wasm-substrate tripwires live in web/smoke.mjs.
 
 **Keep astro-float precision ≥ 64 bits.** Below that it returns NaN.
 

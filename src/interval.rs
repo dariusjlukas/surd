@@ -70,6 +70,30 @@ pub fn rational_enclosure(
     ))
 }
 
+/// Precision ceiling for [`decimal_preview`] — a UI nicety, not a proof
+/// obligation, so it gives up far below the comparison engine's `MAX_BITS`.
+const PREVIEW_MAX_BITS: usize = 768;
+
+/// A short certified decimal preview of a constant real expression, for the
+/// UI's "≈" ghost next to exact results: refine until *both* enclosure
+/// endpoints render to the same `digits`-significant-figure string, so every
+/// digit shown is provably correct. `None` when the expression isn't a
+/// supported real constant, or the endpoints still disagree at the (small)
+/// ceiling — no preview is better than an uncertified one.
+pub fn decimal_preview(e: &Expr, digits: usize) -> Option<String> {
+    let mut p = 96;
+    while p <= PREVIEW_MAX_BITS {
+        if let Ok(Some(iv)) = with_consts(|cc| eval_iv(e, p, cc)) {
+            let lo = crate::expr::format_bigfloat(&iv.lo, digits);
+            if lo == crate::expr::format_bigfloat(&iv.hi, digits) {
+                return Some(lo);
+            }
+        }
+        p *= 2;
+    }
+    None
+}
+
 /// The certified sign of `e`, by interval refinement.
 pub fn certified_sign(e: &Expr) -> Sign {
     let mut p = 64;
@@ -308,8 +332,10 @@ fn sqrt_iv(a: &Iv, p: usize, radicand_known_nonneg: bool) -> Option<Iv> {
 /// smallest representable positive instead; a flushed lower endpoint is
 /// already sound (0 < e^x).
 fn exp_iv(x: &Iv, p: usize, cc: &mut Consts) -> Option<Iv> {
-    let lo = x.lo.exp(p, DOWN, cc);
-    let mut hi = x.hi.exp(p, UP, cc);
+    // bf_exp, never raw `.exp` — astro-float's exp drops the integer part of
+    // its argument on wasm32 (see the wrapper's docs).
+    let lo = crate::expr::bf_exp(&x.lo, p, DOWN, cc);
+    let mut hi = crate::expr::bf_exp(&x.hi, p, UP, cc);
     if hi.is_zero() {
         hi = BigFloat::min_positive(p.max(64));
     }
@@ -450,5 +476,41 @@ mod tests {
         let rhs = add(vec![int(5), mul(vec![int(2), pow(int(6), rat(1, 2))])]);
         let d = add(vec![lhs, mul(vec![int(-1), rhs])]);
         assert!(matches!(sign_of(&d), Sign::Inseparable));
+    }
+
+    #[test]
+    fn decimal_preview_certifies_its_digits() {
+        // Both endpoints of the enclosure round to the same string, so every
+        // shown digit is proven — spot-check against known expansions.
+        assert_eq!(
+            decimal_preview(&Expr::Const(Constant::Pi), 6).as_deref(),
+            Some("3.14159")
+        );
+        assert_eq!(decimal_preview(&rat(1, 3), 6).as_deref(), Some("0.333333"));
+        assert_eq!(
+            decimal_preview(&pow(int(2), rat(1, 2)), 6).as_deref(),
+            Some("1.41421")
+        );
+        // Negative values keep their sign.
+        assert_eq!(
+            decimal_preview(&rat(-1, 7), 6).as_deref(),
+            Some("-0.142857")
+        );
+    }
+
+    #[test]
+    fn decimal_preview_refuses_what_it_cannot_certify() {
+        // Free symbols are not constants.
+        assert_eq!(decimal_preview(&Expr::Symbol("x".into()), 6), None);
+        // A value whose 6-digit rounding the small preview ceiling cannot
+        // settle (an exact-but-not-structural zero straddles 0 forever:
+        // "0" vs "-0.0000…" never agree).
+        let lhs = pow(
+            add(vec![pow(int(2), rat(1, 2)), pow(int(3), rat(1, 2))]),
+            int(2),
+        );
+        let rhs = add(vec![int(5), mul(vec![int(2), pow(int(6), rat(1, 2))])]);
+        let d = add(vec![lhs, mul(vec![int(-1), rhs])]);
+        assert_eq!(decimal_preview(&d, 6), None);
     }
 }

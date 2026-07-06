@@ -25,7 +25,8 @@ import { insertNewlineAndIndent } from '@codemirror/commands'
 import type { KeyBinding } from '@codemirror/view'
 import { CodeEditor, type CodeEditorHandle } from '../editor/CodeEditor'
 import { is_incomplete } from '../engine/lexer'
-import type { EvalResult } from '../engine/types'
+import type { Certainty, EvalResult } from '../engine/types'
+import { useSettings } from '../state/settings'
 import { useNotebook, type Cell } from '../state/store'
 import { useDrafts } from '../state/staleness'
 import { openContextMenu, type MenuEntry } from '../state/contextMenu'
@@ -116,8 +117,85 @@ function CellButton({
 const copy = (text: string) => void navigator.clipboard.writeText(text)
 
 // ---------------------------------------------------------------------------
+// certainty badge + refusals — making the engine's guarantee visible
+// ---------------------------------------------------------------------------
+
+const CERTAINTY: Record<Certainty, { dot: string; title: string }> = {
+  exact: {
+    dot: 'bg-ok',
+    title: 'Exact — represented with no approximation anywhere in this value.',
+  },
+  certified: {
+    dot: 'bg-accent',
+    title:
+      'Certified — inexact, but carries a proven error enclosure: the true value provably lies within the bounds.',
+  },
+  symbolic: {
+    dot: 'bg-edge-strong',
+    title:
+      'Symbolic — contains free variables; not a determined number until they are bound.',
+  },
+  approximate: {
+    dot: 'bg-warn',
+    title:
+      'Approximate — contains floating-point values from N(...). Digits are round-to-nearest, not certified.',
+  },
+}
+
+function CertaintyBadge({ certainty }: { certainty?: Certainty }) {
+  // Older saved results (and data-import summaries) have no certainty; an
+  // unknown value from a newer engine just shows nothing rather than lying.
+  const s = certainty && CERTAINTY[certainty]
+  if (!s) return null
+  return (
+    <span
+      title={s.title}
+      className="mt-1.5 inline-flex shrink-0 select-none items-center gap-1 rounded-full border border-edge px-1.5 text-[10px] leading-4 text-faint"
+    >
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 rounded-full ${s.dot}`}
+      />
+      {certainty}
+    </span>
+  )
+}
+
+/** An honest refusal — the engine declining to certify what it cannot prove.
+ * Rendered as its own outcome (amber, explained), never as a red error:
+ * "may be equal" is the product working as designed. */
+function RefusedOutput({ message }: { message: string }) {
+  return (
+    <div className="text-sm">
+      <span
+        title="surd never guesses: a comparison is only answered once enclosures provably separate. Values that still agree at the precision ceiling are refused instead."
+        className="inline-flex select-none items-center gap-1 rounded-full border border-warn/40 px-1.5 text-[10px] font-medium leading-4 text-warn"
+      >
+        refused
+      </span>
+      <div className="mt-0.5 font-mono text-sm text-warn/90">{message}</div>
+      <div className="mt-0.5 text-[11px] text-faint">
+        refused rather than guessed — surd only asserts what it can prove
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // math cells
 // ---------------------------------------------------------------------------
+
+/** `x = 3` builds an *equation* (a value) and binds nothing — but it echoes
+ * as `x = 3`, which reads exactly like an assignment confirmation. When a
+ * cell is a bare `ident = expr` and the result is an equation, surface the
+ * classic footgun instead of letting it pass silently. */
+const BARE_ASSIGNMENT_EQ = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)/
+
+function assignmentTypoName(cell: Cell): string | null {
+  const r = cell.result
+  if (!r?.ok || r.kind !== 'equation') return null
+  return BARE_ASSIGNMENT_EQ.exec(cell.src)?.[1] ?? null
+}
 
 function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
   const rerun = useNotebook((s) => s.rerun)
@@ -193,6 +271,7 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
   ]
 
   const r = cell.result
+  const typoName = assignmentTypoName(cell)
   const menu: MenuEntry[] = [
     { label: 'Edit', onSelect: open },
     {
@@ -328,6 +407,12 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
         <div className={stale ? 'opacity-50' : undefined}>
           <Output cell={cell} />
         </div>
+        {typoName && (
+          <div className="mt-0.5 text-[11px] text-warn">
+            <code>=</code> built an equation (a value) — nothing was assigned.
+            Use <code>{typoName} := …</code> to assign.
+          </div>
+        )}
       </div>
     </div>
   )
@@ -355,6 +440,7 @@ function Output({ cell }: { cell: Cell }) {
   const r = cell.result
   if (!r) return null
   if (!r.ok) {
+    if (r.refusal && r.error) return <RefusedOutput message={r.error} />
     return <div className="font-mono text-sm text-danger">error: {r.error}</div>
   }
   // A `;`-suppressed result is collapsed to a one-line hint (so a large matrix
@@ -394,6 +480,7 @@ function SuppressedOutput({ cell, r }: { cell: Cell; r: EvalResult }) {
 /** Renders an ok result by kind (plots, math, value descriptions). Shared by
  * the normal path and the expanded view of a suppressed cell. */
 function ResultBody({ cell, r }: { cell: Cell; r: EvalResult }) {
+  const showApprox = useSettings((s) => s.showApprox)
   switch (r.kind) {
     case 'plot':
       return r.plot ? (
@@ -436,11 +523,34 @@ function ResultBody({ cell, r }: { cell: Cell; r: EvalResult }) {
         </Suspense>
       ) : null
     case 'function':
-    case 'data':
-      // value descriptions ("<function(n)>", import summaries), not math
+      // a value description ("<function(n)>") — code, no badge
       return <div className="font-mono text-sm text-muted">{r.text}</div>
+    case 'data':
+      // import summaries: the badge says whether the data landed exact
+      // (rationals) or certified (bulk signal enclosures)
+      return (
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 font-mono text-sm text-muted">{r.text}</div>
+          <CertaintyBadge certainty={r.certainty} />
+        </div>
+      )
     default:
-      return <MathOutput latex={r.latex} fallback={r.text} />
+      return (
+        <div className="flex items-start gap-2">
+          <div className="min-w-0">
+            <MathOutput latex={r.latex} fallback={r.text} />
+            {showApprox && r.approx && (
+              <div
+                title="certified decimal preview — every digit shown is proven correct by interval refinement (both enclosure bounds round to it)"
+                className="select-none pb-0.5 font-mono text-xs text-faint"
+              >
+                ≈ {r.approx}
+              </div>
+            )}
+          </div>
+          <CertaintyBadge certainty={r.certainty} />
+        </div>
+      )
   }
 }
 

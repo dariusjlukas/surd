@@ -55,6 +55,24 @@ struct EvalResult {
     /// compact rendering of a suppressed result. Absent unless `suppressed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
+    /// How much trust the value's digits deserve — "exact" | "certified" |
+    /// "symbolic" | "approximate" (see `surd::expr::Certainty`). The UI's
+    /// per-result badge. Absent on errors and data-import summaries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    certainty: Option<&'static str>,
+    /// A short *certified* decimal preview ("0.333333") of an exact,
+    /// non-literal scalar result — the "≈" ghost. Every digit shown is
+    /// provably correct (both enclosure endpoints round to it). Absent when
+    /// the value is already a literal, isn't a supported real constant, or
+    /// the preview couldn't be certified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approx: Option<String>,
+    /// True when `error` is an honest refusal — the engine declining to
+    /// certify an answer it cannot prove ("may be equal") — rather than a
+    /// user or domain error. The UI renders refusals as a distinct outcome,
+    /// not a failure.
+    #[serde(skip_serializing_if = "is_false")]
+    refusal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     plot: Option<PlotData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,12 +211,58 @@ fn error_result(msg: String) -> EvalResult {
         latex: String::new(),
         suppressed: false,
         summary: None,
+        certainty: None,
+        approx: None,
+        refusal: surd::eval::is_refusal(&msg),
         plot: None,
         plot3d: None,
         splom: None,
         spectrogram: None,
         error: Some(msg),
     }
+}
+
+fn certainty_of(e: &Expr) -> &'static str {
+    match surd::expr::certainty(e) {
+        surd::expr::Certainty::Exact => "exact",
+        surd::expr::Certainty::Certified => "certified",
+        surd::expr::Certainty::Symbolic => "symbolic",
+        surd::expr::Certainty::Approximate => "approximate",
+    }
+}
+
+/// Significant figures in the "≈" ghost. Enough to place a value; anyone who
+/// wants more asks `N(x, digits)` explicitly.
+const APPROX_DIGITS: usize = 6;
+
+/// The "≈" ghost: a short certified decimal preview for exact, *non-literal*
+/// scalar results — `1/3`, `pi`, `sqrt(2)`, `sin(1)`: values whose magnitude
+/// isn't readable off the canonical form. Integers and floats already show
+/// their digits; matrices, structs, and drawables aggregate. A value the
+/// interval evaluator can't settle simply gets no preview — never a wrong one.
+fn approx_preview(e: &Expr) -> Option<String> {
+    let preview_worthy = matches!(
+        e,
+        Expr::Rat(_)
+            | Expr::Const(_)
+            | Expr::Add(_)
+            | Expr::Mul(_)
+            | Expr::Pow(..)
+            | Expr::Func(..)
+    );
+    if !preview_worthy || surd::expr::certainty(e) != surd::expr::Certainty::Exact {
+        return None;
+    }
+    let preview = surd::interval::decimal_preview(e, APPROX_DIGITS)?;
+    // A short terminating rational previews as *itself* ("1/2" → "0.5");
+    // an "≈" ghost equal to the exact value would brand an exact decimal as
+    // approximate. Keep only previews that actually approximate.
+    if let Expr::Rat(r) = e {
+        if surd::dataio::decimal_to_rat(&preview).is_ok_and(|p| &p == r) {
+            return None;
+        }
+    }
+    Some(preview)
 }
 
 /// A one-line shape hint for a suppressed result, so the compact cell still
@@ -1132,6 +1196,7 @@ impl Session {
                 Err(e) => error_result(e),
                 Ok(value) => {
                     let descr = format!("{}: {}", name, surd::dataio::describe(&value));
+                    let certainty = Some(certainty_of(&value));
                     self.interp.set_global(name, value);
                     EvalResult {
                         ok: true,
@@ -1140,6 +1205,9 @@ impl Session {
                         latex: String::new(),
                         suppressed: false,
                         summary: None,
+                        certainty,
+                        approx: None,
+                        refusal: false,
                         plot: None,
                         plot3d: None,
                         splom: None,
@@ -1184,6 +1252,7 @@ impl Session {
                 Err(e) => error_result(e),
                 Ok(value) => {
                     let descr = format!("{}: {}", name, surd::dataio::describe(&value));
+                    let certainty = Some(certainty_of(&value));
                     self.interp.set_global(name, value);
                     EvalResult {
                         ok: true,
@@ -1192,6 +1261,9 @@ impl Session {
                         latex: String::new(),
                         suppressed: false,
                         summary: None,
+                        certainty,
+                        approx: None,
+                        refusal: false,
                         plot: None,
                         plot3d: None,
                         splom: None,
@@ -1290,6 +1362,8 @@ impl Session {
             Err(e) => error_result(e),
             Ok(value) => {
                 let summary = suppressed.then(|| shape_summary(&value));
+                let certainty = certainty_of(&value);
+                let approx = approx_preview(&value);
                 let ok = |kind, plot, plot3d, splom, spectrogram| EvalResult {
                     ok: true,
                     kind,
@@ -1297,6 +1371,9 @@ impl Session {
                     latex: latex::to_latex(&value),
                     suppressed,
                     summary: summary.clone(),
+                    certainty: Some(certainty),
+                    approx: approx.clone(),
+                    refusal: false,
                     plot,
                     plot3d,
                     splom,
@@ -1629,6 +1706,52 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s.eval("1/0")).unwrap();
         assert_eq!(v["ok"], false);
         assert_eq!(v["error"], "division by zero");
+    }
+
+    #[test]
+    fn eval_reports_certainty_and_certified_preview() {
+        let mut s = Session::new();
+        // Exact non-literal scalar: badge + certified "≈" ghost.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("1/2 + 1/3")).unwrap();
+        assert_eq!(v["certainty"], "exact");
+        assert_eq!(v["approx"], "0.833333");
+        // Integers show their own digits — no ghost.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("2 + 2")).unwrap();
+        assert_eq!(v["certainty"], "exact");
+        assert!(v.get("approx").is_none());
+        // A short terminating rational previews as itself — no ghost either.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("1/4 + 1/4")).unwrap();
+        assert_eq!(v["text"], "1/2");
+        assert!(v.get("approx").is_none());
+        // N(...) is the explicit exit from exact-land.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("N(pi)")).unwrap();
+        assert_eq!(v["certainty"], "approximate");
+        assert!(v.get("approx").is_none());
+        // Free symbols: not a determined number, and no ghost.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("x + 1")).unwrap();
+        assert_eq!(v["certainty"], "symbolic");
+        assert!(v.get("approx").is_none());
+        // sqrt(2): exact radical with a certified preview.
+        let v: serde_json::Value = serde_json::from_str(&s.eval("sqrt(2)")).unwrap();
+        assert_eq!(v["certainty"], "exact");
+        assert_eq!(v["approx"], "1.41421");
+    }
+
+    #[test]
+    fn refusals_are_flagged_distinctly_from_errors() {
+        // A domain error is not a refusal.
+        let mut s = Session::new();
+        let v: serde_json::Value = serde_json::from_str(&s.eval("1/0")).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v.get("refusal").is_none());
+        // The refusal phrase itself is what the flag keys on (a full
+        // undecidable comparison would grind through 8192-bit refinement;
+        // the phrase contract is unit-tested at its constructors).
+        assert!(surd::eval::is_refusal(
+            "cannot decide 'pi' == 'x': they agree to at least 2466 \
+             significant digits — the values may be equal"
+        ));
+        assert!(!surd::eval::is_refusal("division by zero"));
     }
 
     #[test]

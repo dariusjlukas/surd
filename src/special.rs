@@ -39,9 +39,26 @@ fn neg(x: &BigFloat, p: usize) -> BigFloat {
     fi(0, p).sub(x, p, RM)
 }
 
+/// e^x through the guarded wrapper — raw `.exp` drops the argument's integer
+/// part on wasm32 (see `expr::bf_exp`). Approximate or not, a p-value built
+/// on exp(1) = 1 is garbage, so this module routes through it too.
+#[inline]
+fn bexp(x: &BigFloat, p: usize, cc: &mut Consts) -> BigFloat {
+    crate::expr::bf_exp(x, p, RM, cc)
+}
+
 /// `2^-n` as a positive BigFloat — the relative tolerance and the CF "tiny".
 fn pow2_neg(n: usize, p: usize) -> BigFloat {
-    fi(1, p).div(&fi(2, p).powi(n, p, RM), p, RM)
+    // An exact exponent shift — NOT `powi`: astro-float's powi returns its
+    // base unchanged for any n ≥ 2 on wasm32 (Word = u64 there but usize is
+    // 32-bit, so `WORD_SIGNIFICANT_BIT as usize` truncates to 0 and the
+    // square-and-multiply loop never runs). A convergence eps of 2⁻¹ instead
+    // of 2⁻¹⁴⁸ silently truncated every series in this module to two terms.
+    let mut x = fi(1, p);
+    if let Some(e) = x.exponent() {
+        x.set_exponent(e - n as i32);
+    }
+    x
 }
 
 /// Best-effort f64 of a BigFloat, for seeding the f64 initial guesses. Loses
@@ -79,7 +96,7 @@ fn lgamma_pos(z: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
             .mul(&gk.ln(w, RM, cc), w, RM)
             .add(&gk, w, RM)
             .sub(&lfact, w, RM);
-        let mut ck = lnc.exp(w, RM, cc);
+        let mut ck = bexp(&lnc, w, cc);
         if !sign_pos {
             ck = neg(&ck, w);
         }
@@ -101,7 +118,7 @@ fn lgamma_pos(z: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
 /// poles.
 fn gamma(x: &BigFloat, w: usize, cc: &mut Consts) -> Result<BigFloat, String> {
     if x.is_positive() && !x.is_zero() {
-        return Ok(lgamma_pos(x, w, cc).exp(w, RM, cc));
+        return Ok(bexp(&lgamma_pos(x, w, cc), w, cc));
     }
     // x ≤ 0: a pole at every non-positive integer.
     if float_to_rational(x).is_some_and(|r| r.is_integer()) {
@@ -111,7 +128,7 @@ fn gamma(x: &BigFloat, w: usize, cc: &mut Consts) -> Result<BigFloat, String> {
     let pi = cc.pi(w, RM);
     let sin_pix = pi.mul(x, w, RM).sin(w, RM, cc);
     let one_minus_x = fi(1, w).sub(x, w, RM);
-    let g1 = lgamma_pos(&one_minus_x, w, cc).exp(w, RM, cc);
+    let g1 = bexp(&lgamma_pos(&one_minus_x, w, cc), w, cc);
     Ok(pi.div(&sin_pix.mul(&g1, w, RM), w, RM))
 }
 
@@ -133,11 +150,11 @@ fn gamma_pq(
     let one = fi(1, w);
     let lga = lgamma_pos(a, w, cc);
     // exp(a·ln x - x - lnΓ(a))
-    let pref = a
+    let pref_ln = a
         .mul(&x.ln(w, RM, cc), w, RM)
         .sub(x, w, RM)
-        .sub(&lga, w, RM)
-        .exp(w, RM, cc);
+        .sub(&lga, w, RM);
+    let pref = bexp(&pref_ln, w, cc);
 
     if bf_lt(x, &a.add(&one, w, RM)) {
         // Series: Σ_{n≥0} xⁿ / (a(a+1)···(a+n)).
@@ -266,12 +283,12 @@ fn inc_beta(
     }
     let omx = one.sub(x, w, RM);
     // bt = exp(lnΓ(a+b) - lnΓ(a) - lnΓ(b) + a·ln x + b·ln(1-x))
-    let bt = lgamma_pos(&a.add(b, w, RM), w, cc)
+    let bt_ln = lgamma_pos(&a.add(b, w, RM), w, cc)
         .sub(&lgamma_pos(a, w, cc), w, RM)
         .sub(&lgamma_pos(b, w, cc), w, RM)
         .add(&a.mul(&x.ln(w, RM, cc), w, RM), w, RM)
-        .add(&b.mul(&omx.ln(w, RM, cc), w, RM), w, RM)
-        .exp(w, RM, cc);
+        .add(&b.mul(&omx.ln(w, RM, cc), w, RM), w, RM);
+    let bt = bexp(&bt_ln, w, cc);
     let thresh = a
         .add(&one, w, RM)
         .div(&a.add(b, w, RM).add(&fi(2, w), w, RM), w, RM);
@@ -377,20 +394,19 @@ fn dist_pdf(d: &Dist, x: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
         Dist::Normal(mu, sigma) => {
             let z = x.sub(mu, w, RM).div(sigma, w, RM);
             let norm = sigma.mul(&two.mul(&pi, w, RM).sqrt(w, RM), w, RM);
-            neg(&z.mul(&z, w, RM).mul(&half, w, RM), w)
-                .exp(w, RM, cc)
-                .div(&norm, w, RM)
+            bexp(&neg(&z.mul(&z, w, RM).mul(&half, w, RM), w), w, cc).div(&norm, w, RM)
         }
         Dist::StudentT(nu) => {
             // exp(lnΓ((ν+1)/2) - lnΓ(ν/2) - ½ln(νπ)) · (1+t²/ν)^(-(ν+1)/2)
-            let lead = lgamma_pos(&nu.add(&one, w, RM).mul(&half, w, RM), w, cc)
+            let lead_ln = lgamma_pos(&nu.add(&one, w, RM).mul(&half, w, RM), w, cc)
                 .sub(&lgamma_pos(&nu.mul(&half, w, RM), w, cc), w, RM)
-                .sub(&nu.mul(&pi, w, RM).ln(w, RM, cc).mul(&half, w, RM), w, RM)
-                .exp(w, RM, cc);
-            let body = one.add(&x.mul(x, w, RM).div(nu, w, RM), w, RM).pow(
+                .sub(&nu.mul(&pi, w, RM).ln(w, RM, cc).mul(&half, w, RM), w, RM);
+            let lead = bexp(&lead_ln, w, cc);
+            // bf_pow_round, never astro `pow` (exp-based, broken on wasm32).
+            let body = crate::expr::bf_pow_round(
+                &one.add(&x.mul(x, w, RM).div(nu, w, RM), w, RM),
                 &neg(&nu.add(&one, w, RM).mul(&half, w, RM), w),
                 w,
-                RM,
                 cc,
             );
             lead.mul(&body, w, RM)
@@ -401,12 +417,13 @@ fn dist_pdf(d: &Dist, x: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
             }
             let kh = k.mul(&half, w, RM);
             // exp((k/2-1)ln x - x/2 - (k/2)ln2 - lnΓ(k/2))
-            kh.sub(&one, w, RM)
+            let ln_pdf = kh
+                .sub(&one, w, RM)
                 .mul(&x.ln(w, RM, cc), w, RM)
                 .sub(&x.mul(&half, w, RM), w, RM)
                 .sub(&kh.mul(&two.ln(w, RM, cc), w, RM), w, RM)
-                .sub(&lgamma_pos(&kh, w, cc), w, RM)
-                .exp(w, RM, cc)
+                .sub(&lgamma_pos(&kh, w, cc), w, RM);
+            bexp(&ln_pdf, w, cc)
         }
         Dist::FisherF(d1, d2) => {
             if !x.is_positive() || x.is_zero() {
@@ -417,7 +434,8 @@ fn dist_pdf(d: &Dist, x: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
                 .add(&lgamma_pos(&d2h, w, cc), w, RM)
                 .sub(&lgamma_pos(&d1h.add(&d2h, w, RM), w, cc), w, RM);
             // exp((d1/2)ln(d1/d2) + (d1/2-1)ln x - ((d1+d2)/2)ln(1+d1·x/d2) - lnB)
-            d1h.mul(&d1.div(d2, w, RM).ln(w, RM, cc), w, RM)
+            let ln_pdf = d1h
+                .mul(&d1.div(d2, w, RM).ln(w, RM, cc), w, RM)
                 .add(&d1h.sub(&one, w, RM).mul(&x.ln(w, RM, cc), w, RM), w, RM)
                 .sub(
                     &d1h.add(&d2h, w, RM).mul(
@@ -429,8 +447,8 @@ fn dist_pdf(d: &Dist, x: &BigFloat, w: usize, cc: &mut Consts) -> BigFloat {
                     w,
                     RM,
                 )
-                .sub(&lbeta, w, RM)
-                .exp(w, RM, cc)
+                .sub(&lbeta, w, RM);
+            bexp(&ln_pdf, w, cc)
         }
     }
 }
@@ -667,10 +685,10 @@ pub fn eval(name: &str, xs: &[BigFloat], p: usize, cc: &mut Consts) -> Result<Bi
         "beta" => arity(2).and_then(|_| {
             require_pos(name, "a", &xs[0])?;
             require_pos(name, "b", &xs[1])?;
-            Ok(lgamma_pos(&xs[0], w, cc)
+            let ln_beta = lgamma_pos(&xs[0], w, cc)
                 .add(&lgamma_pos(&xs[1], w, cc), w, RM)
-                .sub(&lgamma_pos(&xs[0].add(&xs[1], w, RM), w, cc), w, RM)
-                .exp(w, RM, cc))
+                .sub(&lgamma_pos(&xs[0].add(&xs[1], w, RM), w, cc), w, RM);
+            Ok(bexp(&ln_beta, w, cc))
         }),
 
         "normcdf" => normal(xs, 1).map(|d| dist_cdf(&d, &xs[0], w, &eps, cc)),

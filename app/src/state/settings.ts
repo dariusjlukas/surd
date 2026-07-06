@@ -45,6 +45,9 @@ interface SettingsState {
   workspaceWidth: number
   confirmDelete: boolean
   autoScroll: boolean
+  /** Show the faint "≈ 0.333333" certified decimal preview next to exact
+   * results whose magnitude isn't readable off the canonical form. */
+  showApprox: boolean
   /** Draw style for 3D surface plots — a display preference shared by every
    * surface, like the theme accent. */
   surfaceRender: SurfaceRender
@@ -55,6 +58,7 @@ interface SettingsState {
   setWorkspaceWidth(px: number): void
   setConfirmDelete(v: boolean): void
   setAutoScroll(v: boolean): void
+  setShowApprox(v: boolean): void
   setSurfaceRender(v: SurfaceRender): void
 }
 
@@ -71,6 +75,7 @@ export const useSettings = create<SettingsState>()(
       workspaceWidth: WORKSPACE_WIDTH.default,
       confirmDelete: true,
       autoScroll: true,
+      showApprox: true,
       surfaceRender: 'solid',
 
       setMode: (mode) => set({ mode }),
@@ -83,6 +88,7 @@ export const useSettings = create<SettingsState>()(
         }),
       setConfirmDelete: (confirmDelete) => set({ confirmDelete }),
       setAutoScroll: (autoScroll) => set({ autoScroll }),
+      setShowApprox: (showApprox) => set({ showApprox }),
       setSurfaceRender: (surfaceRender) => set({ surfaceRender }),
     }),
     {
@@ -94,6 +100,7 @@ export const useSettings = create<SettingsState>()(
         workspaceWidth: s.workspaceWidth,
         confirmDelete: s.confirmDelete,
         autoScroll: s.autoScroll,
+        showApprox: s.showApprox,
         surfaceRender: s.surfaceRender,
       }),
     },

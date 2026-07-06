@@ -731,6 +731,133 @@ pub(crate) fn bf_from_f64_exact(x: f64, p: usize) -> BigFloat {
     out
 }
 
+/// e^x — the ONLY sanctioned route to astro-float's `exp`.
+///
+/// astro-float 0.9.5's `exp` silently DROPS THE INTEGER PART of its argument
+/// on wasm32 (32-bit limbs): exp(1) → 1, exp(10) → 1, exp(3/2) → exp(1/2).
+/// Verified empirically 2026-07-05; 64-bit native is unaffected. Through the
+/// certified comparison engine this asserted false orderings in the browser
+/// (`exp(1) == e` answered `false`). The workaround never hands the library
+/// an argument with |x| ≥ 1/2: exp(x) = exp(x/2^k)^(2^k), where the halving
+/// is an exact exponent shift and each squaring of a positive one-sided
+/// bound under directed rounding stays on its side — enclosure semantics
+/// survive. Squarings that underflow to zero while rounding Up are bumped to
+/// the smallest positive (astro's exp has the same documented flush, and a
+/// zero upper bound would sit below the strictly positive true value).
+pub(crate) fn bf_exp(x: &BigFloat, p: usize, rm: RoundingMode, cc: &mut Consts) -> BigFloat {
+    let p = p.max(64);
+    if x.is_nan() || x.is_inf() || x.is_zero() {
+        return x.exp(p, rm, cc); // degenerate cases don't reach the bug
+    }
+    let Some(e) = x.exponent() else {
+        return x.exp(p, rm, cc);
+    };
+    if e > 40 {
+        // |x| ≥ 2^40: e^x over/underflows every representable BigFloat
+        // (astro's exponent range caps |x| near 1.4885e9 ≈ 2^30.5). Answer
+        // by sign, keeping each bound on its sound side.
+        return if bf_strictly_neg(x) {
+            // 0 < e^x < min_positive: 0 is a sound lower bound, the smallest
+            // positive a sound upper bound.
+            if matches!(rm, RoundingMode::Up) {
+                BigFloat::min_positive(p)
+            } else {
+                BigFloat::from_i64(0, p)
+            }
+        } else {
+            // e^x exceeds the representable range: +Inf. numeric_eval turns
+            // it into an overflow error; Iv::new refuses it as an endpoint.
+            BigFloat::from_f64(f64::INFINITY, p)
+        };
+    }
+    // Halvings until |x| < 1/2 (mantissa ∈ [1/2, 1), so |x| < 2^e ⇒ target
+    // exponent ≤ −1); then square back up. k ≤ 41, so the guard bits below
+    // cover the ≤ half-ulp each squaring adds.
+    let k = (e + 1).max(0) as usize;
+    let q = p + 2 * k + 32;
+    let mut r = x.clone();
+    r.set_exponent(e - k as i32);
+    let mut v = r.exp(q, rm, cc);
+    for _ in 0..k {
+        v = v.mul(&v, q, rm);
+        if matches!(rm, RoundingMode::Up) && v.is_zero() {
+            v = BigFloat::min_positive(q);
+        }
+    }
+    v
+}
+
+/// b^e, round-to-nearest — the numeric-`N` route to a general real power.
+///
+/// astro-float's `pow` is exp(e·ln b) through the SAME broken wasm32 `exp`
+/// as bf_exp documents (2^π came back as 3.246… = e^1.177 in the browser),
+/// so the positive-base case composes ln and the guarded exp ourselves.
+/// ROUND-only by design: the certified engine's `interval::pow_iv` composes
+/// ln/exp intervalwise and must stay the only directed-rounding pow.
+/// Integer exponents never reach here (callers use `bf_powi` first) except
+/// float-typed ones on a negative base, handled below; a negative base with
+/// a non-integer exponent has no real value → NaN, which callers already
+/// report as undefined.
+pub(crate) fn bf_pow_round(b: &BigFloat, e: &BigFloat, p: usize, cc: &mut Consts) -> BigFloat {
+    let p = p.max(64);
+    if b.is_nan() || e.is_nan() || b.is_inf() || e.is_inf() || b.is_zero() || e.is_zero() {
+        return b.pow(e, p, ROUND, cc); // degenerate cases short-circuit before exp
+    }
+    if !bf_strictly_pos(b) {
+        if let Some(n) = float_to_rational(e)
+            .filter(|r| r.is_integer())
+            .and_then(|r| r.to_integer().to_i64())
+        {
+            return bf_powi(b, n, p);
+        }
+        return BigFloat::from_f64(f64::NAN, p);
+    }
+    let q = p + 32;
+    let m = e.mul(&b.ln(q, ROUND, cc), q, ROUND);
+    bf_exp(&m, p, ROUND, cc)
+}
+
+/// sinh/cosh, round-to-nearest, for the complex evaluator. astro-float's own
+/// implementations call the broken wasm32 `exp` (sin(2+3i) collapsed to
+/// sin(2) in the browser: sinh(3) → 0, cosh(3) → 1). Small arguments
+/// (|x| < 1, no integer part to lose) delegate to the library — that also
+/// avoids the cancellation (e^x − e^−x)/2 would suffer near zero; larger
+/// ones go through bf_exp, where the two exponentials are far apart and the
+/// subtraction is benign.
+pub(crate) fn bf_sinh(x: &BigFloat, p: usize, cc: &mut Consts) -> BigFloat {
+    let p = p.max(64);
+    match x.exponent() {
+        Some(e) if e > 0 => {
+            let q = p + 32;
+            let ex = bf_exp(x, q, ROUND, cc);
+            let emx = bf_exp(&x.neg(), q, ROUND, cc);
+            let mut h = ex.sub(&emx, q, ROUND);
+            if let Some(he) = h.exponent() {
+                h.set_exponent(he - 1); // exact ÷2
+            }
+            h
+        }
+        _ => x.sinh(p, ROUND, cc),
+    }
+}
+
+pub(crate) fn bf_cosh(x: &BigFloat, p: usize, cc: &mut Consts) -> BigFloat {
+    let p = p.max(64);
+    match x.exponent() {
+        Some(e) if e > 0 => {
+            let q = p + 32;
+            let ex = bf_exp(x, q, ROUND, cc);
+            let emx = bf_exp(&x.neg(), q, ROUND, cc);
+            let mut h = ex.add(&emx, q, ROUND);
+            if let Some(he) = h.exponent() {
+                h.set_exponent(he - 1); // exact ÷2
+            }
+            h
+        }
+        _ => x.cosh(p, ROUND, cc),
+    }
+}
+
 /// Exact number → BigFloat at precision `p` bits (the float-contagion bridge).
 fn rat_to_bigfloat(r: &BigRational, p: usize) -> BigFloat {
     with_consts(|cc| {
@@ -769,7 +896,7 @@ fn float_pow(base: &Expr, exp: &Expr) -> Option<Expr> {
         Some(n) => bf_powi(&b, n, p),
         None => {
             let e = to_float_value(exp, p)?;
-            with_consts(|cc| b.pow(&e, p, ROUND, cc)).ok()?
+            with_consts(|cc| bf_pow_round(&b, &e, p, cc)).ok()?
         }
     };
     if result.is_nan() || result.is_inf() {
@@ -1339,6 +1466,67 @@ pub fn contains_symbol(e: &Expr, var: &str) -> bool {
     }
 }
 
+/// How much trust a value's digits deserve — the classification behind the
+/// UI's per-result badge. Structural, not provenance-based: what a value
+/// *contains* determines what its digits mean.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Certainty {
+    /// Built entirely from exact atoms (integers, rationals, constants,
+    /// radicals, unevaluated exact applications like `sin(1)`): the value is
+    /// represented without any approximation.
+    Exact,
+    /// Contains bulk `Signal` data: inexact, but carrying a proven per-sample
+    /// error enclosure — the true value provably lies within the bounds.
+    Certified,
+    /// Contains free symbols (or a model formula): not a determined number
+    /// until the unknowns are bound.
+    Symbolic,
+    /// Contains a `Float` — the explicit `N(...)` exit from exact-land.
+    /// Digits are round-to-nearest, not certified.
+    Approximate,
+}
+
+/// Classify `e` by walking its structure. The weakest link wins:
+/// a `Float` anywhere taints the whole value (`Approximate`), then free
+/// symbols (`Symbolic`), then `Signal` enclosures (`Certified`); only a value
+/// clean of all three is `Exact`.
+pub fn certainty(e: &Expr) -> Certainty {
+    fn combine(a: Certainty, b: Certainty) -> Certainty {
+        use Certainty::*;
+        match (a, b) {
+            (Approximate, _) | (_, Approximate) => Approximate,
+            (Symbolic, _) | (_, Symbolic) => Symbolic,
+            (Certified, _) | (_, Certified) => Certified,
+            (Exact, Exact) => Exact,
+        }
+    }
+    fn fold<'a>(es: impl Iterator<Item = &'a Expr>) -> Certainty {
+        es.fold(Certainty::Exact, |acc, e| combine(acc, certainty(e)))
+    }
+    match e {
+        Expr::Float(..) => Certainty::Approximate,
+        Expr::Symbol(_) => Certainty::Symbolic,
+        Expr::Signal(_) => Certainty::Certified,
+        // A formula's operands deliberately stay symbolic (they name data
+        // columns), so the formula itself is symbolic without walking them.
+        Expr::Formula(..) => Certainty::Symbolic,
+        Expr::Int(_) | Expr::Rat(_) | Expr::Const(_) | Expr::Bool(_) | Expr::Str(_) => {
+            Certainty::Exact
+        }
+        // A function value is code, not a number; its body's symbols are
+        // parameters, not unknowns. Only the captured environment carries
+        // values that could taint what the function later computes.
+        Expr::Function { env, .. } => fold(env.iter().map(|(_, v)| v)),
+        Expr::Add(ts) | Expr::Mul(ts) => fold(ts.iter()),
+        Expr::Pow(b, x) => combine(certainty(b), certainty(x)),
+        Expr::Func(_, args) => fold(args.iter()),
+        Expr::Complex(re, im) => combine(certainty(re), certainty(im)),
+        Expr::Matrix(rows) => fold(rows.iter().flatten()),
+        Expr::Struct(fields) => fold(fields.iter().map(|(_, v)| v)),
+        Expr::Equation(l, r) => combine(certainty(l), certainty(r)),
+    }
+}
+
 const ROUND: RoundingMode = RoundingMode::ToEven;
 const RADIX: Radix = Radix::Dec;
 
@@ -1480,7 +1668,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
                 }
             }
             let exp = to_bigfloat(ex, p, cc)?;
-            Ok(base.pow(&exp, p, ROUND, cc))
+            Ok(bf_pow_round(&base, &exp, p, cc))
         }
         // A real algebraic root value: refine its isolating interval until
         // the midpoint carries the requested precision. NOTE: we are inside
@@ -1512,7 +1700,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
                 "sin" => Ok(x.sin(p, ROUND, cc)),
                 "cos" => Ok(x.cos(p, ROUND, cc)),
                 "tan" => Ok(x.tan(p, ROUND, cc)),
-                "exp" => Ok(x.exp(p, ROUND, cc)),
+                "exp" => Ok(bf_exp(&x, p, ROUND, cc)),
                 "ln" => Ok(x.ln(p, ROUND, cc)),
                 "abs" => Ok(x.abs()),
                 _ => Err(format!("cannot numerically evaluate '{}'", name)),
@@ -1665,7 +1853,7 @@ fn c_powi(z: &Cpx, n: i64, p: usize) -> Cpx {
 
 /// exp(a+bi) = e^a·(cos b + i·sin b).
 fn c_exp(z: &Cpx, p: usize, cc: &mut Consts) -> Cpx {
-    let ea = z.0.exp(p, ROUND, cc);
+    let ea = bf_exp(&z.0, p, ROUND, cc);
     let cos_b = z.1.cos(p, ROUND, cc);
     let sin_b = z.1.sin(p, ROUND, cc);
     (ea.mul(&cos_b, p, ROUND), ea.mul(&sin_b, p, ROUND))
@@ -1673,15 +1861,15 @@ fn c_exp(z: &Cpx, p: usize, cc: &mut Consts) -> Cpx {
 
 /// sin(a+bi) = sin a·cosh b + i·cos a·sinh b.
 fn c_sin(z: &Cpx, p: usize, cc: &mut Consts) -> Cpx {
-    let re = z.0.sin(p, ROUND, cc).mul(&z.1.cosh(p, ROUND, cc), p, ROUND);
-    let im = z.0.cos(p, ROUND, cc).mul(&z.1.sinh(p, ROUND, cc), p, ROUND);
+    let re = z.0.sin(p, ROUND, cc).mul(&bf_cosh(&z.1, p, cc), p, ROUND);
+    let im = z.0.cos(p, ROUND, cc).mul(&bf_sinh(&z.1, p, cc), p, ROUND);
     (re, im)
 }
 
 /// cos(a+bi) = cos a·cosh b − i·sin a·sinh b.
 fn c_cos(z: &Cpx, p: usize, cc: &mut Consts) -> Cpx {
-    let re = z.0.cos(p, ROUND, cc).mul(&z.1.cosh(p, ROUND, cc), p, ROUND);
-    let im = z.0.sin(p, ROUND, cc).mul(&z.1.sinh(p, ROUND, cc), p, ROUND);
+    let re = z.0.cos(p, ROUND, cc).mul(&bf_cosh(&z.1, p, cc), p, ROUND);
+    let im = z.0.sin(p, ROUND, cc).mul(&bf_sinh(&z.1, p, cc), p, ROUND);
     (re, bf_neg(&im, p))
 }
 
@@ -2485,6 +2673,75 @@ mod tests {
 
     fn sym(s: &str) -> Expr {
         Expr::Symbol(s.to_string())
+    }
+
+    /// The wasm32 astro-float workarounds (bf_exp / bf_pow_round / bf_sinh /
+    /// bf_cosh) must agree with the library's direct implementations HERE,
+    /// on 64-bit native, where the library is correct — pinning the
+    /// workaround's math. (The wasm32 substrate itself is exercised by
+    /// web/smoke.mjs, where the direct calls are the broken ones.)
+    #[test]
+    fn wasm32_transcendental_workarounds_match_native_direct_calls() {
+        let p = 192;
+        let close = |a: &BigFloat, b: &BigFloat, what: &str| {
+            let d = a.sub(b, p, ROUND).abs();
+            let tol = {
+                // |a| · 2^-150 — a few ulps of slack at 192 bits.
+                let mut t = a.abs();
+                if let Some(e) = t.exponent() {
+                    t.set_exponent(e - 150);
+                }
+                t
+            };
+            assert!(d.is_zero() || bf_lt(&d, &tol), "{what}: {a:?} vs {b:?}");
+        };
+        with_consts(|cc| {
+            for i in [-37i64, -3, -1, 1, 2, 3, 10, 37] {
+                for num in [1i64, 3, 7] {
+                    let x = BigFloat::from_i64(i, p)
+                        .mul(&BigFloat::from_i64(num, p), p, ROUND)
+                        .div(&BigFloat::from_i64(4, p), p, ROUND);
+                    close(&bf_exp(&x, p, ROUND, cc), &x.exp(p, ROUND, cc), "exp");
+                    close(&bf_sinh(&x, p, cc), &x.sinh(p, ROUND, cc), "sinh");
+                    close(&bf_cosh(&x, p, cc), &x.cosh(p, ROUND, cc), "cosh");
+                }
+            }
+            let b = BigFloat::from_i64(2, p);
+            for (num, den) in [(1i64, 3i64), (7, 2), (-9, 4), (31, 7)] {
+                let e = BigFloat::from_i64(num, p).div(&BigFloat::from_i64(den, p), p, ROUND);
+                close(
+                    &bf_pow_round(&b, &e, p, cc),
+                    &b.pow(&e, p, ROUND, cc),
+                    "pow",
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn certainty_classifies_by_weakest_link() {
+        // Exact atoms and exact compounds.
+        assert_eq!(certainty(&int(3)), Certainty::Exact);
+        assert_eq!(certainty(&pow(int(2), half())), Certainty::Exact);
+        assert_eq!(certainty(&Expr::Const(Constant::Pi)), Certainty::Exact);
+        // sin(1) is an unevaluated exact application — still exact.
+        assert_eq!(certainty(&func("sin", vec![int(1)])), Certainty::Exact);
+        // A free symbol anywhere makes the value symbolic.
+        assert_eq!(certainty(&add(vec![int(1), sym("x")])), Certainty::Symbolic);
+        // A float anywhere taints everything, even past a symbol.
+        let f = Expr::Float(astro_float::BigFloat::from_i64(1, 64), 6);
+        assert_eq!(certainty(&f), Certainty::Approximate);
+        assert_eq!(
+            certainty(&Expr::Matrix(vec![vec![sym("x"), f.clone()]])),
+            Certainty::Approximate
+        );
+        // Signals carry certified enclosures.
+        let sig = crate::signal::pack(&[int(1), int(2)], None).unwrap();
+        assert_eq!(
+            certainty(&Expr::Signal(std::rc::Rc::new(sig))),
+            Certainty::Certified
+        );
     }
 
     #[test]

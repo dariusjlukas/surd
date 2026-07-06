@@ -130,11 +130,26 @@ export interface SpectrogramData {
   pooled: boolean
 }
 
+/** How much trust a result's digits deserve — the per-result badge.
+ * Mirrors `surd::expr::Certainty` across the wasm boundary. */
+export type Certainty = 'exact' | 'certified' | 'symbolic' | 'approximate'
+
 export interface EvalResult {
   ok: boolean
   kind: ResultKind
   text: string
   latex: string
+  /** Absent on errors, data-import summaries, and older saved results. */
+  certainty?: Certainty
+  /** A short *certified* decimal preview ("0.333333") of an exact,
+   * non-literal scalar result — the "≈" ghost. Every digit is provably
+   * correct (both enclosure endpoints round to it); absent when no preview
+   * could be certified. */
+  approx?: string
+  /** True when `error` is an honest refusal — the engine declining to
+   * certify an answer it cannot prove ("may be equal") — rather than a user
+   * or domain error. Refusals render as a distinct outcome, not a failure. */
+  refusal?: boolean
   /** The input ended in `;` (MATLAB/Julia output suppression): the value was
    * computed and the workspace updated, but the cell renders compactly instead
    * of echoing a possibly-huge matrix. Absent (falsy) on older saved results. */

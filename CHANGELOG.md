@@ -11,6 +11,26 @@ section into a dated, versioned release.
 
 ### Added
 
+- **Certainty badges.** Every evaluated result now carries its trust class
+  across the engine boundary and shows it as a badge in the app: **exact**
+  (no approximation anywhere in the value), **certified** (inexact but
+  carrying a proven error enclosure), **symbolic** (contains free
+  variables), or **approximate** (contains `N(...)` floats —
+  round-to-nearest, not certified). Data imports report it too, so a bulk
+  signal import visibly lands as *certified* while a CSV of rationals lands
+  as *exact*.
+- **Refusals are a first-class outcome.** An honest refusal ("the values may
+  be equal") now renders as its own amber outcome with an explanation —
+  distinct from red errors. Refusing is the engine working as designed, and
+  the UI finally says so.
+- **Certified numeric preview.** Exact, non-literal scalar results (`1/3`,
+  `sqrt(2)`, `sin(1)`) show a faint `≈ 0.333333` ghost. The preview digits
+  are *certified*, not floating-point guesses: both endpoints of a
+  directed-rounding enclosure must round to the same 6-significant-digit
+  string, or no preview is shown at all. Toggleable in Settings → Notebook.
+- **`=` vs `:=` guard.** A cell like `x = 3` — which builds an *equation*
+  and binds nothing, while echoing exactly like an assignment confirmation —
+  now gets an inline hint pointing at `x := 3`.
 - **`str` and string length.** `str(a, b, ...)` renders each argument to its
   canonical printed form and concatenates — conversion, concatenation, and
   formatting in one primitive (precision composes with `N(x, digits)`:
@@ -36,6 +56,27 @@ section into a dated, versioned release.
   over a vector's elements or a matrix's entries.
 - **Multi-argument `map`.** `map(f, a, b, ...)` over same-shape matrices
   passes one entry from each — the elementwise zip.
+
+### Fixed
+
+- **SOUNDNESS (wasm32, browser/desktop app only): astro-float's 64-bit words
+  broke `exp`-family functions.** The library only special-cases x86 for its
+  32-bit word type, so on wasm32 it computes with `u64` words while `usize`
+  is 32-bit — and every truncating `as usize` inside it misbehaved:
+  `exp` dropped the integer part of its argument (`exp(1)` → `1`, so the
+  certified comparison engine **asserted `exp(1) ≠ e` and
+  `exp(1) − e < −10⁻¹⁰⁰⁰`** — false certified orderings, the worst bug class);
+  `powi` returned its base unchanged for n ≥ 2, which made the
+  special-function convergence eps 2⁻¹ instead of 2⁻¹⁴⁸ and silently
+  truncated every CDF/PDF series to two terms (`normcdf(1)` ≈ 0.8226 instead
+  of 0.8413); `pow` (`2^π` ≈ 3.25 instead of 8.82), `sinh`, `cosh`, and
+  complex trig (`sin(2+3i)` collapsed to `sin(2)`) inherited it. Native
+  builds were never affected; the already-documented wasm32 fractional
+  `BigFloat::parse` bug is the same root cause. All routes now go through
+  guarded wrappers (`expr::bf_exp` / `bf_pow_round` / `bf_sinh` / `bf_cosh`,
+  and an exact exponent shift for the eps) that never hand the library an
+  argument with an integer part and never call `powi`. Pinned by native
+  identity tests and wasm-substrate tripwires in `web/smoke.mjs`.
 
 ### Changed
 

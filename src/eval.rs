@@ -2235,6 +2235,16 @@ fn value_eq(x: &Expr, y: &Expr) -> Result<bool, String> {
     }
 }
 
+/// Is this error an honest *refusal* — the engine declining to certify an
+/// answer it cannot prove ("the values may be equal") — rather than a user or
+/// domain error? Refusals are the product working as designed; the UI renders
+/// them as a distinct outcome, not a failure. Every refusal constructed here
+/// (`value_eq`, `compare`, and the algebraic-cap fall-throughs that funnel
+/// into them) carries this phrase — keep them in step.
+pub fn is_refusal(msg: &str) -> bool {
+    msg.contains("may be equal")
+}
+
 /// Three-valued AND for equality verdicts: any certain ≠ decides, both
 /// certain = decide, otherwise the refusal wins.
 fn combine_eq(a: Result<bool, String>, b: Result<bool, String>) -> Result<bool, String> {

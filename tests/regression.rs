@@ -253,8 +253,9 @@ fn wls_rejects_symbolic_and_nonpositive_weights() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-07-04 soundness audit (SOUNDNESS-AUDIT-2026-07-04.md) — one test per
-// confirmed lie, so none can come back.
+// 2026-07-04 soundness audit — one test per confirmed lie, so none can come
+// back. (The audit write-up was never committed; these tests, the CLAUDE.md
+// soundness rules, and the CHANGELOG are the durable record.)
 // ---------------------------------------------------------------------------
 
 #[test]

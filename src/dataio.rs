@@ -783,7 +783,12 @@ fn unique_ident(base: String, taken: &mut Vec<String>) -> String {
 
 /// Exact rational from decimal text: optional sign, digits, optional
 /// fraction, optional e-exponent. `0.1` → 1/10, `1.5e-3` → 3/2000.
-pub(crate) fn decimal_to_rat(s: &str) -> Result<BigRational, String> {
+///
+/// Public because it is the *only* sound route from a fractional decimal
+/// string to a number (`BigFloat::parse` mispositions the decimal point of
+/// long fractional strings on wasm32) — external callers (the wasm bindings)
+/// must come through here too.
+pub fn decimal_to_rat(s: &str) -> Result<BigRational, String> {
     let s = s.trim();
     let bad = || format!("'{}' is not a number", s);
     if s.is_empty() {

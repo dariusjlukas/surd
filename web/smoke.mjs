@@ -348,6 +348,55 @@ const shown = ev("[1, 2, 3]");
 expect("no semicolon is not suppressed", shown.suppressed ?? false, false);
 expect("unsuppressed carries no summary", shown.summary ?? null, null);
 
+// wasm32 astro-float tripwires. The library picks 64-bit words on wasm32
+// (its cfg only special-cases x86), and every truncating `as usize` then
+// breaks: exp dropped the integer part of its argument (exp(1) → 1, so the
+// certified engine asserted exp(1) ≠ e), powi returned its base (so the
+// special-function eps was 2⁻¹ and every series stopped after two terms),
+// and pow/sinh/cosh inherited all of it. These run on the REAL wasm bundle —
+// the one substrate where the raw library calls misbehave — and guard the
+// bf_exp/bf_pow_round/bf_sinh/bf_cosh workarounds in src/expr.rs.
+expect(
+  "wasm exp keeps its integer part",
+  ev("N(exp(1), 30)").text,
+  "2.71828182845904523536028747135",
+);
+expect(
+  "wasm pow via guarded exp",
+  ev("N(2^pi, 30)").text,
+  "8.82497782707628762385642960421",
+);
+expect(
+  "wasm exp(1) == e refuses instead of lying",
+  ev("exp(1) == e").refusal,
+  true,
+);
+expect(
+  "wasm exp ordering is not falsely decided",
+  ev("exp(1) - e > -10^(-50)").text,
+  "true",
+);
+expect(
+  "wasm complex trig uses guarded sinh/cosh",
+  ev("N(sin(2+3*I), 20)").text,
+  "9.1544991469114295735 - 4.1689069599665643508*I",
+);
+expect(
+  "wasm special-function series converge (powi eps)",
+  ev("N(stats.normcdf(1, 0, 1), 20)").text,
+  "0.84134474606854294859",
+);
+
+// The new result-trust surface: certainty classification, the certified
+// "≈" preview, and the refusal flag.
+expect("certainty exact", ev("sqrt(2)").certainty, "exact");
+expect("certainty approximate", ev("N(pi)").certainty, "approximate");
+expect("certainty symbolic", ev("q + 1").certainty, "symbolic");
+expect("no ghost on symbolic values", ev("q/3").approx ?? null, null);
+expect("approx ghost digits", ev("1/3").approx, "0.333333");
+expect("no ghost on terminating rational", ev("1/4").approx ?? null, null);
+expect("domain error is not a refusal", ev("1/0").refusal ?? false, false);
+
 if (checks.every(Boolean)) {
   console.log(`\nall ${checks.length} checks passed`);
 } else {

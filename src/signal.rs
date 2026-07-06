@@ -479,15 +479,17 @@ fn big_unary(
             big_check(lo, a.1.sqrt(p, UP))
         }
         "exp" => {
-            // astro-float flushes exp underflow to exact +0 even rounding
-            // Up; a zero upper bound sits BELOW the strictly positive true
-            // value. Substitute the smallest representable positive (a
-            // flushed lower bound of 0 is already sound).
-            let mut hi = a.1.exp(p, UP, cc);
+            // bf_exp, never raw `.exp` (wasm32 drops the argument's integer
+            // part — see the wrapper). astro-float also flushes exp
+            // underflow to exact +0 even rounding Up; a zero upper bound
+            // sits BELOW the strictly positive true value. Substitute the
+            // smallest representable positive (a flushed lower bound of 0
+            // is already sound).
+            let mut hi = crate::expr::bf_exp(a.1, p, UP, cc);
             if hi.is_zero() {
                 hi = BigFloat::min_positive(p);
             }
-            big_check(a.0.exp(p, DOWN, cc), hi)
+            big_check(crate::expr::bf_exp(a.0, p, DOWN, cc), hi)
         }
         "ln" => {
             if !bf_strictly_pos(a.0) {

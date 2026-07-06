@@ -96,6 +96,12 @@ export function SettingsPage() {
             value={settings.autoScroll}
             onChange={settings.setAutoScroll}
           />
+          <ToggleField
+            label="Numeric preview on exact results"
+            hint="Show a faint ≈ decimal next to exact values like 1/3 or sqrt(2). Every digit shown is certified — proven correct by interval refinement."
+            value={settings.showApprox}
+            onChange={settings.setShowApprox}
+          />
         </Section>
 
         <Section title="Keyboard shortcuts">
