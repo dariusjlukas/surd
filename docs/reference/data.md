@@ -111,10 +111,30 @@ Scalar functions (`sin`, `cos`, `tan`, `exp`, `ln`, `sqrt`, `abs`, `conj`,
 [ 1/2 ]
 ```
 
+## `str`
+
+```
+str(a, b, ...)
+```
+
+Render every argument to its canonical printed form and concatenate, as one
+string. String arguments splice in bare (no quotes); everything else prints
+exactly as the REPL would echo it, so precision control is just composition
+with [`N(x, digits)`](numeric.md#n). The result goes anywhere a string goes
+— most usefully a computed [plot label](plotting.md#titles-and-axis-labels):
+
+```text
+>> str("x = ", 1/2)
+"x = 1/2"
+>> str("pi is ", N(pi, 5))
+"pi is 3.1416"
+>> plot(f, x, 0, 1, title = str("rmse = ", N(e, 3)))
+```
+
 ## `len` / `size`
 
 ```
-len(v)      # entries of a vector; rows of a matrix
+len(v)      # entries of a vector; rows of a matrix; characters of a string
 size(m)     # dimensions, as struct(rows, cols)
 ```
 

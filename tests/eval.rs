@@ -2651,3 +2651,30 @@ fn closures_survive_struct_fields_and_higher_order_use() {
         "[ 3 6 9 ]"
     );
 }
+
+#[test]
+fn str_renders_and_concatenates() {
+    assert_eq!(ev(r#"str("x = ", 1/2)"#), r#""x = 1/2""#);
+    // Precision composes with N — no separate format language.
+    assert_eq!(ev(r#"str("pi is ", N(pi, 5))"#), r#""pi is 3.1416""#);
+    // String arguments splice in bare; adjacent values just concatenate.
+    assert_eq!(ev(r#"str("a", "b", 2^10)"#), r#""ab1024""#);
+    // Zero arguments is the empty string.
+    assert_eq!(ev("str()"), r#""""#);
+    // A computed value flows into a plot label.
+    assert!(ev_all(&[
+        "r := 3/7",
+        r#"plot(sin(x), x, 0, 6, title = str("r = ", r))"#
+    ])
+    .contains(r#"title = "r = 3/7""#));
+    // Quotes in content survive the round trip (printed form re-lexes).
+    assert_eq!(ev(r#"len(str("a\"b"))"#), "3");
+}
+
+#[test]
+fn len_counts_string_characters() {
+    assert_eq!(ev(r#"len("hello")"#), "5");
+    assert_eq!(ev(r#"len("")"#), "0");
+    // Characters, not bytes.
+    assert_eq!(ev(r#"len("πω")"#), "2");
+}

@@ -1413,8 +1413,25 @@ impl Interpreter {
                     (Some(v), _) => Ok(int(v.len() as i64)),
                     (None, Expr::Matrix(rows)) => Ok(int(rows.len() as i64)),
                     (None, Expr::Signal(s)) => Ok(int(s.len() as i64)),
-                    _ => Err("len expects a vector, matrix, or signal".into()),
+                    (None, Expr::Str(s)) => Ok(int(s.chars().count() as i64)),
+                    _ => Err("len expects a vector, matrix, signal, or string".into()),
                 }
+            }
+            // `str(a, b, ...)` — render every argument to its canonical
+            // printed form and concatenate. One primitive covers conversion
+            // and concatenation; precision comes from composing with
+            // `N(x, digits)`: str("pi is ", N(pi, 5)) is "pi is 3.1416".
+            // String arguments splice in bare (no quotes); everything else
+            // prints exactly as the REPL would echo it.
+            "str" => {
+                let mut out = String::new();
+                for a in &args {
+                    match a {
+                        Expr::Str(s) => out.push_str(s),
+                        other => out.push_str(&format!("{}", other)),
+                    }
+                }
+                Ok(Expr::Str(out))
             }
             "size" => {
                 arity(name, &args, 1)?;

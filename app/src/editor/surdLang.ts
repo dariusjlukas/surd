@@ -150,7 +150,7 @@ const BUILTINS: Builtin[] = [
   {
     name: 'len',
     params: ['v'],
-    doc: 'Entries of a vector; rows of a matrix.',
+    doc: 'Entries of a vector; rows of a matrix; characters of a string.',
   },
   { name: 'lgamma', params: ['x'], doc: 'Log-gamma, ln Γ(x), for x > 0.' },
   {
@@ -247,6 +247,12 @@ const BUILTINS: Builtin[] = [
     doc: 'Solve the linear system A·x = b.',
   },
   { name: 'sqrt', params: ['x'], doc: 'Square root.' },
+  {
+    name: 'str',
+    params: ['a'],
+    doc: 'Render each argument to its printed form and concatenate into one string; compose with N(x, digits) for precision. Feeds plot labels.',
+    variadic: true,
+  },
   {
     name: 'struct',
     params: ['name = value'],

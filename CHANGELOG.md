@@ -11,6 +11,12 @@ section into a dated, versioned release.
 
 ### Added
 
+- **`str` and string length.** `str(a, b, ...)` renders each argument to its
+  canonical printed form and concatenates — conversion, concatenation, and
+  formatting in one primitive (precision composes with `N(x, digits)`:
+  `str("pi is ", N(pi, 5))` is `"pi is 3.1416"`). The result feeds plot
+  labels, so titles can be computed: `plot(..., title = str("r = ", r))`.
+  `len(s)` counts a string's characters.
 - **Anonymous functions and closures.** `x -> x^2` and `(a, b) -> a + b` are
   function values usable anywhere a value goes. Functions created inside
   another function capture the locals they mention **by value** at creation,

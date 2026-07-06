@@ -64,7 +64,8 @@ entrywise to matrices automatically.
 
 | Function | Description |
 | --- | --- |
-| [`len(v)`](data.md#len-size) | Entries of a vector (rows of a matrix) |
+| [`len(v)`](data.md#len-size) | Entries of a vector (rows of a matrix, characters of a string) |
+| [`str(a, ...)`](data.md#str) | Render values to text and concatenate |
 | [`size(m)`](data.md#len-size) | Dimensions, as `struct(rows, cols)` |
 | [`map(f, m, ...)`](data.md#map) | Apply a function entrywise (several matrices zip) |
 | [`filter(pred, v)`](data.md#filter) | Elements where the predicate is true |

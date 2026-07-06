@@ -74,9 +74,12 @@ variable `x`, no declaration needed.
 ## String literals
 
 `"..."` is an inert piece of data — it labels things (plot titles and axis
-labels, see [plotting](../reference/plotting.md#titles-and-axis-labels)), and
-that's all: arithmetic on a string is an error, never a coercion. `==`/`!=`
-compare strings decidably.
+labels, see [plotting](../reference/plotting.md#titles-and-axis-labels)).
+Arithmetic on a string is an error, never a coercion; `==`/`!=` compare
+strings decidably. Strings are built with
+[`str(a, b, ...)`](../reference/data.md#str), which renders each argument to
+its canonical printed form and concatenates — `str("r = ", 3/7)` is
+`"r = 3/7"` — and measured with [`len`](../reference/data.md#len-size).
 
 Backslashes stay **literal** so LaTeX needs no doubling — `"$\omega$"` holds
 `$\omega$`. The only escapes are `\"` (a quote) and `\\` (a backslash).
