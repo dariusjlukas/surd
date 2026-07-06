@@ -58,6 +58,10 @@ pub enum Expr {
     Complex(Box<Expr>, Box<Expr>),
     /// A boolean — produced by comparisons and logic, consumed by control flow.
     Bool(bool),
+    /// A string literal — inert data (like `Bool`), never computed with.
+    /// Carries plot titles and axis labels; renders in math contexts as
+    /// `\text{...}`.
+    Str(String),
     /// A user-defined function: parameter names + body AST. `Rc` keeps `Expr`
     /// cheap to clone.
     Function { params: Vec<String>, body: Rc<Node> },
@@ -169,6 +173,7 @@ pub fn is_scalar(e: &Expr) -> bool {
         Expr::Matrix(_)
             | Expr::Signal(_)
             | Expr::Bool(_)
+            | Expr::Str(_)
             | Expr::Function { .. }
             | Expr::Struct(_)
             | Expr::Equation(..)
@@ -1147,8 +1152,13 @@ pub fn differentiate(e: &Expr, var: &str) -> Expr {
         Expr::Matrix(rows) => Expr::Matrix(map_entries(rows, |x| differentiate(x, var))),
         // Differentiation distributes over the real and imaginary parts.
         Expr::Complex(re, im) => complex(differentiate(re, var), differentiate(im, var)),
-        // Booleans, functions, structs, and signals are opaque to differentiation.
-        Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_) | Expr::Signal(_) => e.clone(),
+        // Booleans, strings, functions, structs, and signals are opaque to
+        // differentiation.
+        Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Function { .. }
+        | Expr::Struct(_)
+        | Expr::Signal(_) => e.clone(),
         Expr::Equation(l, r) => Expr::Equation(
             Box::new(differentiate(l, var)),
             Box::new(differentiate(r, var)),
@@ -1175,6 +1185,7 @@ pub fn substitute(e: &Expr, var: &str, val: &Expr) -> Expr {
         | Expr::Const(_)
         | Expr::Symbol(_)
         | Expr::Bool(_)
+        | Expr::Str(_)
         | Expr::Function { .. } => e.clone(),
         Expr::Signal(_) => e.clone(),
         Expr::Add(ts) => add(ts.iter().map(|t| substitute(t, var, val)).collect()),
@@ -1306,6 +1317,7 @@ pub fn contains_symbol(e: &Expr, var: &str) -> bool {
         | Expr::Float(..)
         | Expr::Const(_)
         | Expr::Bool(_)
+        | Expr::Str(_)
         | Expr::Signal(_)
         | Expr::Function { .. } => false,
         Expr::Add(ts) | Expr::Mul(ts) => ts.iter().any(|t| contains_symbol(t, var)),
@@ -1507,6 +1519,7 @@ fn to_bigfloat(e: &Expr, p: usize, cc: &mut Consts) -> Result<BigFloat, String> 
             Err("cannot evaluate a complex number to a single real float".to_string())
         }
         Expr::Bool(_) => Err("cannot numerically evaluate a boolean".to_string()),
+        Expr::Str(_) => Err("cannot numerically evaluate a string".to_string()),
         Expr::Function { .. } => Err("cannot numerically evaluate a function".to_string()),
         Expr::Equation(..) => Err("cannot numerically evaluate an equation".to_string()),
         Expr::Formula(..) => Err("cannot numerically evaluate a formula".to_string()),
@@ -1760,6 +1773,7 @@ fn to_complex(e: &Expr, p: usize, cc: &mut Consts) -> Result<Cpx, String> {
         }
         Expr::Func(name, _) => Err(format!("cannot numerically evaluate '{}'", name)),
         Expr::Bool(_) => Err("cannot numerically evaluate a boolean".to_string()),
+        Expr::Str(_) => Err("cannot numerically evaluate a string".to_string()),
         Expr::Signal(_) => Err(
             "cannot collapse a signal to one number (use mid, bound, dsp.peak, or dsp.rms)"
                 .to_string(),
@@ -2144,6 +2158,7 @@ fn cmp_within_rank(a: &Expr, b: &Expr) -> Ordering {
                 .unwrap_or(Ordering::Equal)
         }),
         (Expr::Bool(x), Expr::Bool(y)) => x.cmp(y),
+        (Expr::Str(x), Expr::Str(y)) => x.cmp(y),
         (Expr::Equation(xl, xr), Expr::Equation(yl, yr))
         | (Expr::Formula(xl, xr), Expr::Formula(yl, yr)) => {
             cmp_operands(xl, yl).then_with(|| cmp_operands(xr, yr))
@@ -2180,6 +2195,7 @@ fn type_rank(e: &Expr) -> u8 {
         Expr::Equation(..) => 10,
         Expr::Formula(..) => 10,
         Expr::Struct(_) => 11,
+        Expr::Str(_) => 12,
     }
 }
 
@@ -2308,6 +2324,7 @@ impl Expr {
             Expr::Matrix(rows) => (PREC_ATOM, render_matrix(rows)),
             Expr::Complex(re, im) => render_complex(re, im),
             Expr::Bool(b) => (PREC_ATOM, if *b { "true" } else { "false" }.to_string()),
+            Expr::Str(s) => (PREC_ATOM, quote_str(s)),
             Expr::Signal(s) => (PREC_ATOM, format!("{}", s)),
             Expr::Function { params, .. } => {
                 (PREC_ATOM, format!("<function({})>", params.join(", ")))
@@ -2335,6 +2352,21 @@ impl Expr {
             ),
         }
     }
+}
+
+/// Quote a string literal so it re-lexes to the same content (the printer
+/// invariant): escape the two characters the lexer treats specially.
+pub fn quote_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
 }
 
 /// Render a matrix as a column-aligned, multi-line block:

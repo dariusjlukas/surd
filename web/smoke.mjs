@@ -55,6 +55,33 @@ expect("sinc near 1 beside 0", Math.abs(mid - 1) < 0.01, true);
 const multi = ev("plot(sin(y), cos(y), y, 0, 1)");
 expect("multi-curve series", multi.plot.series.length, 2);
 
+// Titles and axis labels: trailing keyword-string arguments, echoed in the
+// re-parseable text and carried on the plot payload (mathtext: $…$ is math).
+const labeled = ev(
+  'plot(sin(y), y, 0, 1, title = "resp of $H(\\\\omega)$", xlabel = "$\\\\omega$", ylabel = "gain")',
+);
+expect("labeled plot kind", labeled.kind, "plot");
+expect("labeled title", labeled.plot.title, "resp of $H(\\omega)$");
+expect("labeled xlabel", labeled.plot.xlabel, "$\\omega$");
+expect("labeled ylabel", labeled.plot.ylabel, "gain");
+expect("labeled series count", labeled.plot.series.length, 1);
+expect("label echo re-parses", ev(labeled.text).text === labeled.text, true);
+expect(
+  "unlabeled plot carries no title",
+  "title" in ev("plot(sin(y), y, 0, 1)").plot,
+  false,
+);
+expect(
+  "misplaced label refuses",
+  ev('plot(title = "t", sin(y), y, 0, 1)').error.includes("must come after"),
+  true,
+);
+expect(
+  "non-string label refuses",
+  ev("plot(sin(y), y, 0, 1, title = 3)").error.includes("must be a string"),
+  true,
+);
+
 // Scatter: data points (bare → auto-windowed) and overlaid with a fitted curve.
 const sc = ev("plot(scatter([1, 2, 3, 4], [2, 4, 6, 8]))");
 expect("scatter kind", sc.kind, "plot");
@@ -84,19 +111,33 @@ expect(
 
 // Scatterplot matrix: exact correlation matrix, and the drawable `pairs` grid.
 expect("cormat kind", ev("stats.cormat([1,2; 2,4; 3,6])").kind, "matrix");
-expect("cormat diagonal exact", ev("stats.cormat([1,4; 2,2; 3,7])[1,1]").text, "1");
+expect(
+  "cormat diagonal exact",
+  ev("stats.cormat([1,4; 2,2; 3,7])[1,1]").text,
+  "1",
+);
 const sp = ev("pairs([1, 2; 2, 4; 3, 6])");
 expect("splom kind", sp.kind, "splom");
 expect("splom labels", sp.splom.labels, ["x1", "x2"]);
 expect("splom columns", sp.splom.columns.length, 2);
 expect("splom samples", sp.splom.shown, 3);
 expect("splom diagonal r is 1", sp.splom.cor[0], 1);
-expect("splom struct labels", ev("pairs(struct(b=[2;4;6], a=[1;2;3]))").splom.labels, ["a", "b"]);
-expect("splom field selection", ev("pairs(struct(a=[1;2;3], b=[2;4;6], c=[1;0;1]), [c, a])").splom.labels, ["c", "a"]);
+expect(
+  "splom struct labels",
+  ev("pairs(struct(b=[2;4;6], a=[1;2;3]))").splom.labels,
+  ["a", "b"],
+);
+expect(
+  "splom field selection",
+  ev("pairs(struct(a=[1;2;3], b=[2;4;6], c=[1;0;1]), [c, a])").splom.labels,
+  ["c", "a"],
+);
 
 // A spectrogram of a pure tone: energy concentrates in one frequency band.
 {
-  const sg = ev("spectrogram(signal(N(sin(pi/4*linspace(1, 256, 256)))), 32, 8)");
+  const sg = ev(
+    "spectrogram(signal(N(sin(pi/4*linspace(1, 256, 256)))), 32, 8)",
+  );
   expect("spectrogram kind", sg.kind, "spectrogram");
   const d = sg.spectrogram;
   expect("spectrogram bins (real one-sided)", d.bins, 17);

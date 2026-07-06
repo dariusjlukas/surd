@@ -114,6 +114,7 @@ fn render_inner(e: &Expr) -> (u8, String) {
             PREC_ATOM,
             format!(r"\mathrm{{{}}}", if *b { "true" } else { "false" }),
         ),
+        Expr::Str(s) => (PREC_ATOM, latex_text(s)),
         Expr::Function { params, .. } => (
             PREC_ATOM,
             format!(r"\mathrm{{function}}({})", params.join(", ")),
@@ -253,6 +254,27 @@ fn latex_float(s: &str) -> String {
         Some((mant, exp)) => format!(r"{}\times 10^{{{}}}", mant, exp),
         None => s.to_string(),
     }
+}
+
+/// A string literal → `\text{...}` with every LaTeX-special character
+/// escaped, so the value echoes literally (including any `$...$` math
+/// markers a plot label carries — those are interpreted by the *label*
+/// renderer, not by the value display).
+fn latex_text(s: &str) -> String {
+    let mut body = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => body.push_str(r"\textbackslash "),
+            '{' | '}' | '$' | '%' | '&' | '#' | '_' => {
+                body.push('\\');
+                body.push(c);
+            }
+            '^' => body.push_str(r"\^{}"),
+            '~' => body.push_str(r"\textasciitilde{}"),
+            _ => body.push(c),
+        }
+    }
+    format!(r"\text{{{}}}", body)
 }
 
 /// A bare symbol → LaTeX. Underscores split into nested subscripts and each

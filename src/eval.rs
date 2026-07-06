@@ -137,6 +137,7 @@ impl Interpreter {
     fn eval_node_inner(&mut self, node: &Node) -> Result<Expr, String> {
         match node {
             Node::Num(s) => Ok(parse_number(s)),
+            Node::Str(s) => Ok(Expr::Str(s.clone())),
             Node::Ident(name) => Ok(self.lookup(name)),
             Node::Neg(n) => Ok(mul(vec![int(-1), self.eval_node(n)?])),
             Node::Not(n) => {
@@ -326,7 +327,9 @@ impl Interpreter {
 
     fn eval_arith(&mut self, op: Op, x: Expr, y: Expr) -> Result<Expr, String> {
         if is_opaque_value(&x) || is_opaque_value(&y) {
-            return Err("cannot do arithmetic on a boolean, function, or struct value".into());
+            return Err(
+                "cannot do arithmetic on a boolean, string, function, or struct value".into(),
+            );
         }
         if matches!(&x, Expr::Signal(_)) || matches!(&y, Expr::Signal(_)) {
             return signal_arith(op, &x, &y);
@@ -665,22 +668,97 @@ impl Interpreter {
         }
     }
 
+    /// Split off the trailing `key = "text"` label arguments of a plot call
+    /// (`title = "..."`, `xlabel = "..."`, ...). Returns the positional prefix
+    /// and the evaluated labels. Labels must be string literals and must come
+    /// after every positional argument; `allowed` scopes which keys this plot
+    /// kind supports, so an unsupported one refuses instead of being drawn
+    /// wrong or dropped silently.
+    fn split_plot_labels<'a>(
+        &mut self,
+        args: &'a [Node],
+        allowed: &[&str],
+        who: &str,
+    ) -> Result<(&'a [Node], Vec<(String, Expr)>), String> {
+        fn label_key(n: &Node) -> Option<&str> {
+            const KEYS: &[&str] = &["title", "xlabel", "ylabel", "zlabel"];
+            if let Node::Equation(lhs, _) = n {
+                if let Node::Ident(k) = lhs.as_ref() {
+                    if KEYS.contains(&k.as_str()) {
+                        return Some(k);
+                    }
+                }
+            }
+            None
+        }
+        let mut split = args.len();
+        while split > 0 && label_key(&args[split - 1]).is_some() {
+            split -= 1;
+        }
+        if let Some(k) = args[..split].iter().find_map(label_key) {
+            return Err(format!(
+                "{}: label arguments ({} = \"...\") must come after the plotted \
+                 expressions and window",
+                who, k
+            ));
+        }
+        let mut labels: Vec<(String, Expr)> = Vec::with_capacity(args.len() - split);
+        for n in &args[split..] {
+            let Node::Equation(lhs, rhs) = n else {
+                unreachable!("only label equations are split off");
+            };
+            let Node::Ident(key) = lhs.as_ref() else {
+                unreachable!("label_key checked the lhs is an identifier");
+            };
+            if !allowed.contains(&key.as_str()) {
+                return Err(format!(
+                    "{} does not support the '{}' label (supported: {})",
+                    who,
+                    key,
+                    allowed.join(", ")
+                ));
+            }
+            if labels.iter().any(|(k, _)| k == key) {
+                return Err(format!("{}: '{}' was given twice", who, key));
+            }
+            let value = self.eval_node(rhs)?;
+            if !matches!(value, Expr::Str(_)) {
+                return Err(format!(
+                    "{}: {} must be a string, e.g. {} = \"label text\" \
+                     (use $...$ inside it for LaTeX math) — got '{}'",
+                    who, key, key, value
+                ));
+            }
+            labels.push((key.clone(), value));
+        }
+        Ok((&args[..split], labels))
+    }
+
     /// `plot(f1, ..., fk, x, a, b)` — one or more curves over a shared
     /// window. Stays a symbolic value; the frontend samples and draws it.
     /// `plot(s1, ..., sk)` over signals draws their samples directly.
+    /// Trailing `title`/`xlabel`/`ylabel` string arguments annotate any form.
     fn call_plot(&mut self, args: &[Node]) -> Result<Expr, String> {
+        let (args, labels) =
+            self.split_plot_labels(args, &["title", "xlabel", "ylabel"], "plot")?;
         if !args.is_empty() && args.len() < 4 {
             let evaluated = args
                 .iter()
                 .map(|a| self.eval_node(a))
                 .collect::<Result<Vec<_>, _>>()?;
             if evaluated.iter().all(|e| matches!(e, Expr::Signal(_))) {
-                return Ok(Expr::Func("plotsignal".to_string(), evaluated));
+                return Ok(Expr::Func(
+                    "plotsignal".to_string(),
+                    attach_plot_labels(evaluated, labels),
+                ));
             }
             // All data series and no window: draw the points over a window
             // derived from the data (the wasm side pads the x-extent).
             if evaluated.iter().all(is_scatter) {
-                return Ok(Expr::Func("plotscatter".to_string(), evaluated));
+                return Ok(Expr::Func(
+                    "plotscatter".to_string(),
+                    attach_plot_labels(evaluated, labels),
+                ));
             }
         }
         if args.len() < 4 {
@@ -721,7 +799,10 @@ impl Interpreter {
         out.push(Expr::Symbol(var));
         out.push(self.eval_node(&args[var_idx + 1])?);
         out.push(self.eval_node(&args[var_idx + 2])?);
-        Ok(Expr::Func("plot".to_string(), out))
+        Ok(Expr::Func(
+            "plot".to_string(),
+            attach_plot_labels(out, labels),
+        ))
     }
 
     /// `plot3d(f, x, a, b, y, c, d)` — a surface z = f(x, y) over [a, b]×[c, d].
@@ -729,6 +810,9 @@ impl Interpreter {
     /// surface at most), and `plot3d(scatter3d(...))` draws points alone over a
     /// window derived from the data. Stays symbolic, like `plot`.
     fn call_plot3d(&mut self, args: &[Node]) -> Result<Expr, String> {
+        // Only `title` for now: the surface view has no honest place to draw
+        // per-axis labels yet, and accepting-then-dropping them would lie.
+        let (args, labels) = self.split_plot_labels(args, &["title"], "plot3d")?;
         // Bare 3D scatter: all data and no window — box it from the data.
         if !args.is_empty() && args.len() < 7 {
             let evaluated = args
@@ -736,7 +820,10 @@ impl Interpreter {
                 .map(|a| self.eval_node(a))
                 .collect::<Result<Vec<_>, _>>()?;
             if evaluated.iter().all(is_scatter3d) {
-                return Ok(Expr::Func("plot3dscatter".to_string(), evaluated));
+                return Ok(Expr::Func(
+                    "plot3dscatter".to_string(),
+                    attach_plot_labels(evaluated, labels),
+                ));
             }
         }
         if args.len() < 7 {
@@ -774,7 +861,10 @@ impl Interpreter {
         out.push(Expr::Symbol(yvar));
         out.push(self.eval_node(&args[base + 4])?);
         out.push(self.eval_node(&args[base + 5])?);
-        Ok(Expr::Func("plot3d".to_string(), out))
+        Ok(Expr::Func(
+            "plot3d".to_string(),
+            attach_plot_labels(out, labels),
+        ))
     }
 
     /// `struct(name = value, ...)` — each argument must literally be
@@ -1881,7 +1971,10 @@ fn as_bool(e: &Expr) -> Result<bool, String> {
 
 /// Values arithmetic can never touch: booleans, functions, structs.
 fn is_opaque_value(e: &Expr) -> bool {
-    matches!(e, Expr::Bool(_) | Expr::Function { .. } | Expr::Struct(_))
+    matches!(
+        e,
+        Expr::Bool(_) | Expr::Str(_) | Expr::Function { .. } | Expr::Struct(_)
+    )
 }
 
 fn expect_matrix(name: &str, e: &Expr) -> Result<(), String> {
@@ -2092,6 +2185,17 @@ fn numeric_column(e: &Expr) -> Option<Vec<Expr>> {
     v.iter()
         .all(|x| matches!(x, Expr::Int(_) | Expr::Rat(_) | Expr::Float(..)))
         .then_some(v)
+}
+
+/// Append evaluated plot labels to a tagged plot value's arguments, each as a
+/// `key = "text"` equation. Trailing equations are how the labels survive in
+/// the symbolic value and its printed form (`plot(..., title = "...")`
+/// re-parses to the same value); the wasm extractor peels them back off.
+fn attach_plot_labels(mut out: Vec<Expr>, labels: Vec<(String, Expr)>) -> Vec<Expr> {
+    for (key, value) in labels {
+        out.push(Expr::Equation(Box::new(Expr::Symbol(key)), Box::new(value)));
+    }
+    out
 }
 
 /// A `scatter(x, y)` data value, carried symbolically into a plot.

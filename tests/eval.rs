@@ -2367,3 +2367,80 @@ fn poles_and_zeros_are_exact() {
         "[ 0 ] [ -1/2 ]"
     );
 }
+
+// ---------------------------------------------------------------------------
+// String literals and plot labels
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strings_are_inert_values() {
+    // Echo re-escapes to the canonical quoted form (a re-parse fixed point).
+    assert_eq!(ev(r#""hello""#), r#""hello""#);
+    // Backslashes stay literal (LaTeX needs no doubling); \" and \\ escape.
+    assert_eq!(ev(r#""$\omega$""#), r#""$\\omega$""#);
+    assert_eq!(ev(r#""say \"hi\"""#), r#""say \"hi\"""#);
+    assert_eq!(ev(r#""a\\b""#), r#""a\\b""#);
+    // Unterminated strings refuse.
+    assert!(ev(r#""oops"#).starts_with("error:"));
+    // Inert: arithmetic refuses, equality is decidable.
+    assert!(ev(r#"1 + "a""#).starts_with("error:"));
+    assert!(ev(r#""a" * 2"#).starts_with("error:"));
+    assert_eq!(ev(r#""a" == "a""#), "true");
+    assert_eq!(ev(r#""a" == "b""#), "false");
+    // A string binds and survives struct fields like any value.
+    assert_eq!(ev_all(&[r#"t := "x label""#, "t"]), r#""x label""#);
+    assert_eq!(ev(r#"struct(name = "run 1").name"#), r#""run 1""#);
+}
+
+#[test]
+fn strings_survive_data_roundtrip() {
+    // dataio JSON export/import must carry strings losslessly (import wraps
+    // the file's variables in one struct; the field's value must round-trip).
+    let mut interp = Interpreter::new();
+    let value = interp
+        .eval_line(r#"struct(label = "$\omega$ \"q\"", v = 3)"#)
+        .unwrap();
+    let exported = surd::dataio::export_variables(&[("s", &value)]).unwrap();
+    let imported = surd::dataio::import(&exported).unwrap();
+    let rendered = format!("{}", imported);
+    assert!(
+        rendered.contains(r#"label = "$\\omega$ \"q\"""#),
+        "import lost the string: {}",
+        rendered
+    );
+}
+
+#[test]
+fn plot_labels_attach_and_roundtrip() {
+    // Labels ride the symbolic plot value as trailing equations, and the
+    // printed form is a re-parse fixed point.
+    let printed = ev(
+        r#"plot(sin(x), x, 0, 6, title = "resp of $H(\omega)$", xlabel = "$\omega$", ylabel = "gain")"#,
+    );
+    assert_eq!(
+        printed,
+        r#"plot(sin(x), x, 0, 6, title = "resp of $H(\\omega)$", xlabel = "$\\omega$", ylabel = "gain")"#
+    );
+    assert_eq!(ev(&printed), printed);
+    // All plot forms take labels: bare scatter and signals too.
+    assert!(ev(r#"plot(scatter([1, 2], [3, 4]), title = "data")"#).starts_with("plotscatter("));
+    assert!(
+        ev_all(&["s := signal([1; 2])", r#"plot(s, title = "sig")"#]).starts_with("plotsignal(")
+    );
+    assert!(ev(r#"plot3d(x*y, x, 0, 1, y, 0, 1, title = "surf")"#).starts_with("plot3d("));
+}
+
+#[test]
+fn plot_labels_refuse_misuse() {
+    // Misplaced (before positional args).
+    assert!(ev(r#"plot(title = "t", sin(x), x, 0, 6)"#).contains("must come after"));
+    // Duplicate.
+    assert!(ev(r#"plot(sin(x), x, 0, 6, title = "a", title = "b")"#).contains("twice"));
+    // Not a string.
+    assert!(ev("plot(sin(x), x, 0, 6, title = 3)").contains("must be a string"));
+    // Unsupported key for the plot kind — refused, never silently dropped.
+    assert!(ev(r#"plot(sin(x), x, 0, 6, zlabel = "z")"#).contains("does not support"));
+    assert!(ev(r#"plot3d(x*y, x, 0, 1, y, 0, 1, xlabel = "x")"#).contains("does not support"));
+    // Labels are keyword-only extras: they don't count toward the window args.
+    assert!(ev(r#"plot(sin(x), title = "t")"#).starts_with("error: plot expects"));
+}

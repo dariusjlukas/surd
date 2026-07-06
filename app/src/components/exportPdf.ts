@@ -28,8 +28,9 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** The result block under a math or data cell's source. */
-function resultHtml(cell: Cell): string {
+/** The result block under a math or data cell's source. Plot snapshots are
+ * pre-collected (async) by buildReportHtml and passed in. */
+function resultHtml(cell: Cell, snaps: Map<string, string | null>): string {
   if (cell.status === 'pending')
     return `<div class="report-note">not evaluated</div>`
   if (cell.status === 'cancelled')
@@ -47,7 +48,7 @@ function resultHtml(cell: Cell): string {
   switch (r.kind) {
     case 'plot':
     case 'plot3d': {
-      const png = plotSnapshot(cell.id)
+      const png = snaps.get(cell.id) ?? null
       return png
         ? `<img class="report-plot" src="${png}" alt="${escapeHtml(r.text)}" />`
         : `<div class="report-note">[plot — open this notebook to include it in the export]</div>`
@@ -61,7 +62,7 @@ function resultHtml(cell: Cell): string {
   }
 }
 
-function cellHtml(cell: Cell): string {
+function cellHtml(cell: Cell, snaps: Map<string, string | null>): string {
   if (cell.kind === 'markdown') {
     if (!cell.src.trim()) return ''
     return `<section class="report-cell report-md md-cell">${renderMarkdown(cell.src)}</section>`
@@ -69,17 +70,26 @@ function cellHtml(cell: Cell): string {
   const sigil = cell.kind === 'data' ? '⇣' : '&gt;&gt;'
   return `<section class="report-cell report-${cell.kind}">
     <div class="report-src"><span class="report-sigil">${sigil}</span> ${escapeHtml(cell.src)}</div>
-    ${resultHtml(cell)}
+    ${resultHtml(cell, snaps)}
   </section>`
 }
 
-/** The report's inner HTML: header (title + date) then one block per cell. */
-export function buildReportHtml(nb: Notebook): string {
+/** The report's inner HTML: header (title + date) then one block per cell.
+ * Async because plot snapshots are composited (labels rasterized) on demand. */
+export async function buildReportHtml(nb: Notebook): Promise<string> {
   const date = new Date(nb.updatedAt).toLocaleString(undefined, {
     dateStyle: 'long',
     timeStyle: 'short',
   })
-  const body = nb.cells.map(cellHtml).join('\n')
+  const snaps = new Map<string, string | null>()
+  await Promise.all(
+    nb.cells
+      .filter((c) => c.result?.kind === 'plot' || c.result?.kind === 'plot3d')
+      .map(async (c) => {
+        snaps.set(c.id, await plotSnapshot(c.id))
+      }),
+  )
+  const body = nb.cells.map((c) => cellHtml(c, snaps)).join('\n')
   return `<header class="report-header">
       <h1 class="report-title">${escapeHtml(nb.name)}</h1>
       <div class="report-date">${escapeHtml(date)}</div>
@@ -111,7 +121,7 @@ export async function exportNotebookPdf(nb: Notebook): Promise<void> {
   const container =
     document.getElementById(REPORT_ID) ?? document.createElement('div')
   container.id = REPORT_ID
-  container.innerHTML = buildReportHtml(nb)
+  container.innerHTML = await buildReportHtml(nb)
   if (!container.isConnected) document.body.appendChild(container)
 
   hydrateMath(container)

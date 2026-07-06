@@ -9,6 +9,21 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- **Plot titles and axis labels.** `plot(..., title = "...", xlabel = "...",
+  ylabel = "...")` (and `plot3d(..., title = "...")`) accept trailing
+  keyword-string arguments on every plot form — curves, signals, and scatter.
+  Labels are mathtext: plain text where `$...$` segments render as LaTeX
+  (`title = "response of $H(\omega)$"`). They render in the live view and are
+  baked into PNG/PDF exports — which now also composite the theme background,
+  tick numbers, and (for multi-curve plots) the legend around the frame,
+  where they previously exported the bare transparent canvas.
+- **String literals.** `"..."` is a new inert value type (it can't be
+  computed with — arithmetic on it refuses), carried for plot labels.
+  Backslashes stay literal so LaTeX needs no doubling; only `\"` and `\\`
+  escape.
+
 ### Fixed
 
 - **`==`/`!=` on constant values now refuse instead of answering `false` when

@@ -70,6 +70,7 @@ pub fn eval_f64(e: &Expr, vars: &[(&str, f64)]) -> Result<f64, String> {
         Expr::Complex(..) => Err("cannot plot a complex value on a real axis".to_string()),
         Expr::Matrix(..) => Err("cannot evaluate a matrix to a single number".to_string()),
         Expr::Bool(_) => Err("cannot evaluate a boolean to a number".to_string()),
+        Expr::Str(_) => Err("cannot evaluate a string to a number".to_string()),
         Expr::Function { .. } => Err("cannot evaluate a function value to a number".to_string()),
         Expr::Equation(..) => Err("cannot evaluate an equation to a number".to_string()),
         Expr::Formula(..) => Err("cannot evaluate a formula to a number".to_string()),

@@ -333,6 +333,19 @@ export class SurfacePlot {
     return this.renderer.domElement.toDataURL('image/png')
   }
 
+  /** Draw the current frame into a 2D canvas (the composite PNG export).
+   * Same backbuffer rule as snapshot(): render and read in one task. */
+  drawInto(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ) {
+    this.render()
+    ctx.drawImage(this.renderer.domElement, x, y, w, h)
+  }
+
   dispose() {
     disposeGroup(this.surface)
     disposeGroup(this.frame)

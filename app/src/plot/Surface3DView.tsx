@@ -10,8 +10,9 @@ import type { Plot3dData } from '../engine/types'
 import { useSettings, type SurfaceRender } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
-import { MathInline } from '../components/MathOutput'
+import { MathInline, MathText } from '../components/MathOutput'
 import { nameToLatex } from '../engine/nameLatex'
+import { exportPlotPng } from './exportPng'
 import { formatTick, niceTicks } from './scales'
 import {
   clampOrbit,
@@ -472,13 +473,32 @@ export function Surface3DView({
     }
   }, [])
 
+  // The composite PNG export: the WebGL frame with the theme background and
+  // the optional title (the 3D box carries no 2D ticks, so those gutters
+  // collapse). Ref'd so the PDF registration stays stable (see PlotView).
+  const buildExportPng = () => {
+    const painter = painterRef.current
+    if (!painter) return Promise.reject(new Error('plot is not mounted'))
+    return exportPlotPng({
+      drawFrame: (ctx, x, y, w, h) => painter.drawInto(ctx, x, y, w, h),
+      width: size.w,
+      height: size.h,
+      win: { a: 0, b: 1 },
+      yWin: [0, 1],
+      xTicks: [],
+      yTicks: [],
+      title: plot.title,
+    })
+  }
+  const exportRef = useRef(buildExportPng)
+  useEffect(() => {
+    exportRef.current = buildExportPng
+  })
+
   // Expose this live view to the PDF exporter as a PNG source (see above).
   useEffect(() => {
     if (!cellId) return
-    return registerPlotSnapshot(
-      cellId,
-      () => painterRef.current?.snapshot() ?? '',
-    )
+    return registerPlotSnapshot(cellId, () => exportRef.current())
   }, [cellId])
 
   useEffect(() => {
@@ -526,11 +546,10 @@ export function Surface3DView({
   }
 
   const savePng = () => {
-    const painter = painterRef.current
-    if (!painter) return
-    void saveDataUrl(`${plot.text.slice(0, 40)}.png`, painter.snapshot()).catch(
-      (e) => console.error('plot export failed', e),
-    )
+    void exportRef
+      .current()
+      .then((png) => saveDataUrl(`${plot.text.slice(0, 40)}.png`, png))
+      .catch((e) => console.error('plot export failed', e))
   }
 
   return (
@@ -592,6 +611,11 @@ export function Surface3DView({
           reset
         </button>
       </div>
+      {plot.title && (
+        <div className="mb-1 text-center text-sm text-ink">
+          <MathText text={plot.title} />
+        </div>
+      )}
       <div
         ref={frameRef}
         title="drag rotates · shift+drag pans · wheel zooms the domain · alt+wheel dollies"

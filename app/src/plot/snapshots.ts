@@ -8,13 +8,14 @@
 // registers its `() => painter.snapshot()` here; the exporter calls it to embed
 // the exact view the user is looking at as a PNG.
 
-const registry = new Map<string, () => string>()
+const registry = new Map<string, () => string | Promise<string>>()
 
-/** Register a cell's plot snapshot source. Returns an unregister function for
+/** Register a cell's plot snapshot source (sync, or async for the composite
+ * exports that rasterize labels first). Returns an unregister function for
  * the component's effect cleanup. */
 export function registerPlotSnapshot(
   cellId: string,
-  snapshot: () => string,
+  snapshot: () => string | Promise<string>,
 ): () => void {
   registry.set(cellId, snapshot)
   return () => {
@@ -25,11 +26,11 @@ export function registerPlotSnapshot(
 /** The cell's plot as a PNG data URL, or null if no live view is registered
  * (e.g. the plot's lazy chunk hasn't mounted, or it belongs to a notebook
  * that isn't the open one). */
-export function plotSnapshot(cellId: string): string | null {
+export async function plotSnapshot(cellId: string): Promise<string | null> {
   const snapshot = registry.get(cellId)
   if (!snapshot) return null
   try {
-    return snapshot()
+    return (await snapshot()) || null
   } catch {
     return null
   }

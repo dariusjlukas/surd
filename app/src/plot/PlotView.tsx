@@ -19,14 +19,25 @@ import {
 import { useSettings } from '../state/settings'
 import { useNotebook } from '../state/store'
 import { openContextMenu } from '../state/contextMenu'
-import { MathInline } from '../components/MathOutput'
+import { MathInline, MathText } from '../components/MathOutput'
 import { nameToLatex } from '../engine/nameLatex'
 import { LinePlot, seriesColorToken } from './LinePlot'
+import { exportPlotPng } from './exportPng'
 import { formatTick, niceTicks, quantileDomain } from './scales'
 import { registerPlotSnapshot } from './snapshots'
 import { saveDataUrl } from '../platform/desktop'
 
 const RESAMPLE_DEBOUNCE_MS = 180
+
+/** Series i's palette token resolved to a plain CSS color — the canvas
+ * export needs the value, not `var(...)`. */
+function seriesCssColor(i: number): string {
+  return (
+    getComputedStyle(document.documentElement)
+      .getPropertyValue(seriesColorToken(i))
+      .trim() || '#7dd3fc'
+  )
+}
 
 export function PlotView({
   plot: rawPlot,
@@ -110,14 +121,45 @@ export function PlotView({
     }
   }, [])
 
+  // The composite PNG export: the WebGL frame plus everything that lives in
+  // the DOM around it (ticks, title, axis labels, multi-curve legend). Kept
+  // in a ref so the PDF-export registration below stays stable while the
+  // closure tracks the current view.
+  const buildExportPng = () => {
+    const painter = painterRef.current
+    if (!painter) return Promise.reject(new Error('plot is not mounted'))
+    return exportPlotPng({
+      drawFrame: (ctx, x, y, w, h) => painter.drawInto(ctx, x, y, w, h),
+      width: size.w,
+      height: size.h,
+      win,
+      yWin,
+      xTicks,
+      yTicks,
+      title: plot.title,
+      xlabel: plot.xlabel,
+      ylabel: plot.ylabel,
+      // Identification only matters with several curves; a lone series keeps
+      // the export clean (its expression rides along in the PDF alt text).
+      legend:
+        plot.series.length >= 2
+          ? plot.series.map((s, i) => ({
+              latex: s.latex,
+              color: seriesCssColor(i),
+            }))
+          : undefined,
+    })
+  }
+  const exportRef = useRef(buildExportPng)
+  useEffect(() => {
+    exportRef.current = buildExportPng
+  })
+
   // Expose this live view to the PDF exporter as a PNG source. painterRef is
   // set by the lifecycle effect above, which runs first.
   useEffect(() => {
     if (!cellId) return
-    return registerPlotSnapshot(
-      cellId,
-      () => painterRef.current?.snapshot() ?? '',
-    )
+    return registerPlotSnapshot(cellId, () => exportRef.current())
   }, [cellId])
 
   useEffect(() => {
@@ -309,11 +351,10 @@ export function PlotView({
   const exprText = plot.series.map((s) => s.text).join(', ')
 
   const savePng = () => {
-    const painter = painterRef.current
-    if (!painter) return
-    void saveDataUrl(`${exprText.slice(0, 40)}.png`, painter.snapshot()).catch(
-      (e) => console.error('plot export failed', e),
-    )
+    void exportRef
+      .current()
+      .then((png) => saveDataUrl(`${exprText.slice(0, 40)}.png`, png))
+      .catch((e) => console.error('plot export failed', e))
   }
 
   // -- tick label positions (same scales as the painter) ---------------------
@@ -355,93 +396,115 @@ export function PlotView({
           reset
         </button>
       </div>
-      <div
-        ref={frameRef}
-        title="drag to pan · wheel zooms x · shift+wheel zooms y"
-        className="relative h-80 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-edge bg-surface active:cursor-grabbing"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerLeave={() => setProbe(null)}
-        onDoubleClick={reset}
-        onContextMenu={(e) =>
-          openContextMenu(e, [
-            { label: 'Save as PNG', onSelect: savePng },
-            { label: 'Reset view', onSelect: reset },
-            'divider',
-            {
-              label: 'Copy expression',
-              onSelect: () => void navigator.clipboard.writeText(exprText),
-            },
-          ])
-        }
-      >
-        <canvas ref={canvasRef} className="block h-full w-full" />
-        <div className="pointer-events-none absolute right-1.5 top-1 text-right font-mono text-[10px] leading-4 text-faint">
-          <div>
-            <MathInline latex={nameToLatex(plot.var)} fallback={plot.var} /> ∈ [
-            {formatTick(win.a)}, {formatTick(win.b)}]
-          </div>
-          <div>
-            y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
-            <span className={yManual ? 'text-warn/80' : ''}>
-              {yManual ? 'manual' : 'auto'}
-            </span>
-          </div>
+      {plot.title && (
+        <div className="mb-1 text-center text-sm text-ink">
+          <MathText text={plot.title} />
         </div>
-        {xTicks.map((t) => (
-          <span
-            key={`x${t}`}
-            className="pointer-events-none absolute bottom-0.5 -translate-x-1/2 font-mono text-[10px] text-faint"
-            style={{ left: xPos(t) }}
-          >
-            {formatTick(t)}
-          </span>
-        ))}
-        {yTicks.map((t) => (
-          <span
-            key={`y${t}`}
-            className="pointer-events-none absolute left-1 -translate-y-1/2 font-mono text-[10px] text-faint"
-            style={{ top: yPos(t) }}
-          >
-            {formatTick(t)}
-          </span>
-        ))}
-        {probe && (
-          <>
-            <div
-              className="pointer-events-none absolute bottom-0 top-0 w-px bg-edge-strong/70"
-              style={{ left: xPos(probe.x) }}
-            />
-            <div
-              className="pointer-events-none absolute left-0 right-0 h-px bg-edge-strong/70"
-              style={{ top: yPos(probe.y) }}
-            />
-            <div
-              className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-app"
-              style={{
-                left: xPos(probe.x),
-                top: yPos(probe.y),
-                borderColor: `var(${seriesColorToken(probe.si)})`,
-              }}
-            />
-            <div
-              className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md border border-edge bg-raised px-1.5 py-0.5 font-mono text-[11px] text-ink"
-              style={{
-                left: xPos(probe.x) + (xPos(probe.x) > size.w - 130 ? -10 : 10),
-                top: yPos(probe.y) - 26,
-                transform:
-                  xPos(probe.x) > size.w - 130
-                    ? 'translateX(-100%)'
-                    : undefined,
-              }}
-            >
-              ({formatTick(probe.x)}, {formatTick(probe.y)})
+      )}
+      <div className="flex items-stretch">
+        {plot.ylabel && (
+          <div className="relative w-6 shrink-0">
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 -rotate-90 whitespace-nowrap text-xs text-muted">
+              <MathText text={plot.ylabel} />
             </div>
-          </>
+          </div>
         )}
+        <div
+          ref={frameRef}
+          title="drag to pan · wheel zooms x · shift+wheel zooms y"
+          className="relative h-80 min-w-0 flex-1 cursor-grab touch-none select-none overflow-hidden rounded-lg border border-edge bg-surface active:cursor-grabbing"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerLeave={() => setProbe(null)}
+          onDoubleClick={reset}
+          onContextMenu={(e) =>
+            openContextMenu(e, [
+              { label: 'Save as PNG', onSelect: savePng },
+              { label: 'Reset view', onSelect: reset },
+              'divider',
+              {
+                label: 'Copy expression',
+                onSelect: () => void navigator.clipboard.writeText(exprText),
+              },
+            ])
+          }
+        >
+          <canvas ref={canvasRef} className="block h-full w-full" />
+          <div className="pointer-events-none absolute right-1.5 top-1 text-right font-mono text-[10px] leading-4 text-faint">
+            <div>
+              <MathInline latex={nameToLatex(plot.var)} fallback={plot.var} /> ∈
+              [{formatTick(win.a)}, {formatTick(win.b)}]
+            </div>
+            <div>
+              y ∈ [{formatTick(yWin[0])}, {formatTick(yWin[1])}]{' '}
+              <span className={yManual ? 'text-warn/80' : ''}>
+                {yManual ? 'manual' : 'auto'}
+              </span>
+            </div>
+          </div>
+          {xTicks.map((t) => (
+            <span
+              key={`x${t}`}
+              className="pointer-events-none absolute bottom-0.5 -translate-x-1/2 font-mono text-[10px] text-faint"
+              style={{ left: xPos(t) }}
+            >
+              {formatTick(t)}
+            </span>
+          ))}
+          {yTicks.map((t) => (
+            <span
+              key={`y${t}`}
+              className="pointer-events-none absolute left-1 -translate-y-1/2 font-mono text-[10px] text-faint"
+              style={{ top: yPos(t) }}
+            >
+              {formatTick(t)}
+            </span>
+          ))}
+          {probe && (
+            <>
+              <div
+                className="pointer-events-none absolute bottom-0 top-0 w-px bg-edge-strong/70"
+                style={{ left: xPos(probe.x) }}
+              />
+              <div
+                className="pointer-events-none absolute left-0 right-0 h-px bg-edge-strong/70"
+                style={{ top: yPos(probe.y) }}
+              />
+              <div
+                className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-app"
+                style={{
+                  left: xPos(probe.x),
+                  top: yPos(probe.y),
+                  borderColor: `var(${seriesColorToken(probe.si)})`,
+                }}
+              />
+              <div
+                className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md border border-edge bg-raised px-1.5 py-0.5 font-mono text-[11px] text-ink"
+                style={{
+                  left:
+                    xPos(probe.x) + (xPos(probe.x) > size.w - 130 ? -10 : 10),
+                  top: yPos(probe.y) - 26,
+                  transform:
+                    xPos(probe.x) > size.w - 130
+                      ? 'translateX(-100%)'
+                      : undefined,
+                }}
+              >
+                ({formatTick(probe.x)}, {formatTick(probe.y)})
+              </div>
+            </>
+          )}
+        </div>
       </div>
+      {plot.xlabel && (
+        <div
+          className={`mt-1 text-center text-xs text-muted${plot.ylabel ? ' pl-6' : ''}`}
+        >
+          <MathText text={plot.xlabel} />
+        </div>
+      )}
     </div>
   )
 }

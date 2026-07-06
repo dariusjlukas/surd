@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Node {
     Num(String),
+    /// A string literal (already unescaped). Inert data — used for plot
+    /// titles and axis labels, not computed with.
+    Str(String),
     Ident(String),
     BinOp(Op, Box<Node>, Box<Node>),
     Neg(Box<Node>),

@@ -10,6 +10,10 @@
 pub enum Token {
     /// A numeric literal, kept as text (e.g. "12", "1.5").
     Num(String),
+    /// A string literal, already unescaped. Backslashes stay literal unless
+    /// they escape a quote or a backslash, so LaTeX (`"\omega"`) needs no
+    /// doubling.
+    Str(String),
     Ident(String),
     Plus,
     Minus,
@@ -106,6 +110,30 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 push(&mut tokens, Token::RBracket, &mut i);
             }
             ',' => push(&mut tokens, Token::Comma, &mut i),
+            '"' => {
+                i += 1;
+                let mut s = String::new();
+                loop {
+                    match chars.get(i) {
+                        None => return Err("unterminated string (missing closing '\"')".into()),
+                        Some('"') => {
+                            i += 1;
+                            break;
+                        }
+                        // Only `\"` and `\\` escape; any other backslash stays
+                        // literal so LaTeX in labels needs no doubling.
+                        Some('\\') if matches!(chars.get(i + 1), Some('"' | '\\')) => {
+                            s.push(chars[i + 1]);
+                            i += 2;
+                        }
+                        Some(c) => {
+                            s.push(*c);
+                            i += 1;
+                        }
+                    }
+                }
+                tokens.push(Token::Str(s));
+            }
             // `.` followed by an operator is elementwise (`.*`, `./`, `.^`);
             // not followed by a digit it's field access; `.5` falls through
             // to the numeric-literal arm below. (`2.*x` lexes as the number
@@ -353,6 +381,20 @@ mod tests {
             toks("(1\n+ 2)"),
             vec![LParen, Num("1".into()), Plus, Num("2".into()), RParen, Eof]
         );
+    }
+
+    #[test]
+    fn string_literals() {
+        assert_eq!(toks(r#""hello""#), vec![Str("hello".into()), Eof]);
+        // Backslashes stay literal (LaTeX), except \" and \\.
+        assert_eq!(toks(r#""$\omega$""#), vec![Str(r"$\omega$".into()), Eof]);
+        assert_eq!(toks(r#""a\"b""#), vec![Str(r#"a"b"#.into()), Eof]);
+        assert_eq!(toks(r#""a\\b""#), vec![Str(r"a\b".into()), Eof]);
+        // Comment and newline characters inside a string are content.
+        assert_eq!(toks("\"a # b\""), vec![Str("a # b".into()), Eof]);
+        assert!(lex(r#""unterminated"#).is_err());
+        // No implicit multiplication into or out of a string.
+        assert_eq!(toks(r#"2"a""#), vec![Num("2".into()), Str("a".into()), Eof]);
     }
 
     #[test]

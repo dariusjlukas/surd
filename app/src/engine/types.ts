@@ -35,6 +35,11 @@ export interface PlotData {
   sig?: number
   /** One entry per curve, over the shared [a, b] window. */
   series: PlotSeries[]
+  /** Optional figure title / axis labels from `plot(..., title = "...")`.
+   * Mathtext: plain text, with `$...$` segments rendered as LaTeX math. */
+  title?: string
+  xlabel?: string
+  ylabel?: string
 }
 
 /** A surface z = f(x, y), sampled on a grid. */
@@ -59,6 +64,8 @@ export interface Plot3dData {
   /** 3D scatter markers `(x, y, z)` in data coordinates; absent when none.
    * Static data — re-windowed client-side, never resampled. */
   scatter?: [number, number, number][]
+  /** Optional figure title from `plot3d(..., title = "...")` (mathtext). */
+  title?: string
 }
 
 /** A scatterplot matrix (SPLOM) from `pairs(...)`: k variables drawn as a k×k

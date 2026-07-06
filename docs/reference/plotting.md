@@ -46,6 +46,31 @@ Because the variable is taken by name, a workspace binding doesn't collapse
 the curve: after `x := 3`, `plot(x^2, x, 0, 1)` still plots the parabola,
 not the constant 9.
 
+## Titles and axis labels
+
+```
+plot(..., title = "...", xlabel = "...", ylabel = "...")
+plot3d(..., title = "...")
+```
+
+Every plot form — curves, signals, scatter — takes optional trailing
+keyword-string arguments. Labels are **mathtext**: plain text, with `$...$`
+segments rendered as LaTeX math (`\$` is a literal dollar):
+
+```text
+>> plot(sin(w)/w, w, -10, 10, title = "response of $H(\omega)$", xlabel = "$\omega$ (rad/s)", ylabel = "gain")
+```
+
+- Backslashes in strings stay literal, so LaTeX needs no doubling —
+  `"$\omega$"` just works. Only `\"` (a quote) and `\\` (a backslash) escape.
+- Labels must come after all positional arguments, must be string literals,
+  and each may appear once; anything else is an error, never a silent drop.
+- `plot3d` takes only `title` for now — the surface view has no honest place
+  to draw per-axis labels yet, so it refuses them rather than dropping them.
+- Labels show in the live view and are baked into the **png** button's export
+  and PDF reports (along with tick numbers and, for multi-curve plots, the
+  legend).
+
 ## `scatter`
 
 ```

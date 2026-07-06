@@ -78,6 +78,46 @@ struct PlotData {
     sig: Option<u32>,
     /// One entry per curve, drawn over the shared [a, b] window.
     series: Vec<Series>,
+    /// Optional figure title / axis labels from `plot(..., title = "...")`.
+    /// Mathtext: plain text with `$...$` segments rendered as LaTeX.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xlabel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ylabel: Option<String>,
+}
+
+/// Trailing `key = "text"` label equations of a tagged plot value, peeled
+/// back off (the mirror of eval's `attach_plot_labels`). Returns the
+/// positional prefix and the labels.
+#[derive(Default)]
+struct PlotLabels {
+    title: Option<String>,
+    xlabel: Option<String>,
+    ylabel: Option<String>,
+}
+
+fn split_plot_labels(args: &[Expr]) -> (&[Expr], PlotLabels) {
+    let mut labels = PlotLabels::default();
+    let mut end = args.len();
+    while end > 0 {
+        let Expr::Equation(l, r) = &args[end - 1] else {
+            break;
+        };
+        let (Expr::Symbol(key), Expr::Str(text)) = (l.as_ref(), r.as_ref()) else {
+            break;
+        };
+        let slot = match key.as_str() {
+            "title" => &mut labels.title,
+            "xlabel" => &mut labels.xlabel,
+            "ylabel" => &mut labels.ylabel,
+            _ => break,
+        };
+        *slot = Some(text.clone());
+        end -= 1;
+    }
+    (&args[..end], labels)
 }
 
 #[derive(Serialize)]
@@ -131,6 +171,9 @@ struct Plot3dData {
     /// Static data — the frontend boxes and re-windows them without resampling.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scatter: Vec<(f64, f64, f64)>,
+    /// Optional figure title from `plot3d(..., title = "...")` (mathtext).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 fn error_result(msg: String) -> EvalResult {
@@ -218,17 +261,26 @@ fn plot_data(e: &Expr) -> Option<Result<PlotData, String>> {
     let Expr::Func(name, args) = e else {
         return None;
     };
-    if name != "plot" || args.len() < 4 {
+    if name != "plot" {
+        return None;
+    }
+    let (args, labels) = split_plot_labels(args);
+    if args.len() < 4 {
         return None;
     }
     let var_idx = args.len() - 3;
     let Expr::Symbol(var) = &args[var_idx] else {
         return Some(Err("plot: the variable argument must be a name".into()));
     };
-    Some(plot_data_inner(args, var_idx, var))
+    Some(plot_data_inner(args, var_idx, var, labels))
 }
 
-fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData, String> {
+fn plot_data_inner(
+    args: &[Expr],
+    var_idx: usize,
+    var: &str,
+    labels: PlotLabels,
+) -> Result<PlotData, String> {
     let a = bound_f64(&args[var_idx + 1], "plot", "lower")?;
     let b = bound_f64(&args[var_idx + 2], "plot", "upper")?;
     if !(a.is_finite() && b.is_finite() && a < b) {
@@ -264,6 +316,9 @@ fn plot_data_inner(args: &[Expr], var_idx: usize, var: &str) -> Result<PlotData,
         b,
         sig: None,
         series,
+        title: labels.title,
+        xlabel: labels.xlabel,
+        ylabel: labels.ylabel,
     })
 }
 
@@ -362,6 +417,7 @@ fn plot_scatter_data(e: &Expr) -> Option<Result<PlotData, String>> {
     if name != "plotscatter" || args.is_empty() {
         return None;
     }
+    let (args, labels) = split_plot_labels(args);
     Some((|| {
         if args.len() > MAX_SERIES {
             return Err(format!(
@@ -389,6 +445,9 @@ fn plot_scatter_data(e: &Expr) -> Option<Result<PlotData, String>> {
             b,
             sig: None,
             series,
+            title: labels.title,
+            xlabel: labels.xlabel,
+            ylabel: labels.ylabel,
         })
     })())
 }
@@ -726,6 +785,7 @@ fn plot_signal_data(
     if name != "plotsignal" || args.is_empty() {
         return None;
     }
+    let (args, labels) = split_plot_labels(args);
     if args.len() > MAX_SERIES {
         return Some(Err(format!(
             "plot: too many signals ({}, max {})",
@@ -785,6 +845,9 @@ fn plot_signal_data(
             b: maxlen as f64,
             sig: Some(sig_id),
             series,
+            title: labels.title,
+            xlabel: labels.xlabel,
+            ylabel: labels.ylabel,
         },
         signals,
     )))
@@ -796,15 +859,16 @@ fn plot3d_data(e: &Expr) -> Option<Result<Plot3dData, String>> {
     let Expr::Func(name, args) = e else {
         return None;
     };
+    let (args, labels) = split_plot_labels(args);
     match name.as_str() {
-        "plot3dscatter" => Some(plot3d_scatter_inner(args)),
+        "plot3dscatter" => Some(plot3d_scatter_inner(args, labels)),
         "plot3d" if args.len() >= 7 => {
             // The trailing six args are x, a, b, y, c, d; the rest are drawables.
             let base = args.len() - 6;
             let (Expr::Symbol(xvar), Expr::Symbol(yvar)) = (&args[base], &args[base + 3]) else {
                 return Some(Err("plot3d: the variable arguments must be names".into()));
             };
-            Some(plot3d_surface_inner(args, base, xvar, yvar))
+            Some(plot3d_surface_inner(args, base, xvar, yvar, labels))
         }
         _ => None,
     }
@@ -818,6 +882,7 @@ fn plot3d_surface_inner(
     base: usize,
     xvar: &str,
     yvar: &str,
+    labels: PlotLabels,
 ) -> Result<Plot3dData, String> {
     let a = bound_f64(&args[base + 1], "plot3d", "lower x")?;
     let b = bound_f64(&args[base + 2], "plot3d", "upper x")?;
@@ -891,12 +956,13 @@ fn plot3d_surface_inner(
         undersampled,
         heights,
         scatter,
+        title: labels.title,
     })
 }
 
 /// `plot3d(s1, ..., sk)` over scatter3d data only: the points are the data,
 /// boxed by their x/y-extent (z is ranged by the frontend). No surface.
-fn plot3d_scatter_inner(args: &[Expr]) -> Result<Plot3dData, String> {
+fn plot3d_scatter_inner(args: &[Expr], labels: PlotLabels) -> Result<Plot3dData, String> {
     if args.is_empty() {
         return Err("plot3d: nothing to draw".into());
     }
@@ -934,6 +1000,7 @@ fn plot3d_scatter_inner(args: &[Expr]) -> Result<Plot3dData, String> {
         undersampled: false,
         heights: Vec::new(),
         scatter,
+        title: labels.title,
     })
 }
 
@@ -1405,7 +1472,7 @@ fn symbol_walk(
     uses: &mut BTreeSet<String>,
 ) {
     match node {
-        Node::Num(_) => {}
+        Node::Num(_) | Node::Str(_) => {}
         Node::Ident(name) => {
             if !bound.contains(name) {
                 uses.insert(name.clone());

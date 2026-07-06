@@ -506,6 +506,7 @@ impl Parser {
 
         match self.advance() {
             Token::Num(s) => Ok(Node::Num(s)),
+            Token::Str(s) => Ok(Node::Str(s)),
             Token::Ident(name) => {
                 if self.eat(&Token::LParen) {
                     Ok(Node::Call(name, self.parse_args()?))

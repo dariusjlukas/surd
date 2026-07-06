@@ -166,13 +166,13 @@ const BUILTINS: Builtin[] = [
   {
     name: 'plot',
     params: ['f', 'x', 'a', 'b'],
-    doc: 'Plot f over x in [a, b] (overlay more functions, or scatter(x, y) data, before x) — or plot(s) for signals.',
+    doc: 'Plot f over x in [a, b] (overlay more functions, or scatter(x, y) data, before x) — or plot(s) for signals. Optional trailing title = "…", xlabel = "…", ylabel = "…" ($…$ renders LaTeX math).',
     variadic: true,
   },
   {
     name: 'plot3d',
     params: ['f', 'x', 'a', 'b', 'y', 'c', 'd'],
-    doc: 'Surface z = f(x, y) over [a, b] × [c, d] (overlay scatter3d(x, y, z) data before x) — or plot3d(scatter3d(…)) alone.',
+    doc: 'Surface z = f(x, y) over [a, b] × [c, d] (overlay scatter3d(x, y, z) data before x) — or plot3d(scatter3d(…)) alone. Optional trailing title = "…" ($…$ renders LaTeX math).',
     variadic: true,
   },
   {
@@ -658,6 +658,8 @@ function snippetTemplate(b: Builtin): string {
 const surdStream = StreamLanguage.define<void>({
   token(stream) {
     if (stream.eatSpace()) return null
+    // A string literal (plot labels); `\"` and `\\` escape, like the lexer.
+    if (stream.match(/^"(?:\\.|[^"\\])*"?/)) return 'string'
     if (stream.match(/^(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?/)) return 'number'
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const w = stream.current()
@@ -685,6 +687,7 @@ const surdStream = StreamLanguage.define<void>({
     return null
   },
   tokenTable: {
+    string: t.string,
     number: t.number,
     keyword: t.keyword,
     atom: t.atom,
@@ -698,6 +701,8 @@ const surdStream = StreamLanguage.define<void>({
 // Colors come from the theme tokens in index.css (--syn-* vary by mode and,
 // where the accent would clash, by theme; builtins track the accent itself).
 const highlight = HighlightStyle.define([
+  // Strings share the constants' color — both are literal data.
+  { tag: t.string, color: 'var(--syn-atom)' },
   { tag: t.number, color: 'var(--syn-number)' },
   { tag: t.keyword, color: 'var(--syn-keyword)' },
   { tag: t.atom, color: 'var(--syn-atom)' },

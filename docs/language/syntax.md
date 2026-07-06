@@ -70,6 +70,16 @@ variable `x`, no declaration needed.
   error suggesting `3*10^5` (otherwise it would silently parse as `3*e5`, a
   free symbol).
 
+## String literals
+
+`"..."` is an inert piece of data — it labels things (plot titles and axis
+labels, see [plotting](../reference/plotting.md#titles-and-axis-labels)), and
+that's all: arithmetic on a string is an error, never a coercion. `==`/`!=`
+compare strings decidably.
+
+Backslashes stay **literal** so LaTeX needs no doubling — `"$\omega$"` holds
+`$\omega$`. The only escapes are `\"` (a quote) and `\\` (a backslash).
+
 ## Operators and precedence
 
 From loosest to tightest binding:

@@ -215,6 +215,7 @@ fn encode(e: &Expr) -> Result<Value, String> {
         Expr::Const(Constant::Pi) => json!({ "t": "const", "v": "pi" }),
         Expr::Const(Constant::E) => json!({ "t": "const", "v": "e" }),
         Expr::Symbol(s) => json!({ "t": "sym", "v": s }),
+        Expr::Str(s) => json!({ "t": "str", "v": s }),
         Expr::Bool(b) => Value::Bool(*b),
         Expr::Add(ts) => json!({ "t": "add", "args": encode_all(ts)? }),
         Expr::Mul(fs) => json!({ "t": "mul", "args": encode_all(fs)? }),
@@ -435,6 +436,7 @@ fn decode_tagged(map: &Map<String, Value>) -> Result<Expr, String> {
             other => Err(format!("unknown constant '{}'", other)),
         },
         "sym" => Ok(Expr::Symbol(text("v")?.to_string())),
+        "str" => Ok(Expr::Str(text("v")?.to_string())),
         // Smart constructors re-canonicalize, so a hand-edited file can't
         // smuggle in values that violate the engine's invariants.
         "add" => Ok(add(dec_args("args")?)),
