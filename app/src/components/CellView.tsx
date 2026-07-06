@@ -413,7 +413,28 @@ function MathCell({ cell, stale }: { cell: Cell; stale: boolean }) {
             Use <code>{typoName} := …</code> to assign.
           </div>
         )}
+        <CellTiming cell={cell} />
       </div>
+    </div>
+  )
+}
+
+/** Faint evaluation-time note under a cell's output — only when it took
+ * long enough to feel (fast cells stay clean). */
+function CellTiming({ cell }: { cell: Cell }) {
+  if (cell.status !== 'done' || cell.ms === undefined || cell.ms < 100) {
+    return null
+  }
+  const text =
+    cell.ms < 1000
+      ? `${Math.round(cell.ms)} ms`
+      : `${(cell.ms / 1000).toFixed(1)} s`
+  return (
+    <div
+      title="evaluation time of the last run"
+      className="pt-0.5 text-[10px] text-faint"
+    >
+      {text}
     </div>
   )
 }
@@ -621,6 +642,7 @@ function DataCell({ cell }: { cell: Cell }) {
       </div>
       <div className="pl-6">
         <Output cell={cell} />
+        <CellTiming cell={cell} />
       </div>
     </div>
   )

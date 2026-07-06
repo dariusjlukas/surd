@@ -1,0 +1,72 @@
+# Test gate: the native suite plus the wasm substrate. The wasm smoke test
+# (web/smoke.mjs) is the ONLY place the astro-float wasm32 word-size bug
+# class is catchable — native `cargo test` cannot see it (see the soundness
+# rules in CLAUDE.md), so a green native suite alone must never be treated
+# as proof the shipping engine is sound.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: cargo test
+
+  wasm-and-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build wasm engine (web REPL bundle)
+        run: wasm-pack build wasm --target web --out-dir ../web/pkg
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Smoke-test the wasm substrate
+        run: node smoke.mjs
+        working-directory: web
+
+      - name: Build wasm engine (app bundle)
+        run: wasm-pack build wasm --target web --out-dir ../app/src/engine/pkg
+
+      - name: Install app dependencies
+        run: npm ci
+        working-directory: app
+
+      - name: Typecheck app
+        run: npm run typecheck
+        working-directory: app
+
+      - name: Lint app
+        run: npm run lint
+        working-directory: app
+
+      - name: Check app formatting
+        run: npm run format:check
+        working-directory: app

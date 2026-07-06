@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef } from 'react'
+import { EXAMPLES } from '../examples'
 import { useSettings } from '../state/settings'
 import { useActiveNotebook, useNotebook, type InsertPos } from '../state/store'
 import { computeStaleCells, useDrafts } from '../state/staleness'
@@ -145,6 +146,7 @@ function CellInserter({ pos }: { pos: InsertPos }) {
 
 function Welcome() {
   const submit = useNotebook((s) => s.submit)
+  const openExample = useNotebook((s) => s.openExample)
   const ready = useNotebook((s) => s.engineStatus === 'ready')
   const examples = [
     '1/3 + 1/6',
@@ -171,6 +173,23 @@ function Welcome() {
               className="rounded-md px-1.5 py-0.5 text-left text-muted hover:bg-hover/80 hover:text-accent disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted"
             >
               {e}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="mb-2 mt-5">
+        …or open a worked notebook (evaluated live, right here):
+      </p>
+      <ul className="space-y-1">
+        {EXAMPLES.map((ex) => (
+          <li key={ex.name}>
+            <button
+              onClick={() => void openExample(ex.name, ex.cells)}
+              disabled={!ready}
+              className="w-full rounded-md px-1.5 py-1 text-left hover:bg-hover/80 disabled:cursor-default disabled:hover:bg-transparent"
+            >
+              <span className="font-medium text-muted">{ex.name}</span>
+              <span className="text-faint"> — {ex.blurb}</span>
             </button>
           </li>
         ))}

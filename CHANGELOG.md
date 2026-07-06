@@ -31,6 +31,25 @@ section into a dated, versioned release.
 - **`=` vs `:=` guard.** A cell like `x = 3` — which builds an *equation*
   and binds nothing, while echoing exactly like an assignment confirmation —
   now gets an inline hint pointing at `x := 3`.
+- **Undo for destructive notebook operations.** Deleting a cell, deleting a
+  notebook, and clearing a notebook now offer a transient Undo toast
+  (Cmd/Ctrl+Z also works outside an editor). Restoring replays the affected
+  cells through the engine, so the workspace comes back exactly — replay is
+  the consistency model. Notebooks remain the only copy of your work, so
+  the recovery path matters.
+- **Example gallery.** The empty-notebook Welcome screen now offers three
+  worked notebooks — an exact-by-default tour (ending in an honest
+  refusal), certified DSP (FFT round-trip proof, exact Remez), and exact
+  statistics. They are shipped as *sources only* and evaluated live on
+  open, so every result, badge, and refusal on screen comes from your own
+  engine, never a canned screenshot.
+- **Per-cell timing.** Cells that took ≥ 100 ms show a faint duration under
+  their output.
+- **CI test gate.** A new workflow runs the native suite plus the wasm
+  substrate smoke test on every push/PR, and both the Pages deploy and the
+  release pipeline now refuse to ship a wasm bundle the smoke test rejects
+  — the astro-float wasm32 bug class is invisible to native tests, so the
+  gates run on the real bundle.
 - **`str` and string length.** `str(a, b, ...)` renders each argument to its
   canonical printed form and concatenates — conversion, concatenation, and
   formatting in one primitive (precision composes with `N(x, digits)`:

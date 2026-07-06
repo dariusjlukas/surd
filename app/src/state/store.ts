@@ -31,6 +31,7 @@ import type {
   ReplayEntry,
   WorkspaceEntry,
 } from '../engine/types'
+import { offerUndo } from './undo'
 import { idbStorage, STORAGE_KEY } from './storage'
 
 export type EngineStatus = 'booting' | 'restoring' | 'ready' | 'busy' | 'failed'
@@ -49,6 +50,9 @@ export interface Cell {
   src: string
   status: 'pending' | 'done' | 'cancelled'
   result?: EvalResult
+  /** Wall-clock evaluation time of the last run, ms. Absent for markdown
+   * cells and results saved before this field existed. */
+  ms?: number
   /** data cells: the workspace variable the import binds. */
   dataName?: string
   /** data cells: the imported file's raw text — or base64 bytes for binary
@@ -201,6 +205,12 @@ interface NotebookState {
   deleteNotebook(id: string): void
   /** Add an imported notebook and switch to it. */
   addNotebook(name: string, cells: Cell[]): void
+  /** Create a notebook from a built-in example (sources only) and evaluate
+   * it live — every result on screen comes from the user's own engine. */
+  openExample(
+    name: string,
+    cells: readonly { kind: 'math' | 'markdown'; src: string }[],
+  ): Promise<void>
 }
 
 function newNotebook(name: string): Notebook {
@@ -295,9 +305,11 @@ export const useNotebook = create<NotebookState>()(
       ) => {
         set({ engineStatus: 'busy' })
         try {
+          const t0 = performance.now()
           const result = await client.eval(src)
+          const ms = performance.now() - t0
           set({ engineStatus: 'ready' })
-          patchCell(notebookId, cellId, { status: 'done', result })
+          patchCell(notebookId, cellId, { status: 'done', result, ms })
           if (result.ok) refreshWorkspace()
         } catch (e) {
           if (!(e instanceof EngineCancelled)) throw e
@@ -338,6 +350,7 @@ export const useNotebook = create<NotebookState>()(
             ?.cells.find((c) => c.id === cellId)
           if (!cell) continue // deleted while we were evaluating earlier cells
           try {
+            const t0 = performance.now()
             const result =
               cell.kind === 'data'
                 ? await client.importData(
@@ -346,7 +359,8 @@ export const useNotebook = create<NotebookState>()(
                     cell.dataFormat,
                   )
                 : await client.eval(cell.src)
-            patchCell(notebookId, cellId, { status: 'done', result })
+            const ms = performance.now() - t0
+            patchCell(notebookId, cellId, { status: 'done', result, ms })
           } catch (e) {
             if (!(e instanceof EngineCancelled)) throw e
             return // cancel()/selectNotebook() took over engine + statuses
@@ -424,9 +438,11 @@ export const useNotebook = create<NotebookState>()(
           patch(notebookId, (n) => ({ cells: [...n.cells, cell] }))
           set({ engineStatus: 'busy' })
           try {
+            const t0 = performance.now()
             const result = await client.importData(name, payload, format)
+            const ms = performance.now() - t0
             set({ engineStatus: 'ready' })
-            patchCell(notebookId, cell.id, { status: 'done', result })
+            patchCell(notebookId, cell.id, { status: 'done', result, ms })
             if (result.ok) refreshWorkspace()
           } catch (e) {
             if (!(e instanceof EngineCancelled)) throw e
@@ -497,6 +513,28 @@ export const useNotebook = create<NotebookState>()(
           patch(nb.id, (n) => ({
             cells: n.cells.filter((c) => c.id !== cellId),
           }))
+          // Offer to reverse it — but not for abandoned empty inserts, which
+          // also arrive here (committing/blurring an empty editor deletes).
+          if (cell.src.trim() !== '') {
+            const label =
+              cell.kind === 'markdown'
+                ? 'text cell'
+                : cell.kind === 'data'
+                  ? `data import (${cell.dataName})`
+                  : 'code cell'
+            offerUndo(`Deleted ${label}`, () => {
+              // Re-insert at the old spot, clamped — neighbors may be gone.
+              patch(nb.id, (n) => {
+                const at = Math.min(index, n.cells.length)
+                return {
+                  cells: [...n.cells.slice(0, at), cell, ...n.cells.slice(at)],
+                }
+              })
+              // Replaying from the restored cell re-establishes its binding
+              // (and re-runs everything below it, same as the delete did).
+              if (affectsWorkspace) void recomputeFrom(nb.id, index)
+            })
+          }
           // After removal, `index` is the first cell that saw the deleted
           // binding — recompute from there to undo its workspace effect.
           if (affectsWorkspace) await recomputeFrom(nb.id, index)
@@ -535,8 +573,19 @@ export const useNotebook = create<NotebookState>()(
         },
 
         clearNotebook() {
-          patch(get().activeId, () => ({ cells: [] }))
+          const nb = active()
+          if (nb.cells.length === 0) return
+          const cells = nb.cells
+          patch(nb.id, () => ({ cells: [] }))
           restartEngine([])
+          offerUndo(`Cleared “${nb.name}”`, () => {
+            patch(nb.id, () => ({ cells }))
+            // Restoring is only meaningful if that notebook is still the one
+            // on screen; if the user switched away, the patch alone is right.
+            if (get().activeId === nb.id) {
+              restartEngine(transcriptOf(cells))
+            }
+          })
         },
 
         resample(exprText, varName, a, b) {
@@ -576,23 +625,48 @@ export const useNotebook = create<NotebookState>()(
 
         deleteNotebook(id) {
           const s = get()
+          const idx = s.notebooks.findIndex((n) => n.id === id)
+          if (idx < 0) return
+          const deleted = s.notebooks[idx]
           const remaining = s.notebooks.filter((n) => n.id !== id)
+          // If this was the last notebook, a blank placeholder takes its
+          // place; remember it so an undo can drop it again if untouched.
+          let placeholderId: string | null = null
           if (id !== s.activeId) {
             set({ notebooks: remaining })
-            return
-          }
-          cancelPending()
-          if (remaining.length === 0) {
-            const nb = newNotebook('Notebook 1')
-            set({ notebooks: [nb], activeId: nb.id })
-            restartEngine([])
           } else {
-            // Activate the nearest surviving neighbor.
-            const idx = s.notebooks.findIndex((n) => n.id === id)
-            const next = remaining[Math.min(idx, remaining.length - 1)]
-            set({ notebooks: remaining, activeId: next.id })
-            restartEngine(transcriptOf(next.cells))
+            cancelPending()
+            if (remaining.length === 0) {
+              const nb = newNotebook('Notebook 1')
+              placeholderId = nb.id
+              set({ notebooks: [nb], activeId: nb.id })
+              restartEngine([])
+            } else {
+              // Activate the nearest surviving neighbor.
+              const next = remaining[Math.min(idx, remaining.length - 1)]
+              set({ notebooks: remaining, activeId: next.id })
+              restartEngine(transcriptOf(next.cells))
+            }
           }
+          offerUndo(`Deleted notebook “${deleted.name}”`, () => {
+            const cur = get()
+            if (cur.notebooks.some((n) => n.id === deleted.id)) return
+            const notebooks = cur.notebooks.filter(
+              // Drop the placeholder again, but only while it's still blank.
+              (n) => !(n.id === placeholderId && n.cells.length === 0),
+            )
+            const at = Math.min(idx, notebooks.length)
+            cancelPending()
+            set({
+              notebooks: [
+                ...notebooks.slice(0, at),
+                deleted,
+                ...notebooks.slice(at),
+              ],
+              activeId: deleted.id,
+            })
+            restartEngine(transcriptOf(deleted.cells))
+          })
         },
 
         addNotebook(name, cells) {
@@ -601,6 +675,28 @@ export const useNotebook = create<NotebookState>()(
           cancelPending()
           set((s) => ({ notebooks: [...s.notebooks, nb], activeId: nb.id }))
           restartEngine(transcriptOf(cells))
+        },
+
+        async openExample(name, cells) {
+          const s = get()
+          if (s.engineStatus === 'booting' || s.engineStatus === 'failed')
+            return
+          const taken = new Set(s.notebooks.map((n) => n.name))
+          let unique = name
+          for (let i = 2; taken.has(unique); i++) unique = `${name} (${i})`
+          const nb = newNotebook(unique)
+          nb.cells = cells.map((c) => ({
+            id: crypto.randomUUID(),
+            kind: c.kind,
+            src: c.src,
+            status:
+              c.kind === 'math' ? ('pending' as const) : ('done' as const),
+          }))
+          cancelPending()
+          set((st) => ({ notebooks: [...st.notebooks, nb], activeId: nb.id }))
+          // Replay from the top: restarts the engine clean and evaluates
+          // every math cell in order, exactly like editing cell 0 would.
+          await recomputeFrom(nb.id, 0)
         },
       }
     },

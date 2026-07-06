@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { ContextMenuHost } from './components/ContextMenu'
 import { InputBar } from './components/InputBar'
+import { UndoToast } from './components/UndoToast'
 import { NotebookView } from './components/NotebookView'
 import { PaneResizer } from './components/PaneResizer'
 import { SettingsPage } from './components/SettingsPage'
@@ -89,6 +90,7 @@ export default function App() {
           )}
         </div>
       )}
+      <UndoToast />
       <ContextMenuHost />
     </div>
   )

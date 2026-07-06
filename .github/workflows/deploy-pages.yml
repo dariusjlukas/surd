@@ -46,6 +46,16 @@ jobs:
         run: npm ci
         working-directory: app
 
+      # Deploy gate: never publish a wasm bundle the substrate smoke test
+      # rejects — the astro-float wasm32 bug class is invisible to the
+      # native suite, so this is the last line of defense.
+      - name: Build wasm engine (web REPL bundle, for the smoke gate)
+        run: wasm-pack build wasm --target web --out-dir ../web/pkg
+
+      - name: Smoke-test the wasm substrate
+        run: node smoke.mjs
+        working-directory: web
+
       - name: Build app
         # Project Pages serve from /<repo>/, so the bundle needs that base path.
         run: npm run build -- --base=/${{ github.event.repository.name }}/
