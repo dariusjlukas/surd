@@ -9,6 +9,8 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-06
+
 ### Added
 
 - **Certainty badges.** Every evaluated result now carries its trust class
@@ -352,7 +354,8 @@ First tagged release. Exact-by-default computer-algebra engine with:
 - Numerical tooling: GLMs, penalized/weighted regression, nonlinear least
   squares with an exact symbolic Jacobian, plus DSP and statistics namespaces.
 
-[Unreleased]: https://github.com/dariusjlukas/surd/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/dariusjlukas/surd/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.10.0
 [0.9.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.9.0
 [0.8.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.8.0
 [0.7.0]: https://github.com/dariusjlukas/surd/releases/tag/v0.7.0
