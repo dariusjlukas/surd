@@ -38,3 +38,10 @@ path = "fuzz_targets/roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mat"
+path = "fuzz_targets/mat.rs"
+test = false
+doc = false
+bench = false

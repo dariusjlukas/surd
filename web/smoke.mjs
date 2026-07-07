@@ -2,6 +2,7 @@
 // Exercises the same module the browser loads — init, eval, persistence,
 // plotting — without needing a browser.
 import { readFile } from "node:fs/promises";
+import { deflateSync } from "node:zlib";
 import init, { Session, is_incomplete, is_blank } from "./pkg/surd_wasm.js";
 
 const bytes = await readFile(
@@ -131,6 +132,21 @@ expect(
   "splom field selection",
   ev("pairs(struct(a=[1;2;3], b=[2;4;6], c=[1;0;1]), [c, a])").splom.labels,
   ["c", "a"],
+);
+
+// Numeric discriminant analysis on the wasm substrate. The f64 kernels are
+// substrate-independent, but the result packaging routes every float through
+// numeric_eval/BigFloat — the layer with the known wasm32 astro-float traps —
+// so pin one hand-checked exact-decimal coefficient (Σ⁻¹μ₂ = [7, 0]) and the
+// honesty envelope end-to-end.
+s.eval("lm := stats.lda([1,2; 2,3; 3,3; 6,5; 7,8; 8,8], [1;1;1;2;2;2])");
+expect("lda coefficient lands exactly", ev("lm.coefficients[2,1]").text, "7");
+expect("lda model is honest", ev("lm").certainty, "approximate");
+expect("lda priors stay exact", ev("lm.priors[1]").text, "1/2");
+expect(
+  "lda classifies",
+  ev("stats.predict(lm, [2,2; 7,7]).labels").text,
+  "[ 1 ]\n[ 2 ]",
 );
 
 // A spectrogram of a pure tone: energy concentrates in one frequency band.
@@ -283,6 +299,53 @@ expect(
   iqOut.length === iqBytes.length && iqOut.every((b, i) => b === iqBytes[i]),
   true,
 );
+// MATLAB MAT-file import (the level-5 container), one plain variable and one
+// zlib-compressed v7-style variable — the latter runs miniz_oxide's inflate
+// on the wasm substrate, where astro-float-class 32-bit-usize breakage lives.
+const matTag = (ty, data) => {
+  const out = new Uint8Array(8 + data.length + ((8 - (data.length % 8)) % 8));
+  const mdv = new DataView(out.buffer);
+  mdv.setUint32(0, ty, true);
+  mdv.setUint32(4, data.length, true);
+  out.set(data, 8);
+  return out;
+};
+const cat = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+};
+const matVar = (name, vals) => {
+  const flags = new Uint8Array(8);
+  flags[0] = 6; // mxDOUBLE
+  const dims = new Uint8Array(8);
+  new DataView(dims.buffer).setInt32(0, 1, true);
+  new DataView(dims.buffer).setInt32(4, vals.length, true);
+  const body = cat(
+    matTag(6, flags), // array flags (miUINT32)
+    matTag(5, dims), // dimensions (miINT32)
+    matTag(1, new TextEncoder().encode(name)), // name (miINT8)
+    matTag(9, new Uint8Array(new Float64Array(vals).buffer)), // miDOUBLE
+  );
+  return matTag(14, body); // miMATRIX
+};
+const matHeader = new Uint8Array(128);
+matHeader.set(new TextEncoder().encode("MATLAB 5.0 MAT-file"), 0);
+new DataView(matHeader.buffer).setUint16(124, 0x0100, true);
+matHeader.set(new TextEncoder().encode("IM"), 126);
+const z = deflateSync(Buffer.from(matVar("x", [0.5])));
+const zEl = matTag(15, new Uint8Array(z)); // miCOMPRESSED
+const matBytes = cat(matHeader, matVar("v", [1, 2.5, 0.5]), zEl);
+const matRes = JSON.parse(s.import_mat_data(matBytes, "lab"));
+expect("mat import ok", matRes.ok, true);
+expect("mat vector is a point signal", ev("bound(lab.v)").text, "0");
+expect("mat vector sample exact", ev("lab.v[3]").text, "0.5");
+expect("mat compressed scalar exact", ev("lab.x == 1/2").text, "true");
+
 expect(
   "raw export rejects a mismatched format",
   JSON.parse(s.export_raw("iq", "f32")).ok,

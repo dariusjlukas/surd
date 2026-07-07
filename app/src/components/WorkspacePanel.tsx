@@ -65,7 +65,14 @@ export function WorkspacePanel({
 
   const onImportFile = async (file: File) => {
     try {
-      await importData(file.name, await file.text())
+      // .mat is binary — reading it as text would corrupt it, so it rides
+      // the base64 path no matter which button picked it.
+      if ((file.name.split('.').pop() ?? '').toLowerCase() === 'mat') {
+        const payload = bytesToBase64(new Uint8Array(await file.arrayBuffer()))
+        await importData(file.name, payload, 'mat')
+      } else {
+        await importData(file.name, await file.text())
+      }
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'import failed')
@@ -79,25 +86,27 @@ export function WorkspacePanel({
     const format: ImportFormat | null =
       ext === 'wav'
         ? 'wav'
-        : ext === 'f64'
-          ? 'raw-f64'
-          : ext === 'f32'
-            ? 'raw-f32'
-            : ext === 'i16' || ext === 'pcm'
-              ? 'raw-i16'
-              : ext === 'cf32' ||
-                  ext === 'fc32' ||
-                  ext === 'cfile' ||
-                  ext === 'iq'
-                ? 'raw-cf32'
-                : ext === 'cf64' || ext === 'fc64'
-                  ? 'raw-cf64'
-                  : ext === 'csv' || ext === 'tsv' || ext === 'txt'
-                    ? 'csv-packed'
-                    : null
+        : ext === 'mat'
+          ? 'mat'
+          : ext === 'f64'
+            ? 'raw-f64'
+            : ext === 'f32'
+              ? 'raw-f32'
+              : ext === 'i16' || ext === 'pcm'
+                ? 'raw-i16'
+                : ext === 'cf32' ||
+                    ext === 'fc32' ||
+                    ext === 'cfile' ||
+                    ext === 'iq'
+                  ? 'raw-cf32'
+                  : ext === 'cf64' || ext === 'fc64'
+                    ? 'raw-cf64'
+                    : ext === 'csv' || ext === 'tsv' || ext === 'txt'
+                      ? 'csv-packed'
+                      : null
     if (format === null) {
       setError(
-        `cannot infer the sample format of '.${ext}' — use .wav, .csv, ` +
+        `cannot infer the sample format of '.${ext}' — use .wav, .mat, .csv, ` +
           'rename real raw binary with its sample type (.f64 .f32 .i16), ' +
           'or interleaved I/Q with .cf32/.cf64',
       )
@@ -160,7 +169,7 @@ export function WorkspacePanel({
         </span>
         <span className="flex gap-1">
           <button
-            title="import raw data (surd-data JSON, generic JSON, or CSV) into a variable"
+            title="import raw data (surd-data JSON, generic JSON, CSV, or MATLAB .mat) into a variable"
             disabled={!ready}
             onClick={() => fileRef.current?.click()}
             className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"
@@ -168,7 +177,7 @@ export function WorkspacePanel({
             <FontAwesomeIcon icon={faUpload} className="h-3 w-3" />
           </button>
           <button
-            title="import a signal (WAV audio, raw .f64/.f32/.i16 binary, interleaved I/Q .cf32/.cf64, or large CSV) as certified bulk data"
+            title="import a signal (WAV audio, MATLAB .mat, raw .f64/.f32/.i16 binary, interleaved I/Q .cf32/.cf64, or large CSV) as certified bulk data"
             disabled={!ready}
             onClick={() => signalFileRef.current?.click()}
             className="rounded-md px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink disabled:opacity-40"
@@ -192,7 +201,7 @@ export function WorkspacePanel({
         <input
           ref={fileRef}
           type="file"
-          accept=".json,.csv,.tsv,.txt,application/json,text/csv"
+          accept=".json,.csv,.tsv,.txt,.mat,application/json,text/csv"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0]
@@ -203,7 +212,7 @@ export function WorkspacePanel({
         <input
           ref={signalFileRef}
           type="file"
-          accept=".wav,.csv,.tsv,.txt,.f64,.f32,.i16,.pcm,.cf32,.fc32,.cfile,.iq,.cf64,.fc64,audio/wav"
+          accept=".wav,.mat,.csv,.tsv,.txt,.f64,.f32,.i16,.pcm,.cf32,.fc32,.cfile,.iq,.cf64,.fc64,audio/wav"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0]

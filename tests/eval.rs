@@ -1865,6 +1865,202 @@ fn lasso_regression() {
 }
 
 #[test]
+fn linear_discriminant_analysis() {
+    // Two classes in 2D. The exact pooled within-class covariance is
+    // Sw = [1, 1; 1, 5/3], and the f64 pipeline lands on the exact decision
+    // scores: coefficients Sw⁻¹μ₁ = [1, 1] and Sw⁻¹μ₂ = [7, 0] (hand-checked
+    // and cross-checked against the exact engine below), intercepts
+    // −½μᵀSw⁻¹μ + ln ½.
+    let m = "m := stats.lda([1,2; 2,3; 3,3; 6,5; 7,8; 8,8], [1;1;1;2;2;2])";
+    assert_eq!(
+        ev_all(&[m, "abs(m.coefficients[1,1] - 1) < 1/10^9"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[m, "abs(m.coefficients[1,2] - 1) < 1/10^9"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[m, "abs(m.coefficients[2,1] - 7) < 1/10^9"]),
+        "true"
+    );
+    assert_eq!(ev_all(&[m, "abs(m.coefficients[2,2]) < 1/10^9"]), "true");
+    assert_eq!(
+        ev_all(&[m, "abs(m.intercepts[1] - (-7/3 + ln(1/2))) < 1/10^9"]),
+        "true"
+    );
+    // Priors and counts come from counting, so they are exact rationals.
+    assert_eq!(ev_all(&[m, "m.priors[1]"]), "1/2");
+    assert_eq!(ev_all(&[m, "m.counts[2]"]), "3");
+    // The discriminant axis is parallel to Sw⁻¹(μ₂−μ₁) = [6, −1]
+    // (hand-checked with the exact inverse), checked via the component ratio.
+    assert_eq!(
+        ev_all(&[m, "abs(m.scalings[1,1]/m.scalings[2,1] + 6) < 1/10^9"]),
+        "true"
+    );
+    // …with the sklearn-style normalization wᵀ·Sw·w = 1, so the leading
+    // component is √(3/77)·6 exactly.
+    assert_eq!(
+        ev_all(&[m, "abs(m.scalings[1,1] - 6*sqrt(3/77)) < 1/10^9"]),
+        "true"
+    );
+    // One axis for two classes, so it explains everything.
+    assert_eq!(ev_all(&[m, "abs(m.explained[1] - 1) < 1/10^12"]), "true");
+    // Prediction: well-separated points classify with near-certain
+    // posteriors that sum to 1.
+    let p = "p := stats.predict(m, [2,2; 7,7])";
+    assert_eq!(ev_all(&[m, p, "p.labels"]), "[ 1 ]\n[ 2 ]");
+    assert_eq!(
+        ev_all(&[
+            m,
+            p,
+            "abs(p.posterior[1,1] + p.posterior[1,2] - 1) < 1/10^12"
+        ]),
+        "true"
+    );
+    assert_eq!(ev_all(&[m, p, "p.posterior[1,1] > 99/100"]), "true");
+    // Projection: (1,2) centered at the grand mean (4.5, 29/6), against the
+    // exact axis √(3/77)·(6,−1) → exact value −(3.5·6 − 17/6·(−1))·√(3/77).
+    assert_eq!(
+        ev_all(&[
+            m,
+            "abs(stats.project(m, [1,2])[1,1] + (3.5*6 + 17/6*(-1))*sqrt(3/77)) < 1/10^9"
+        ]),
+        "true"
+    );
+    // Printed-precision regression check on a non-integral float field.
+    assert!(ev_all(&[m, "m.intercepts[1]"]).starts_with("-3.02648051389328"));
+}
+
+#[test]
+fn lda_three_class_eigenstructure() {
+    // Three classes exercise the Jacobi eigensolver on the whitened
+    // between-class scatter. Oracle: the exact engine's eigenvalues of
+    // Sw⁻¹·Sb (quadratic surds here) — again a fully independent code path.
+    let lines = [
+        "X := [1,2; 2,3; 3,3; 6,5; 7,8; 8,8; 1,9; 2,10; 3,11]",
+        "m := stats.lda(X, [1;1;1;2;2;2;3;3;3])",
+        // Exact pooled Sw and between-class Sb for these points.
+        "Sw := [1, 1; 1, 13/9]",
+        "mu := [11/3, 59/9]",
+        "Sb := (3*transpose([2,8/3]-mu)*([2,8/3]-mu) \
+              + 3*transpose([7,7]-mu)*([7,7]-mu) \
+              + 3*transpose([2,10]-mu)*([2,10]-mu))/6",
+        "ev := eigenvalues(Sw^(-1)*Sb)",
+    ];
+    // Explained variance ratios match the exact eigenvalues λ₁/(λ₁+λ₂).
+    let mut check = lines.to_vec();
+    check.push("abs(m.explained[1] - ev[1]/(ev[1]+ev[2])) < 1/10^12");
+    assert_eq!(ev_all(&check), "true");
+    // Both discriminant axes are parallel to the exact eigenvectors of
+    // Sw⁻¹·Sb (compare component ratios; scale and sign conventions differ).
+    let mut check = lines.to_vec();
+    check.push("EV := eigenvectors(Sw^(-1)*Sb)");
+    check.push("abs(m.scalings[1,1]/m.scalings[2,1] - EV[1,1]/EV[2,1]) < 1/10^9");
+    assert_eq!(ev_all(&check), "true");
+    let mut check = lines.to_vec();
+    check.push("EV := eigenvectors(Sw^(-1)*Sb)");
+    check.push("abs(m.scalings[1,2]/m.scalings[2,2] - EV[1,2]/EV[2,2]) < 1/10^9");
+    assert_eq!(ev_all(&check), "true");
+    // Every training point classifies back to its own class.
+    let mut check = lines.to_vec();
+    check.push("stats.predict(m, X).labels == [1;1;1;2;2;2;3;3;3]");
+    assert_eq!(ev_all(&check), "true");
+}
+
+#[test]
+fn quadratic_discriminant_analysis() {
+    // 1D classes that differ only in spread — the case LDA cannot separate
+    // and QDA exists for. Exact per-class variances 20/3 and 2000/3; the
+    // posterior at x = 2 has the closed form checked below through the
+    // certified comparison engine.
+    let q = "q := stats.qda([-1;1;-3;3;-10;10;-30;30], [1;1;1;1;2;2;2;2])";
+    assert_eq!(
+        ev_all(&[q, "abs(q.logdets[1] - ln(20/3)) < 1/10^12"]),
+        "true"
+    );
+    assert_eq!(
+        ev_all(&[q, "abs(q.logdets[2] - ln(2000/3)) < 1/10^12"]),
+        "true"
+    );
+    let p = "p := stats.predict(q, [2; 20])";
+    // Same mean, so a point near zero is the tight class, far out the wide one.
+    assert_eq!(ev_all(&[q, p, "p.labels"]), "[ 1 ]\n[ 2 ]");
+    // Closed-form posterior: scores s_c = −½ln(v_c) − x²/(2v_c) (equal priors
+    // cancel), so P(class 1 | x=2) = 1/(1 + e^{s₂−s₁}).
+    assert_eq!(
+        ev_all(&[
+            q,
+            p,
+            "s1 := -1/2*ln(20/3) - 4/(2*20/3)",
+            "s2 := -1/2*ln(2000/3) - 4/(2*2000/3)",
+            "abs(p.posterior[1,1] - 1/(1 + exp(s2 - s1))) < 1/10^12"
+        ]),
+        "true"
+    );
+    // Categorical (symbol) labels — how imports spell text — work throughout.
+    assert_eq!(
+        ev_all(&[
+            "c := stats.qda([0;1;10;11;12], [cat;cat;dog;dog;dog])",
+            "stats.predict(c, [1/2; 21/2]).labels"
+        ]),
+        "[ cat ]\n[ dog ]"
+    );
+    // Unequal priors 2/5 and 3/5 stay exact on the model.
+    assert_eq!(
+        ev_all(&[
+            "c := stats.qda([0;1;10;11;12], [cat;cat;dog;dog;dog])",
+            "c.priors[2]"
+        ]),
+        "3/5"
+    );
+}
+
+#[test]
+fn discriminant_analysis_refusals() {
+    // A collinear feature makes the pooled covariance singular: refuse with
+    // the shrinkage suggestion rather than classify through roundoff noise.
+    assert!(ev("stats.lda([1,2; 2,4; 3,6; 4,8], [1;1;2;2])")
+        .starts_with("error: stats.lda: the pooled within-class covariance"));
+    // …and the suggested shrinkage makes the same data estimable.
+    assert_eq!(
+        ev("stats.lda([1,2; 2,4; 3,6; 4,8], [1;1;2;2], 1/10).k"),
+        "2"
+    );
+    // Shrinkage must sit in [0, 1].
+    assert!(ev("stats.lda([1,2; 2,4; 3,6; 4,8], [1;1;2;2], 2)")
+        .starts_with("error: stats.lda: the shrinkage argument"));
+    // One class is not a classification problem.
+    assert!(ev("stats.lda([1;2;3], [1;1;1])")
+        .starts_with("error: stats.lda needs at least two classes"));
+    // Labels with missing values are the user's to handle, explicitly.
+    assert!(ev("stats.lda([1;2;3;4], [1;1;NA;2])")
+        .starts_with("error: stats.lda: the data has 1 missing value"));
+    // QDA: a two-point class cannot support a 2×2 covariance; the refusal
+    // names the class.
+    assert!(ev("stats.qda([1,0; 2,1; 5,5; 6,6], [1;1;2;2])")
+        .starts_with("error: stats.qda: the covariance of class 1 is singular"));
+    // A classifier model rejects the regression predict's confidence level…
+    assert!(ev_all(&[
+        "c := stats.qda([0;1;10;11], [1;1;2;2])",
+        "stats.predict(c, [5], 95/100)"
+    ])
+    .starts_with("error: stats.predict: a classifier model takes exactly one argument"));
+    // …and row width must match the trained feature count.
+    assert!(ev_all(&[
+        "m := stats.lda([1,2; 2,3; 6,5; 7,8], [1;1;2;2])",
+        "stats.predict(m, [1,2,3])"
+    ])
+    .starts_with("error: stats.predict: this model has 2 features"));
+    // QDA has no shared axes to project onto.
+    assert!(ev_all(&[
+        "c := stats.qda([0;1;10;11], [1;1;2;2])",
+        "stats.project(c, [5])"
+    ])
+    .starts_with("error: stats.project needs an LDA model"));
+}
+
+#[test]
 fn data_namespace_transforms() {
     // Centering and standardizing stay exact (the z-scores are surds).
     assert_eq!(ev("data.center([1; 2; 3; 4; 5])[1]"), "-2");

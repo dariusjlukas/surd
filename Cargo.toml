@@ -48,6 +48,11 @@ astro-float = { version = "0.9", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 
+# zlib inflate for MATLAB v7 MAT-files (each variable arrives as a
+# miCOMPRESSED element). Pure Rust, compiles to wasm32 cleanly; the deflate
+# side builds the compressed fixtures in the importer's tests.
+miniz_oxide = "0.8"
+
 # Dev-only line editor for the REPL harness. The real frontend is the wasm/
 # crate + web/ UI; this is just a pleasant way to drive the engine natively.
 # Target-gated so the wasm dependency tree stays free of terminal machinery.

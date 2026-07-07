@@ -225,11 +225,12 @@ export type RawExportFormat = 'f32' | 'f64' | 'cf32' | 'cf64'
 
 /** How an import payload should be parsed. `auto` is the text sniffing path
  * (surd-data JSON / generic JSON / CSV → exact values); the rest are bulk
- * signal imports — `wav` and the `raw-*` formats carry base64-encoded bytes
- * in `payload`. */
+ * signal imports — `wav`, `mat`, and the `raw-*` formats carry
+ * base64-encoded bytes in `payload`. */
 export type ImportFormat =
   | 'auto'
   | 'wav'
+  | 'mat'
   | 'raw-f64'
   | 'raw-f32'
   | 'raw-i16'

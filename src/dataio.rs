@@ -1360,6 +1360,637 @@ pub fn import_raw_iq(bytes: &[u8], format: &str) -> Result<Expr, String> {
     )?)))
 }
 
+// ---------------------------------------------------------------------------
+// MATLAB MAT-files (the level-5 container: MATLAB v5/v6/v7)
+// ---------------------------------------------------------------------------
+
+// Storage type tags (mi*) from the MAT-file level-5 spec. Storage is
+// independent of an array's class: MATLAB stores a double array in the
+// narrowest integer type that holds it losslessly.
+const MI_INT8: u32 = 1;
+const MI_UINT8: u32 = 2;
+const MI_INT16: u32 = 3;
+const MI_UINT16: u32 = 4;
+const MI_INT32: u32 = 5;
+const MI_UINT32: u32 = 6;
+const MI_SINGLE: u32 = 7;
+const MI_DOUBLE: u32 = 9;
+const MI_INT64: u32 = 12;
+const MI_UINT64: u32 = 13;
+const MI_MATRIX: u32 = 14;
+const MI_COMPRESSED: u32 = 15;
+const MI_UTF8: u32 = 16;
+const MI_UTF16: u32 = 17;
+const MI_UTF32: u32 = 18;
+
+/// Cell cap for the exact-value paths (2-D matrices, vectors carrying `NaN`,
+/// 64-bit integers beyond 2^53) — every cell is a bignum, so these are far
+/// more expensive than packed signals. Bulk 1-D data rides
+/// [`MAX_BULK_SAMPLES`] as a signal instead.
+const MAX_MAT_EXACT_CELLS: usize = 1 << 16;
+
+/// Inflation cap per compressed variable: the largest payload a variable at
+/// the sample cap can need (complex double = 16 bytes/sample) plus headroom
+/// for tags/names, so a zlib bomb can't balloon past what a legitimate file
+/// could hold.
+const MAX_MAT_INFLATED: usize = MAX_BULK_SAMPLES * 16 + (1 << 16);
+
+/// Parse a MATLAB MAT-file (the level-5 binary container: MATLAB v5/v6/v7,
+/// including v7's zlib-compressed variables) into a struct of its variables.
+///
+/// Every supported value imports *exactly* — the payload is binary IEEE
+/// floats and integers, so nothing is re-rounded. Vectors become packed
+/// point-interval signals; 2-D matrices, scalars, and 64-bit integers beyond
+/// 2^53 become exact rationals/integers; `NaN` becomes the `NA` missing
+/// marker (routing its array to the exact path — signals can't hold `NA`);
+/// char rows become strings; 1×1 structs recurse. Anything the mapping can't
+/// represent faithfully — cell arrays, sparse, N-d, objects, `Inf` — is a
+/// named refusal, never a guess. v4 and v7.3 (HDF5) files are refused with a
+/// pointer at `save -v7`.
+pub fn import_mat(bytes: &[u8]) -> Result<Expr, String> {
+    // v7.3 is HDF5; MATLAB writes the level-5 text header in front of it,
+    // but tools that repack (h5repack etc.) leave the bare HDF5 signature.
+    if bytes.starts_with(b"\x89HDF\r\n\x1a\n") {
+        return Err("this is a MATLAB v7.3 (HDF5) file — re-save it with `save -v7`".into());
+    }
+    let le = match bytes.get(126..128) {
+        Some(b"IM") => true,
+        Some(b"MI") => false,
+        // Level-4 files have no text header: they open with a small
+        // little-endian type code (M·1000 + O·100 + P·10 + T, all digits
+        // small) followed by row/column counts.
+        _ if bytes.len() >= 20
+            && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) < 5000 =>
+        {
+            return Err(
+                "this looks like a MATLAB v4 MAT-file, which is not supported — re-save it \
+                 with `save -v7`"
+                    .into(),
+            )
+        }
+        _ => return Err("not a MAT-file (missing the level-5 header)".into()),
+    };
+    match mat_u16(bytes, 124, le)? {
+        0x0100 => {}
+        0x0200 => {
+            return Err(
+                "MATLAB v7.3 MAT-files are HDF5, which is not supported — re-save with \
+                 `save -v7`"
+                    .into(),
+            )
+        }
+        other => return Err(format!("unsupported MAT-file version 0x{:04x}", other)),
+    }
+    let mut vars: Vec<(String, Expr)> = Vec::new();
+    let mut at = 128usize;
+    while at < bytes.len() {
+        // Writers disagree on whether a compressed element pads to the
+        // 8-byte boundary; tolerate zero padding between elements.
+        if at % 8 != 0 && bytes[at] == 0 {
+            at += 1;
+            continue;
+        }
+        let (ty, data, next) = mat_element(bytes, at, le)?;
+        at = next;
+        let inflated;
+        let (ty, data) = if ty == MI_COMPRESSED {
+            inflated =
+                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, MAX_MAT_INFLATED)
+                    .map_err(|_| {
+                        "corrupt or oversized compressed variable in MAT-file".to_string()
+                    })?;
+            let (t, d, _) = mat_element(&inflated, 0, le)?;
+            (t, d)
+        } else {
+            (ty, data)
+        };
+        if ty != MI_MATRIX {
+            return Err(format!(
+                "unexpected MAT-file element type {} at the top level",
+                ty
+            ));
+        }
+        let (name, value) = mat_matrix(data, le, 0)?;
+        let name = if is_valid_var_name(&name) {
+            name
+        } else {
+            format!("var{}", vars.len() + 1)
+        };
+        vars.push((name, value));
+    }
+    if vars.is_empty() {
+        return Err("the MAT-file holds no variables".into());
+    }
+    structure(vars)
+}
+
+fn mat_bytes<const W: usize>(d: &[u8], at: usize) -> Result<[u8; W], String> {
+    let end = at
+        .checked_add(W)
+        .ok_or_else(|| "truncated MAT-file".to_string())?;
+    Ok(d.get(at..end)
+        .ok_or_else(|| "truncated MAT-file".to_string())?
+        .try_into()
+        .expect("slice of length W"))
+}
+
+fn mat_u16(d: &[u8], at: usize, le: bool) -> Result<u16, String> {
+    let b = mat_bytes::<2>(d, at)?;
+    Ok(if le {
+        u16::from_le_bytes(b)
+    } else {
+        u16::from_be_bytes(b)
+    })
+}
+
+fn mat_u32(d: &[u8], at: usize, le: bool) -> Result<u32, String> {
+    let b = mat_bytes::<4>(d, at)?;
+    Ok(if le {
+        u32::from_le_bytes(b)
+    } else {
+        u32::from_be_bytes(b)
+    })
+}
+
+/// One tagged data element at `at`: `(storage type, payload, offset of the
+/// next element)`. Handles both the 8-byte tag and the packed "small data
+/// element" form (type and byte count share the tag's first word, payload in
+/// its second). Payloads pad to the next 8-byte boundary — except compressed
+/// ones, whose zlib streams sit back-to-back at their exact length.
+fn mat_element(d: &[u8], at: usize, le: bool) -> Result<(u32, &[u8], usize), String> {
+    let trunc = || "truncated MAT-file element".to_string();
+    let word = mat_u32(d, at, le)?;
+    if word >> 16 != 0 {
+        let size = (word >> 16) as usize;
+        if size > 4 {
+            return Err("malformed MAT-file element (small tag claims > 4 bytes)".into());
+        }
+        let data = d.get(at + 4..at + 4 + size).ok_or_else(trunc)?;
+        return Ok((word & 0xffff, data, at + 8));
+    }
+    let size = mat_u32(d, at + 4, le)? as usize;
+    let start = at + 8;
+    let end = start.checked_add(size).ok_or_else(trunc)?;
+    let data = d.get(start..end).ok_or_else(trunc)?;
+    let next = if word == MI_COMPRESSED {
+        end
+    } else {
+        start
+            .checked_add(size.checked_next_multiple_of(8).ok_or_else(trunc)?)
+            .ok_or_else(trunc)?
+    };
+    Ok((word, data, next))
+}
+
+/// A numeric payload, decoded exactly: IEEE floats (every f32 widens to f64
+/// losslessly) or integers (i128 holds every integer class incl. uint64).
+enum MatNums {
+    Floats(Vec<f64>),
+    Ints(Vec<i128>),
+}
+
+impl MatNums {
+    fn len(&self) -> usize {
+        match self {
+            MatNums::Floats(v) => v.len(),
+            MatNums::Ints(v) => v.len(),
+        }
+    }
+}
+
+fn mat_decode(ty: u32, d: &[u8], le: bool) -> Result<MatNums, String> {
+    fn chunks<const W: usize>(d: &[u8]) -> Result<impl Iterator<Item = [u8; W]> + '_, String> {
+        if !d.len().is_multiple_of(W) {
+            return Err(format!(
+                "numeric data length {} is not a multiple of the {}-byte sample width",
+                d.len(),
+                W
+            ));
+        }
+        Ok(d.chunks_exact(W).map(|c| c.try_into().expect("W bytes")))
+    }
+    let e16 = move |b: [u8; 2]| {
+        if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        }
+    };
+    let e32 = move |b: [u8; 4]| {
+        if le {
+            u32::from_le_bytes(b)
+        } else {
+            u32::from_be_bytes(b)
+        }
+    };
+    let e64 = move |b: [u8; 8]| {
+        if le {
+            u64::from_le_bytes(b)
+        } else {
+            u64::from_be_bytes(b)
+        }
+    };
+    Ok(match ty {
+        MI_INT8 => MatNums::Ints(d.iter().map(|&b| (b as i8).into()).collect()),
+        MI_UINT8 => MatNums::Ints(d.iter().map(|&b| b.into()).collect()),
+        MI_INT16 => MatNums::Ints(chunks::<2>(d)?.map(|b| (e16(b) as i16).into()).collect()),
+        MI_UINT16 => MatNums::Ints(chunks::<2>(d)?.map(|b| e16(b).into()).collect()),
+        MI_INT32 => MatNums::Ints(chunks::<4>(d)?.map(|b| (e32(b) as i32).into()).collect()),
+        MI_UINT32 => MatNums::Ints(chunks::<4>(d)?.map(|b| e32(b).into()).collect()),
+        MI_INT64 => MatNums::Ints(chunks::<8>(d)?.map(|b| (e64(b) as i64).into()).collect()),
+        MI_UINT64 => MatNums::Ints(chunks::<8>(d)?.map(|b| e64(b).into()).collect()),
+        MI_SINGLE => MatNums::Floats(
+            chunks::<4>(d)?
+                .map(|b| f32::from_bits(e32(b)) as f64)
+                .collect(),
+        ),
+        MI_DOUBLE => MatNums::Floats(chunks::<8>(d)?.map(|b| f64::from_bits(e64(b))).collect()),
+        other => {
+            return Err(format!(
+                "unsupported numeric storage type {} in MAT-file",
+                other
+            ))
+        }
+    })
+}
+
+/// Decode a char array's payload. MATLAB writes UTF-16 code units as
+/// miUINT16; other writers use the byte/UTF tags. Malformed text decodes
+/// with visible replacement characters — text is presentation, not a
+/// certified value, so lossy-but-loud beats a refusal here.
+fn mat_decode_chars(ty: u32, d: &[u8], le: bool) -> Result<String, String> {
+    Ok(match ty {
+        MI_INT8 | MI_UINT8 | MI_UTF8 => String::from_utf8_lossy(d).into_owned(),
+        MI_UINT16 | MI_UTF16 => {
+            if !d.len().is_multiple_of(2) {
+                return Err("char data length is not a multiple of 2 bytes".into());
+            }
+            let units = d.chunks_exact(2).map(|c| {
+                let b = [c[0], c[1]];
+                if le {
+                    u16::from_le_bytes(b)
+                } else {
+                    u16::from_be_bytes(b)
+                }
+            });
+            char::decode_utf16(units)
+                .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .collect()
+        }
+        MI_UTF32 => {
+            if !d.len().is_multiple_of(4) {
+                return Err("char data length is not a multiple of 4 bytes".into());
+            }
+            d.chunks_exact(4)
+                .map(|c| {
+                    let b = [c[0], c[1], c[2], c[3]];
+                    let v = if le {
+                        u32::from_le_bytes(b)
+                    } else {
+                        u32::from_be_bytes(b)
+                    };
+                    char::from_u32(v).unwrap_or(char::REPLACEMENT_CHARACTER)
+                })
+                .collect()
+        }
+        other => {
+            return Err(format!(
+                "unsupported char storage type {} in MAT-file",
+                other
+            ))
+        }
+    })
+}
+
+/// The exact value of a finite f64 (a binary float is exactly m·2^k);
+/// integral values come back as `Expr::Int`.
+fn mat_exact(v: f64) -> Expr {
+    rat_to_expr(BigRational::from_float(v).expect("finite by construction"))
+}
+
+/// (rows, cols) of a dims list already vetted as effectively 2-D.
+fn mat_shape(dims: &[usize]) -> (usize, usize) {
+    match dims {
+        [] => (0, 0),
+        [n] => (1, *n),
+        [m, n, ..] => (*m, *n),
+    }
+}
+
+/// Parse one miMATRIX body: `(array name, value)`. `depth` guards struct
+/// recursion against crafted files.
+fn mat_matrix(d: &[u8], le: bool, depth: usize) -> Result<(String, Expr), String> {
+    if depth > 16 {
+        return Err("MAT-file structs nest too deeply".into());
+    }
+    let (fty, flags, at) = mat_element(d, 0, le)?;
+    if fty != MI_UINT32 || flags.len() < 8 {
+        return Err("malformed MAT-file variable (bad array-flags element)".into());
+    }
+    let word = mat_u32(flags, 0, le)?;
+    let class = word & 0xff;
+    let is_complex = word & 0x0800 != 0;
+    let is_logical = word & 0x0200 != 0;
+    let (dty, dims_raw, at) = mat_element(d, at, le)?;
+    if dty != MI_INT32 || !dims_raw.len().is_multiple_of(4) {
+        return Err("malformed MAT-file variable (bad dimensions element)".into());
+    }
+    let mut dims = Vec::with_capacity(dims_raw.len() / 4);
+    for i in 0..dims_raw.len() / 4 {
+        let v = mat_u32(dims_raw, i * 4, le)? as i32;
+        if v < 0 {
+            return Err("malformed MAT-file variable (negative dimension)".into());
+        }
+        dims.push(v as usize);
+    }
+    let (nty, name_raw, at) = mat_element(d, at, le)?;
+    if !matches!(nty, MI_INT8 | MI_UINT8 | MI_UTF8) {
+        return Err("malformed MAT-file variable (bad name element)".into());
+    }
+    let name = String::from_utf8_lossy(name_raw)
+        .trim_end_matches('\0')
+        .to_string();
+    let label = || {
+        if name.is_empty() {
+            "<unnamed>".to_string()
+        } else {
+            format!("'{}'", name)
+        }
+    };
+    let numel = dims
+        .iter()
+        .try_fold(1usize, |a, &b| a.checked_mul(b))
+        .filter(|&n| n <= MAX_BULK_SAMPLES)
+        .ok_or_else(|| {
+            format!(
+                "variable {} is too large (the cap is {} values)",
+                label(),
+                MAX_BULK_SAMPLES
+            )
+        })?;
+    // Trailing singleton dimensions are still 2-D data.
+    let flat = dims.len() <= 2 || dims[2..].iter().all(|&x| x == 1);
+    let value = match class {
+        // mx classes: 1 cell, 2 struct, 3 object, 4 char, 5 sparse,
+        // 6 double, 7 single, 8–15 int8…uint64.
+        2 => mat_struct(d, at, le, numel, depth)?,
+        4 => mat_char(d, at, le, &dims, numel, flat)?,
+        6..=15 => {
+            if !flat {
+                return Err(format!(
+                    "variable {} is an N-dimensional array — reshape to 2-D before saving",
+                    label()
+                ));
+            }
+            mat_numeric(d, at, le, &dims, numel, is_complex, is_logical)
+                .map_err(|e| format!("variable {}: {}", label(), e))?
+        }
+        1 => {
+            return Err(format!(
+                "variable {} is a cell array — not supported",
+                label()
+            ))
+        }
+        3 => {
+            return Err(format!(
+                "variable {} is a MATLAB object — not supported",
+                label()
+            ))
+        }
+        5 => {
+            return Err(format!(
+                "variable {} is a sparse matrix — not supported (convert with `full`)",
+                label()
+            ))
+        }
+        other => {
+            return Err(format!(
+                "variable {} has unsupported MAT-file class {}",
+                label(),
+                other
+            ))
+        }
+    };
+    Ok((name, value))
+}
+
+fn mat_numeric(
+    d: &[u8],
+    at: usize,
+    le: bool,
+    dims: &[usize],
+    numel: usize,
+    is_complex: bool,
+    is_logical: bool,
+) -> Result<Expr, String> {
+    if numel == 0 {
+        // MATLAB `[]`: no value — the same marker a blank CSV cell imports as.
+        return Ok(missing());
+    }
+    let (rty, rdata, at) = mat_element(d, at, le)?;
+    let re = mat_decode(rty, rdata, le)?;
+    if re.len() != numel {
+        return Err(format!("declares {} values but holds {}", numel, re.len()));
+    }
+    if is_complex {
+        let (ity, idata, _) = mat_element(d, at, le)?;
+        let im = mat_decode(ity, idata, le)?;
+        if im.len() != numel {
+            return Err(format!(
+                "declares {} values but holds {} imaginary parts",
+                numel,
+                im.len()
+            ));
+        }
+        return mat_complex_value(mat_to_f64(re)?, mat_to_f64(im)?, dims);
+    }
+    match re {
+        MatNums::Ints(v) => {
+            if is_logical && numel == 1 {
+                return Ok(Expr::Bool(v[0] != 0));
+            }
+            if v.iter().all(|x| x.unsigned_abs() <= 1 << 53) {
+                mat_real_value(v.into_iter().map(|x| x as f64).collect(), dims)
+            } else {
+                // 64-bit integers beyond 2^53: exact, entry by entry.
+                if numel == 1 {
+                    return Ok(Expr::Int(BigInt::from(v[0])));
+                }
+                mat_exact_matrix(numel, dims, |i| Expr::Int(BigInt::from(v[i])))
+            }
+        }
+        MatNums::Floats(v) => mat_real_value(v, dims),
+    }
+}
+
+/// A real numeric array as a surd value: scalars exact, clean vectors as
+/// packed point-interval signals, 2-D matrices (and vectors carrying `NaN`,
+/// which signals can't hold) as exact cells with `NaN` → `NA`. `Inf` has no
+/// exact or missing reading, so it refuses.
+fn mat_real_value(v: Vec<f64>, dims: &[usize]) -> Result<Expr, String> {
+    if v.iter().any(|x| x.is_infinite()) {
+        return Err(
+            "contains Inf, which surd has no exact value for — clean the data first".into(),
+        );
+    }
+    if v.len() == 1 {
+        return Ok(if v[0].is_nan() {
+            missing()
+        } else {
+            mat_exact(v[0])
+        });
+    }
+    let (rows, cols) = mat_shape(dims);
+    let has_nan = v.iter().any(|x| x.is_nan());
+    if (rows == 1 || cols == 1) && !has_nan {
+        let hi = v.clone(); // exact decodes: point intervals
+        return Ok(Expr::Signal(Rc::new(crate::signal::SignalData::F64 {
+            lo: v,
+            hi,
+        })));
+    }
+    mat_exact_matrix(v.len(), dims, |i| {
+        if v[i].is_nan() {
+            missing()
+        } else {
+            mat_exact(v[i])
+        }
+    })
+}
+
+fn mat_complex_value(re: Vec<f64>, im: Vec<f64>, dims: &[usize]) -> Result<Expr, String> {
+    if re
+        .iter()
+        .chain(im.iter())
+        .any(|x| x.is_nan() || x.is_infinite())
+    {
+        return Err("complex data contains NaN/Inf — clean the data first".into());
+    }
+    if re.len() == 1 {
+        return Ok(complex(mat_exact(re[0]), mat_exact(im[0])));
+    }
+    let (rows, cols) = mat_shape(dims);
+    if rows == 1 || cols == 1 {
+        let sig = |v: Vec<f64>| {
+            let hi = v.clone(); // exact decodes: point intervals
+            crate::signal::SignalData::F64 { lo: v, hi }
+        };
+        return Ok(Expr::Signal(Rc::new(crate::signal::complex(
+            sig(re),
+            sig(im),
+        )?)));
+    }
+    mat_exact_matrix(re.len(), dims, |i| {
+        complex(mat_exact(re[i]), mat_exact(im[i]))
+    })
+}
+
+/// Build an exact matrix from column-major data (entry (r, c) is element
+/// `c·rows + r`), honoring the exact-cell cap. A vector lands as its own
+/// 1×n / n×1 shape.
+fn mat_exact_matrix(
+    numel: usize,
+    dims: &[usize],
+    cell: impl Fn(usize) -> Expr,
+) -> Result<Expr, String> {
+    if numel > MAX_MAT_EXACT_CELLS {
+        return Err(format!(
+            "too large to import exactly ({} cells; the cap is {}) — save clean numeric \
+             vectors to import as signals",
+            numel, MAX_MAT_EXACT_CELLS
+        ));
+    }
+    let (rows, cols) = mat_shape(dims);
+    if rows.checked_mul(cols) != Some(numel) || rows == 0 {
+        return Err("malformed MAT-file variable (dimensions don't match data)".into());
+    }
+    let m = (0..rows)
+        .map(|r| (0..cols).map(|c| cell(c * rows + r)).collect())
+        .collect();
+    Ok(Expr::Matrix(m))
+}
+
+/// Every part exactly as f64, or a refusal (complex integer data beyond
+/// 2^53 — which no real writer produces — would otherwise round silently).
+fn mat_to_f64(n: MatNums) -> Result<Vec<f64>, String> {
+    match n {
+        MatNums::Floats(v) => Ok(v),
+        MatNums::Ints(v) => v
+            .into_iter()
+            .map(|x| {
+                if x.unsigned_abs() <= 1 << 53 {
+                    Ok(x as f64)
+                } else {
+                    Err("complex integer data beyond 2^53 is not supported".to_string())
+                }
+            })
+            .collect(),
+    }
+}
+
+fn mat_char(
+    d: &[u8],
+    at: usize,
+    le: bool,
+    dims: &[usize],
+    numel: usize,
+    flat: bool,
+) -> Result<Expr, String> {
+    if numel == 0 {
+        return Ok(Expr::Str(String::new()));
+    }
+    let (rows, _) = mat_shape(dims);
+    if !flat || rows > 1 {
+        return Err(
+            "char matrices are not supported — only single-row char arrays import (as strings)"
+                .into(),
+        );
+    }
+    let (ty, data, _) = mat_element(d, at, le)?;
+    mat_decode_chars(ty, data, le).map(Expr::Str)
+}
+
+fn mat_struct(d: &[u8], at: usize, le: bool, numel: usize, depth: usize) -> Result<Expr, String> {
+    if numel != 1 {
+        return Err("struct arrays are not supported — only 1×1 structs import".into());
+    }
+    let (lty, len_raw, at) = mat_element(d, at, le)?;
+    if lty != MI_INT32 || len_raw.len() < 4 {
+        return Err("malformed MAT-file struct (bad field-name length)".into());
+    }
+    let flen = mat_u32(len_raw, 0, le)? as usize;
+    if flen == 0 || flen > 4096 {
+        return Err("malformed MAT-file struct (bad field-name length)".into());
+    }
+    let (nty, names_raw, mut at) = mat_element(d, at, le)?;
+    if !matches!(nty, MI_INT8 | MI_UINT8) || !names_raw.len().is_multiple_of(flen) {
+        return Err("malformed MAT-file struct (bad field names)".into());
+    }
+    let mut fields = Vec::with_capacity(names_raw.len() / flen);
+    for (i, chunk) in names_raw.chunks_exact(flen).enumerate() {
+        let name = String::from_utf8_lossy(chunk)
+            .trim_end_matches('\0')
+            .to_string();
+        let (ty, body, next) = mat_element(d, at, le)?;
+        if ty != MI_MATRIX {
+            return Err("malformed MAT-file struct (field is not a matrix element)".into());
+        }
+        let (_, value) = mat_matrix(body, le, depth + 1)?;
+        let name = if is_valid_var_name(&name) {
+            name
+        } else {
+            format!("field{}", i + 1)
+        };
+        fields.push((name, value));
+        at = next;
+    }
+    if fields.is_empty() {
+        // `struct()` with no fields: no value, like `[]`.
+        return Ok(missing());
+    }
+    structure(fields)
+}
+
 /// Which raw-binary export a value supports, so the UI only offers formats that
 /// will work: `Some("real")` → f32/f64, `Some("complex")` → cf32/cf64, `None`
 /// → not raw-exportable. Mirrors what [`export_raw`] accepts, but cheaply (no
@@ -1809,6 +2440,397 @@ mod big_signal_tests {
         assert_eq!(d1, d2);
         assert_eq!(a, c, "lo bounds must round-trip bit-exactly");
         assert_eq!(b, e, "hi bounds must round-trip bit-exactly");
+    }
+}
+
+#[cfg(test)]
+mod mat_tests {
+    use super::*;
+    use crate::signal::SignalData;
+    use crate::Interpreter;
+
+    fn val(src: &str) -> Expr {
+        Interpreter::new().eval_line(src).expect(src)
+    }
+
+    // --- fixture builders (little-endian; MATLAB's own writer layout) ---
+
+    fn tag(ty: u32, data: &[u8]) -> Vec<u8> {
+        let mut v = ty.to_le_bytes().to_vec();
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+        while !v.len().is_multiple_of(8) {
+            v.push(0);
+        }
+        v
+    }
+
+    /// The packed "small data element" form (≤ 4 payload bytes).
+    fn small(ty: u32, data: &[u8]) -> Vec<u8> {
+        assert!(data.len() <= 4);
+        let word = ty | ((data.len() as u32) << 16);
+        let mut v = word.to_le_bytes().to_vec();
+        v.extend_from_slice(data);
+        v.resize(8, 0);
+        v
+    }
+
+    fn header() -> Vec<u8> {
+        let mut v = vec![0u8; 128];
+        v[..20].copy_from_slice(b"MATLAB 5.0 MAT-file ");
+        v[124..126].copy_from_slice(&0x0100u16.to_le_bytes());
+        v[126..128].copy_from_slice(b"IM");
+        v
+    }
+
+    fn flags(class: u32, is_complex: bool, is_logical: bool) -> Vec<u8> {
+        let mut w = class & 0xff;
+        if is_complex {
+            w |= 0x0800;
+        }
+        if is_logical {
+            w |= 0x0200;
+        }
+        let mut data = w.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0; 4]);
+        tag(MI_UINT32, &data)
+    }
+
+    fn dims(d: &[i32]) -> Vec<u8> {
+        let data: Vec<u8> = d.iter().flat_map(|x| x.to_le_bytes()).collect();
+        tag(MI_INT32, &data)
+    }
+
+    fn matrix_el(
+        class: u32,
+        is_complex: bool,
+        is_logical: bool,
+        shape: &[i32],
+        name: &str,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut body = flags(class, is_complex, is_logical);
+        body.extend(dims(shape));
+        body.extend(tag(MI_INT8, name.as_bytes()));
+        body.extend_from_slice(payload);
+        tag(MI_MATRIX, &body)
+    }
+
+    fn doubles(vals: &[f64]) -> Vec<u8> {
+        let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        tag(MI_DOUBLE, &data)
+    }
+
+    fn var_doubles(name: &str, shape: &[i32], vals: &[f64]) -> Vec<u8> {
+        matrix_el(6, false, false, shape, name, &doubles(vals))
+    }
+
+    fn file(vars: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = header();
+        for e in vars {
+            v.extend_from_slice(e);
+        }
+        v
+    }
+
+    fn field<'a>(e: &'a Expr, name: &str) -> &'a Expr {
+        let Expr::Struct(fields) = e else {
+            panic!("expected a struct, got {}", e)
+        };
+        &fields
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no field '{}' in {}", name, e))
+            .1
+    }
+
+    fn point_signal(e: &Expr) -> &[f64] {
+        let Expr::Signal(s) = e else {
+            panic!("expected a signal, got {}", e)
+        };
+        let SignalData::F64 { lo, hi } = &**s else {
+            panic!("expected an f64 signal")
+        };
+        assert_eq!(lo, hi, "exact decodes are point intervals");
+        lo
+    }
+
+    // --- the happy paths ---
+
+    #[test]
+    fn doubles_import_as_signal_and_exact_scalar() {
+        let f = file(&[
+            var_doubles("sig", &[1, 4], &[1.0, 2.5, -3.0, 4.0]),
+            var_doubles("x", &[1, 1], &[0.5]),
+        ]);
+        let v = import_mat(&f).unwrap();
+        assert_eq!(point_signal(field(&v, "sig")), &[1.0, 2.5, -3.0, 4.0]);
+        assert_eq!(field(&v, "x"), &val("1/2"));
+    }
+
+    #[test]
+    fn two_d_matrices_import_exactly_from_column_major() {
+        // Column-major [1, 3, 1/2, 4] with dims 2×2 is [1, 1/2; 3, 4].
+        let f = file(&[var_doubles("m", &[2, 2], &[1.0, 3.0, 0.5, 4.0])]);
+        let v = import_mat(&f).unwrap();
+        assert_eq!(field(&v, "m"), &val("[1, 1/2; 3, 4]"));
+    }
+
+    #[test]
+    fn narrow_integer_storage_of_a_double_class_decodes() {
+        // MATLAB stores double arrays in the narrowest lossless integer type.
+        let data: Vec<u8> = [1i16, -2, 300]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let el = matrix_el(6, false, false, &[1, 3], "y", &tag(MI_INT16, &data));
+        let v = import_mat(&file(&[el])).unwrap();
+        assert_eq!(point_signal(field(&v, "y")), &[1.0, -2.0, 300.0]);
+    }
+
+    #[test]
+    fn small_data_elements_parse() {
+        // Short names ride the packed tag form in real MATLAB files.
+        let mut body = flags(6, false, false);
+        body.extend(dims(&[1, 1]));
+        body.extend(small(MI_INT8, b"ab"));
+        body.extend(doubles(&[7.0]));
+        let v = import_mat(&file(&[tag(MI_MATRIX, &body)])).unwrap();
+        assert_eq!(field(&v, "ab"), &val("7"));
+    }
+
+    #[test]
+    fn complex_vectors_become_complex_signals() {
+        let mut payload = doubles(&[1.0, 2.0]); // real parts
+        payload.extend(doubles(&[-0.5, 3.0])); // imaginary parts
+        let el = matrix_el(6, true, false, &[2, 1], "z", &payload);
+        let v = import_mat(&file(&[el])).unwrap();
+        let Expr::Signal(s) = field(&v, "z") else {
+            panic!("expected a signal")
+        };
+        let SignalData::Complex { re, im } = &**s else {
+            panic!("expected a complex signal")
+        };
+        let (SignalData::F64 { lo: r, .. }, SignalData::F64 { lo: i, .. }) = (&**re, &**im) else {
+            panic!("f64 parts")
+        };
+        assert_eq!(
+            (r.as_slice(), i.as_slice()),
+            (&[1.0, 2.0][..], &[-0.5, 3.0][..])
+        );
+    }
+
+    #[test]
+    fn complex_scalars_import_exactly() {
+        let mut payload = doubles(&[0.5]);
+        payload.extend(doubles(&[-2.0]));
+        let el = matrix_el(6, true, false, &[1, 1], "z", &payload);
+        let v = import_mat(&file(&[el])).unwrap();
+        assert_eq!(field(&v, "z"), &val("1/2 - 2*I"));
+    }
+
+    #[test]
+    fn utf16_char_rows_import_as_strings() {
+        let data: Vec<u8> = "héllo"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let el = matrix_el(4, false, false, &[1, 5], "s", &tag(MI_UINT16, &data));
+        let v = import_mat(&file(&[el])).unwrap();
+        assert_eq!(field(&v, "s"), &Expr::Str("héllo".into()));
+    }
+
+    #[test]
+    fn logical_scalars_become_booleans() {
+        let el = matrix_el(9, false, true, &[1, 1], "flag", &tag(MI_UINT8, &[1]));
+        let v = import_mat(&file(&[el])).unwrap();
+        assert_eq!(field(&v, "flag"), &Expr::Bool(true));
+    }
+
+    #[test]
+    fn structs_recurse() {
+        let mut body = flags(2, false, false);
+        body.extend(dims(&[1, 1]));
+        body.extend(tag(MI_INT8, b"s"));
+        body.extend(tag(MI_INT32, &8i32.to_le_bytes()));
+        let mut names = vec![0u8; 16];
+        names[..1].copy_from_slice(b"a");
+        names[8..10].copy_from_slice(b"bb");
+        body.extend(tag(MI_INT8, &names));
+        body.extend(matrix_el(6, false, false, &[1, 1], "", &doubles(&[0.5])));
+        body.extend(matrix_el(
+            6,
+            false,
+            false,
+            &[1, 2],
+            "",
+            &doubles(&[1.0, 2.0]),
+        ));
+        let v = import_mat(&file(&[tag(MI_MATRIX, &body)])).unwrap();
+        let s = field(&v, "s");
+        assert_eq!(field(s, "a"), &val("1/2"));
+        assert_eq!(point_signal(field(s, "bb")), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn compressed_variables_import_including_unpadded_back_to_back() {
+        let compress = |el: &[u8]| {
+            let z = miniz_oxide::deflate::compress_to_vec_zlib(el, 6);
+            let mut v = MI_COMPRESSED.to_le_bytes().to_vec();
+            v.extend_from_slice(&(z.len() as u32).to_le_bytes());
+            v.extend_from_slice(&z);
+            v // deliberately unpadded, like MATLAB's writer
+        };
+        let mut f = header();
+        f.extend(compress(&var_doubles("a", &[1, 3], &[1.0, 2.0, 3.0])));
+        f.extend(compress(&var_doubles("b", &[1, 1], &[9.0])));
+        let v = import_mat(&f).unwrap();
+        assert_eq!(point_signal(field(&v, "a")), &[1.0, 2.0, 3.0]);
+        assert_eq!(field(&v, "b"), &val("9"));
+    }
+
+    #[test]
+    fn big_endian_files_import() {
+        let tag_be = |ty: u32, data: &[u8]| {
+            let mut v = ty.to_be_bytes().to_vec();
+            v.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            v.extend_from_slice(data);
+            while !v.len().is_multiple_of(8) {
+                v.push(0);
+            }
+            v
+        };
+        let mut flags_data = 6u32.to_be_bytes().to_vec();
+        flags_data.extend_from_slice(&[0; 4]);
+        let mut body = tag_be(MI_UINT32, &flags_data);
+        let dims_data: Vec<u8> = [1i32, 1].iter().flat_map(|x| x.to_be_bytes()).collect();
+        body.extend(tag_be(MI_INT32, &dims_data));
+        body.extend(tag_be(MI_INT8, b"x"));
+        body.extend(tag_be(MI_DOUBLE, &2.5f64.to_be_bytes()));
+        let mut f = vec![0u8; 128];
+        f[..6].copy_from_slice(b"MATLAB");
+        f[124..126].copy_from_slice(&0x0100u16.to_be_bytes());
+        f[126..128].copy_from_slice(b"MI");
+        f.extend(tag_be(MI_MATRIX, &body));
+        let v = import_mat(&f).unwrap();
+        assert_eq!(field(&v, "x"), &val("5/2"));
+    }
+
+    // --- exactness at the edges ---
+
+    #[test]
+    fn int64_beyond_2_pow_53_imports_as_exact_integers() {
+        let big = (1i64 << 60) + 1; // not representable in f64
+        let data: Vec<u8> = [big, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let el = matrix_el(14, false, false, &[2, 1], "n", &tag(MI_INT64, &data));
+        let v = import_mat(&file(&[el])).unwrap();
+        let Expr::Matrix(rows) = field(&v, "n") else {
+            panic!("expected an exact matrix")
+        };
+        assert_eq!(rows[0][0], Expr::Int(BigInt::from(big)));
+        assert_eq!(rows[1][0], Expr::Int(BigInt::from(1)));
+    }
+
+    #[test]
+    fn nan_routes_to_the_exact_path_as_na() {
+        let f = file(&[var_doubles("v", &[1, 3], &[1.0, f64::NAN, 3.0])]);
+        let v = import_mat(&f).unwrap();
+        let Expr::Matrix(rows) = field(&v, "v") else {
+            panic!("a NaN-carrying vector can't be a signal")
+        };
+        assert_eq!(rows[0], vec![val("1"), missing(), val("3")]);
+        assert!(describe(&v).contains("1 missing value"));
+    }
+
+    #[test]
+    fn inf_is_refused() {
+        let f = file(&[var_doubles("v", &[1, 2], &[1.0, f64::INFINITY])]);
+        let e = import_mat(&f).unwrap_err();
+        assert!(e.contains("Inf"), "{}", e);
+    }
+
+    #[test]
+    fn empty_arrays_import_as_the_missing_marker() {
+        let f = file(&[
+            matrix_el(6, false, false, &[0, 0], "e", &tag(MI_DOUBLE, &[])),
+            var_doubles("x", &[1, 1], &[1.0]),
+        ]);
+        let v = import_mat(&f).unwrap();
+        assert_eq!(field(&v, "e"), &missing());
+    }
+
+    #[test]
+    fn invalid_variable_names_are_replaced() {
+        let f = file(&[var_doubles("1bad", &[1, 1], &[3.0])]);
+        let v = import_mat(&f).unwrap();
+        assert_eq!(field(&v, "var1"), &val("3"));
+    }
+
+    // --- refusals and hostile bytes ---
+
+    #[test]
+    fn v73_and_v4_and_garbage_are_refused_with_pointers() {
+        let mut v73 = header();
+        v73[124..126].copy_from_slice(&0x0200u16.to_le_bytes());
+        assert!(import_mat(&v73).unwrap_err().contains("7.3"));
+        assert!(import_mat(b"\x89HDF\r\n\x1a\nrest")
+            .unwrap_err()
+            .contains("7.3"));
+        assert!(import_mat(&[0u8; 64]).unwrap_err().contains("v4"));
+        assert!(import_mat(b"PK\x03\x04 definitely not a mat file").is_err());
+        let mut vbad = header();
+        vbad[124..126].copy_from_slice(&0x0300u16.to_le_bytes());
+        assert!(import_mat(&vbad).unwrap_err().contains("version"));
+    }
+
+    #[test]
+    fn unsupported_classes_are_named_refusals() {
+        let cell = matrix_el(1, false, false, &[1, 1], "c", &[]);
+        assert!(import_mat(&file(&[cell])).unwrap_err().contains("cell"));
+        let sparse = matrix_el(5, false, false, &[2, 2], "sp", &[]);
+        assert!(import_mat(&file(&[sparse])).unwrap_err().contains("sparse"));
+        let nd = var_doubles("t", &[2, 2, 2], &[0.0; 8]);
+        assert!(import_mat(&file(&[nd]))
+            .unwrap_err()
+            .contains("N-dimensional"));
+        let charmat = matrix_el(4, false, false, &[2, 2], "cm", &tag(MI_UINT16, &[0; 8]));
+        assert!(import_mat(&file(&[charmat])).unwrap_err().contains("char"));
+    }
+
+    #[test]
+    fn hostile_sizes_and_truncation_fail_loudly() {
+        // Declared dimensions that multiply past any real payload.
+        let huge = matrix_el(
+            6,
+            false,
+            false,
+            &[0x4000_0000, 0x4000_0000],
+            "h",
+            &doubles(&[]),
+        );
+        assert!(import_mat(&file(&[huge]))
+            .unwrap_err()
+            .contains("too large"));
+        // An element whose size runs past the end of the file.
+        let mut f = header();
+        f.extend_from_slice(&MI_MATRIX.to_le_bytes());
+        f.extend_from_slice(&1_000_000u32.to_le_bytes());
+        f.extend_from_slice(&[0u8; 16]);
+        assert!(import_mat(&f).unwrap_err().contains("truncated"));
+        // Payload count disagreeing with the declared dimensions.
+        let lying = var_doubles("l", &[1, 4], &[1.0, 2.0]);
+        assert!(import_mat(&file(&[lying])).is_err());
+        // A zlib bomb refuses at the inflation cap instead of allocating.
+        let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 1 << 20], 6);
+        let mut f = header();
+        f.extend_from_slice(&MI_COMPRESSED.to_le_bytes());
+        f.extend_from_slice(&(bomb.len() as u32).to_le_bytes());
+        f.extend_from_slice(&bomb);
+        // (1 MiB inflates fine — it's under the cap — but holds no valid
+        // element, so it must still error, not panic.)
+        assert!(import_mat(&f).is_err());
+        // No variables at all.
+        assert!(import_mat(&header()).unwrap_err().contains("no variables"));
     }
 }
 

@@ -9,6 +9,37 @@ section into a dated, versioned release.
 
 ## [Unreleased]
 
+### Added
+
+- **MATLAB MAT-file import (v5/v6/v7).** The workspace panel's import
+  buttons accept `.mat` files (the level-5 container, including v7's
+  zlib-compressed variables; both endiannesses). Every supported value
+  imports *exactly* — the payload is binary IEEE floats and integers, so
+  nothing is re-rounded: numeric vectors (real or complex) become
+  point-interval signals with certified error zero; scalars, 2-D matrices,
+  and 64-bit integers beyond 2⁵³ become exact numbers; `NaN` becomes the
+  `NA` missing marker; char rows become strings; 1×1 structs recurse. Cell
+  arrays, sparse, N-d arrays, objects, and `Inf` are named refusals; v4 and
+  v7.3 (HDF5) files are refused with a pointer at `save -v7`. Verified
+  against real `scipy.io.savemat` output (tests/mat_import.rs) and fuzzed
+  (fuzz/fuzz_targets/mat.rs).
+
+- **Numeric classifiers: `stats.lda` and `stats.qda`.** Linear and quadratic
+  discriminant analysis — the first deliberately non-exact estimators beyond
+  the iterative-fitting family, built on new f64 Cholesky and Jacobi
+  eigendecomposition kernels (an exact eigendecomposition at data
+  dimensionalities is intractable, and its roots usually aren't expressible
+  in radicals anyway). Every float-derived field reports certainty
+  *approximate*; class labels, counts, and priors stay exact. An optional
+  shrinkage argument `(1−λ)·Σ + λ·(tr Σ/d)·I` makes
+  more-features-than-observations problems (images, spectra) estimable;
+  singular covariances without it are refusals that suggest the fix.
+  `stats.predict(model, X)` classifies (labels + softmax posteriors) and
+  `stats.project(model, X)` projects rows onto the LDA discriminant axes —
+  supervised dimensionality reduction. Both fitters take the
+  `labels ~ features` formula form against a data struct. MNIST-scale input
+  (hundreds of rows × 784 features) fits in seconds.
+
 ## [0.10.0] - 2026-07-06
 
 ### Added

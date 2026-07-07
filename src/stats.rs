@@ -40,7 +40,10 @@ pub const FUNCTIONS: &[&str] = &[
     "lasso",
     "cv",
     "logit",
+    "lda",
+    "qda",
     "predict",
+    "project",
     "robustse",
     "anova",
     "bptest",
@@ -150,7 +153,16 @@ pub fn call(name: &str, args: Vec<Expr>) -> Result<Expr, String> {
         "lasso" => lasso(&args),
         "cv" => cv(&args),
         "logit" => logit(&args),
+        "lda" => {
+            let (rows, y, shrink) = classifier_data("stats.lda", &args)?;
+            crate::discriminant::lda(&rows, &y, shrink.as_ref())
+        }
+        "qda" => {
+            let (rows, y, shrink) = classifier_data("stats.qda", &args)?;
+            crate::discriminant::qda(&rows, &y, shrink.as_ref())
+        }
         "predict" => predict(&args),
+        "project" => crate::discriminant::project(&args),
         "robustse" => robustse(&args),
         "anova" => anova(&args),
         "bptest" => bptest(&args),
@@ -1844,6 +1856,28 @@ fn design_rows(caller: &str, x: &Expr, n: usize) -> Result<Vec<Vec<Expr>>, Strin
     ))
 }
 
+/// Parse `(X, y[, shrinkage])` for the discriminant classifiers: the same
+/// design/response forms the regressions take (matrix + label vector, or a
+/// `labels ~ features` formula against a data struct). No intercept column is
+/// added — a constant feature has zero within-class variance, which is
+/// exactly the singularity `stats.lda`/`stats.qda` must refuse on.
+#[allow(clippy::type_complexity)]
+fn classifier_data(
+    caller: &str,
+    args: &[Expr],
+) -> Result<(Vec<Vec<Expr>>, Vec<Expr>, Option<Expr>), String> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(format!(
+            "{} expects 2 or 3 argument(s) (X, y[, shrinkage]), got {}",
+            caller,
+            args.len()
+        ));
+    }
+    let (xdesign, y) = model_data(caller, &args[0], &args[1])?;
+    let rows = design_rows(caller, &xdesign, y.len())?;
+    Ok((rows, y, args.get(2).cloned()))
+}
+
 /// Does any column hold one repeated value? Such a column already spans the
 /// intercept, so `regress` won't add another (which would be rank-deficient).
 fn has_constant_col(rows: &[Vec<Expr>]) -> bool {
@@ -1921,6 +1955,9 @@ fn predict(args: &[Expr]) -> Result<Expr, String> {
         ));
     }
     let model = &args[0];
+    if crate::discriminant::is_classifier(model) {
+        return crate::discriminant::classify(model, args);
+    }
     let beta = model_field(model, "coefficients", "stats.predict")?.clone();
     let k = entries("stats.predict", &beta)?.len();
     let cov = model_field(model, "cov", "stats.predict")?.clone();

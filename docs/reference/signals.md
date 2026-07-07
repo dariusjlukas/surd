@@ -136,15 +136,24 @@ every 2nd sample, `s[1:(4, 1):]` takes 4 and skips 1, each a shorter sub-signal.
 | Raw binary (`f64`/`f32`/`i16`, little-endian) | one signal, unnormalized |
 | Interleaved I/Q (`cf32`/`cf64`, i.e. `.cf32`/`.cfile`/`.iq` / `.cf64`) | one complex signal, unnormalized |
 | Packed CSV | `struct` of one signal per column |
+| MATLAB MAT-file (v5/v6/v7) | `struct` of the file's variables (see below) |
 
 Integer PCM and IEEE floats convert to f64 *exactly*, so imported data
 starts with certified error **zero**; CSV decimals start within ±1 ulp of
 their correctly-rounded parse. (Import caps: 2²⁴ samples per file.)
 
+MAT-file variables map by shape: numeric vectors (real or complex) become
+signals; scalars, 2-D matrices, and 64-bit integers beyond 2⁵³ become exact
+numbers; `NaN` becomes the missing marker `NA` (routing its array to exact
+cells — signals can't hold `NA`); char rows become strings; 1×1 structs
+recurse. What has no faithful mapping — cell arrays, sparse, N-d arrays,
+`Inf` — is refused by name, and v4 / v7.3 (HDF5) files are refused with a
+pointer at `save -v7`.
+
 In the web app, the waveform button in the workspace panel imports any of
-these — the format follows the file extension (`.wav`, `.csv`, and raw
-binary as `.f64`/`.f32`/`.i16`). Bulk imports replay with the notebook like
-any other data cell.
+these — the format follows the file extension (`.wav`, `.mat`, `.csv`, and
+raw binary as `.f64`/`.f32`/`.i16`). Bulk imports replay with the notebook
+like any other data cell.
 
 Signals **export** through the normal workspace export, in both substrates:
 f64 bounds as plain numbers (serde round-trips them exactly), and

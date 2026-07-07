@@ -493,6 +493,80 @@ two-sided p-values from the **normal** CDF, not t).
 Non-binary responses, more parameters than observations, and perfectly
 separated data (a singular information matrix) are errors.
 
+## `stats.lda`
+
+```
+stats.lda(X, y)
+stats.lda(X, y, shrinkage)
+stats.lda(labels ~ features, data)
+```
+
+Linear discriminant analysis — a classifier and a supervised dimensionality
+reduction. `X` is an n×d matrix of feature rows, `y` a length-n vector of
+class labels (numbers, or the categorical symbols text columns import as).
+One covariance is pooled across classes; class c scores linearly,
+δ_c(x) = x·Σ⁻¹μ_c − ½μ_cᵀΣ⁻¹μ_c + ln π_c, and the discriminant axes solve
+the generalized eigenproblem Σ_between·w = λ·Σ_within·w.
+
+**This estimator is numeric, not exact.** The covariance is factorized and
+eigendecomposed in floating point (an exact eigendecomposition at data
+dimensionalities is intractable, and its roots usually aren't expressible in
+radicals anyway), so every derived field is a float and the result reports
+its certainty as *approximate*. What can stay exact does: `classes`,
+`counts`, and `priors` come from counting. Degenerate inputs are refusals
+with a suggested fix, never a silently regularized answer.
+
+The optional `shrinkage` λ ∈ [0, 1] replaces Σ with (1−λ)·Σ + λ·(tr Σ/d)·I —
+the standard way to make n < d problems (images, spectra) estimable. Without
+it, a singular pooled covariance is an error.
+
+| field | meaning |
+|-------|---------|
+| `classes`, `counts`, `priors` | the k class labels, sizes, and exact priors n_c/n |
+| `means`, `center` | per-class feature means (k×d) and the grand mean (1×d) |
+| `coefficients`, `intercepts` | linear score pieces: row c holds Σ⁻¹μ_c, plus −½μ_cᵀΣ⁻¹μ_c + ln π_c |
+| `scalings` | d×r discriminant axes, r = min(d, k−1), scaled so within-class variance is 1 per axis |
+| `explained` | share of between-class variance per axis |
+| `shrinkage`, `n`, `d`, `k` | the λ used and the data dimensions |
+
+```text
+>> m := stats.lda([1,2; 2,3; 3,3; 6,5; 7,8; 8,8], [1;1;1;2;2;2])
+>> m.coefficients
+[ 1  1 ]
+[ 7  0 ]
+>> stats.predict(m, [2,2; 7,7]).labels
+[ 1 ]
+[ 2 ]
+```
+
+The formula form works against a data struct the way the regressions do:
+`stats.lda(species ~ sepal + petal, d)`.
+
+## `stats.qda`
+
+```
+stats.qda(X, y)
+stats.qda(X, y, shrinkage)
+stats.qda(labels ~ features, data)
+```
+
+Quadratic discriminant analysis: like `stats.lda` but with one covariance
+*per class*, so the decision boundaries are quadrics — the right model when
+classes differ in spread, not just location. Numeric like `stats.lda`, with
+the same shrinkage option (applied per class). Every class needs at least
+2 observations — realistically more than the feature count, or shrinkage.
+
+The model stores what prediction needs: `means`, exact `priors`, each
+class's precision Σ_c⁻¹ (stacked into one (k·d)×d matrix, class c owning
+rows c·d+1 … (c+1)·d), and `logdets` (ln det Σ_c).
+
+```text
+>> q := stats.qda([-1;1;-3;3;-10;10;-30;30], [1;1;1;1;2;2;2;2])
+>> stats.predict(q, [2; 20]).labels    # same means; only the spreads differ
+[ 1 ]
+[ 2 ]
+```
+
 ## `stats.predict`
 
 ```
@@ -523,6 +597,31 @@ reattached automatically. The optional `level` is the confidence level
 [ 2.81460073898108864334454228784  8.78539926101891135665545771216 ]
 >> N(p.pi[1])
 [ 1.67507814177002750418315696512  9.92492185822997249581684303488 ]
+```
+
+Given a classifier model from `stats.lda` or `stats.qda` instead, it
+classifies: each row of `Xnew` gets the class with the highest discriminant
+score. Returns `labels` (m×1, the predicted class labels) and `posterior`
+(m×k, the softmax of the scores — floats, because the whole decision is).
+Classifier models take no `level` argument.
+
+## `stats.project`
+
+```
+stats.project(model, X)
+```
+
+Project feature rows onto the discriminant axes of a `stats.lda` model —
+LDA as dimensionality reduction. Rows are centered at the model's grand mean
+and multiplied by `scalings`, giving an m×r float matrix (r = min(d, k−1))
+in which within-class variance is 1 on every axis and class separation is
+maximal. QDA models have no shared axes, so they refuse.
+
+```text
+>> m := stats.lda([1,2; 2,3; 3,3; 6,5; 7,8; 8,8], [1;1;1;2;2;2])
+>> stats.project(m, [1,2; 8,8])
+[ -3.58583673753074 ]
+[  3.52004156803476 ]
 ```
 
 ## `stats.robustse`

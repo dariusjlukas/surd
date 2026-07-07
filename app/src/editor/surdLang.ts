@@ -491,6 +491,16 @@ const NAMESPACES: Namespace[] = [
         doc: 'Logistic regression by IRLS, for a binary 0/1 response y.',
       },
       {
+        name: 'lda',
+        params: ['X', 'y', 'shrinkage?'],
+        doc: 'Linear discriminant analysis (numeric, f64): classifier + supervised projection.',
+      },
+      {
+        name: 'qda',
+        params: ['X', 'y', 'shrinkage?'],
+        doc: 'Quadratic discriminant analysis (numeric, f64): one covariance per class.',
+      },
+      {
         name: 'nlfit',
         params: ['model', 'params', 'x', 'y', 'init?'],
         doc: 'Nonlinear least squares; params is a [list] of names, Jacobian exact.',
@@ -498,7 +508,12 @@ const NAMESPACES: Namespace[] = [
       {
         name: 'predict',
         params: ['model', 'Xnew', 'level?'],
-        doc: 'Predict from a model, with confidence and prediction intervals.',
+        doc: 'Predict from a model; classifies (labels + posterior) for lda/qda models.',
+      },
+      {
+        name: 'project',
+        params: ['model', 'X'],
+        doc: 'Project rows onto the discriminant axes of a stats.lda model.',
       },
       {
         name: 'robustse',

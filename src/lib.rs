@@ -18,6 +18,7 @@ pub mod algebraic;
 pub mod ast;
 pub mod data;
 pub mod dataio;
+pub mod discriminant;
 pub mod dsp;
 pub mod eval;
 pub mod expr;

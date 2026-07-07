@@ -1244,6 +1244,13 @@ impl Session {
         self.bind_bulk(name, surd::dataio::import_csv_packed(payload))
     }
 
+    /// Import a MATLAB MAT-file (the level-5 container: v5/v6/v7) as a
+    /// struct of its variables, bound to `name`. Same result shape as
+    /// [`Session::import_data`].
+    pub fn import_mat_data(&mut self, bytes: &[u8], name: &str) -> String {
+        self.bind_bulk(name, surd::dataio::import_mat(bytes))
+    }
+
     fn bind_bulk(&mut self, name: &str, value: Result<Expr, String>) -> String {
         let result = if !surd::dataio::is_valid_var_name(name) {
             error_result(format!("'{}' is not a valid variable name", name))

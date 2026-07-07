@@ -42,6 +42,8 @@ function runImport(
   switch (format) {
     case 'wav':
       return s.import_wav_data(fromBase64(payload), name)
+    case 'mat':
+      return s.import_mat_data(fromBase64(payload), name)
     case 'raw-f64':
     case 'raw-f32':
     case 'raw-i16':
